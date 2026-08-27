@@ -6,6 +6,10 @@ class ConnectorPlatform(StrEnum):
     TELEGRAM = "telegram"
     WECOM = "wecom"
     WECHAT_SIDECAR = "wechat_sidecar"
+    WECHAT_ILINK = "wechat_ilink"
+    WEBHOOK = "webhook"
+    WEBSOCKET = "websocket"
+    HTTP = "http"
 
 
 class ConnectorStatus(StrEnum):

@@ -1,0 +1,119 @@
+import asyncio
+from collections.abc import Awaitable, Callable
+from typing import Any
+
+import httpx
+
+from ..enums import ConnectorStatus
+from .base import InboundMessage, OutboundTask
+
+
+class HttpPollConnector:
+    """通用 HTTP 轮询通道:网关定时 GET inbound_url 拉取消息;出站 POST target_url。
+
+    进站响应格式:单个对象 {"sender_id","text",...} 或 {"messages":[...]}。
+    """
+
+    platform = "http"
+
+    def __init__(
+        self,
+        connector_id: int,
+        config: dict[str, Any],
+        on_message: Callable[[InboundMessage], Awaitable[None]],
+    ) -> None:
+        self.connector_id = connector_id
+        self.config = dict(config)
+        self._on_message = on_message
+        self._status = ConnectorStatus.OFFLINE
+        self._poll_task: asyncio.Task[None] | None = None
+
+    async def start(self, config: dict[str, Any] | None = None) -> None:
+        if config:
+            self.config.update(config)
+        if self.config.get("inbound_url"):
+            self._status = ConnectorStatus.ONLINE
+            if not (self._poll_task and not self._poll_task.done()):
+                self._poll_task = asyncio.create_task(self._poll_loop())
+        elif self.config.get("target_url"):
+            self._status = ConnectorStatus.ONLINE
+        else:
+            self._status = ConnectorStatus.OFFLINE
+
+    async def stop(self) -> None:
+        if self._poll_task:
+            self._poll_task.cancel()
+            await asyncio.gather(self._poll_task, return_exceptions=True)
+        self._status = ConnectorStatus.OFFLINE
+
+    async def status(self) -> ConnectorStatus:
+        return self._status
+
+    async def health(self) -> dict[str, Any]:
+        return {
+            "status": self._status.value,
+            "platform": self.platform,
+            "polling": bool(self._poll_task and not self._poll_task.done()),
+            "outbound_configured": bool(self.config.get("target_url")),
+        }
+
+    async def send_task(self, task: OutboundTask) -> dict[str, Any]:
+        url = str(self.config.get("target_url", ""))
+        if not url:
+            raise RuntimeError("http 连接未配置 target_url,无法出站")
+        headers = dict(self.config.get("headers", {}))
+        async with httpx.AsyncClient(timeout=20) as client:
+            response = await client.post(
+                url,
+                headers=headers,
+                json={"task_id": task.task_id, "text": task.text, "target": task.target},
+            )
+            response.raise_for_status()
+        return {"accepted": True}
+
+    @staticmethod
+    def extract_messages(body: Any) -> list[InboundMessage]:
+        if not isinstance(body, dict):
+            return []
+        raw = body.get("messages", [body])
+        items: list[InboundMessage] = []
+        for item in raw:
+            if not isinstance(item, dict) or not item.get("text"):
+                continue
+            items.append(
+                InboundMessage(
+                    connector_id=0,
+                    sender_id=str(item.get("sender_id", "")),
+                    text=str(item["text"]),
+                    conversation_id=str(item.get("conversation_id", "")),
+                    external_message_id=str(item.get("external_message_id", "")),
+                )
+            )
+        return items
+
+    async def _poll_loop(self) -> None:
+        url = str(self.config.get("inbound_url", ""))
+        headers = dict(self.config.get("headers", {}))
+        interval = float(self.config.get("poll_interval_seconds", 5))
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                while True:
+                    try:
+                        response = await client.get(url, headers=headers)
+                        response.raise_for_status()
+                        for message in self.extract_messages(response.json()):
+                            message = InboundMessage(
+                                connector_id=self.connector_id,
+                                sender_id=message.sender_id,
+                                text=message.text,
+                                conversation_id=message.conversation_id,
+                                external_message_id=message.external_message_id,
+                            )
+                            await self._on_message(message)
+                    except asyncio.CancelledError:
+                        raise
+                    except (httpx.HTTPError, ValueError):
+                        self._status = ConnectorStatus.ERROR
+                    await asyncio.sleep(interval)
+        except asyncio.CancelledError:
+            pass

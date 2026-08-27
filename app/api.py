@@ -1,22 +1,34 @@
 import json
 import time
-from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import (
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
+from wechatpy.exceptions import InvalidSignatureException
 
 from .config import Settings, get_settings
+from .connectors import ConnectorManager
+from .connectors.base import InboundMessage
 from .db import get_db
 from .dsl import ParsedEvent
-from .enums import ConnectorPlatform, EventKind, ReplySource, RouteMode, TaskStatus
-from .connectors import ConnectorManager
+from .enums import ConnectorPlatform, ConnectorStatus, EventKind, ReplySource, RouteMode, TaskStatus
 from .models import (AdminUser, ApiKey, AuditLog, HumanOperator, IMConnection, LLMModel,
                      LLMProvider, ModelRoute, RequestEvent, RequestTask)
 from .schemas import (ApiKeyCreate, ApiKeyCreated, ApiKeySummary, ConnectionCreate,
@@ -149,6 +161,9 @@ def create_app() -> FastAPI:
         with SessionLocal() as db:
             settings = get_settings()
             seed_admin(db, settings.admin_username, settings.admin_password)
+        with SessionLocal() as startup_db:
+            connections = list(startup_db.execute(select(IMConnection)).scalars())
+        await manager.start_all(connections)
         yield
         await manager.stop_all()
 
@@ -333,6 +348,60 @@ def create_app() -> FastAPI:
         return [ConnectionSummary(id=c.id, name=c.name, platform=c.platform, status=c.status)
                 for c in db.execute(select(IMConnection).order_by(IMConnection.id)).scalars()]
 
+    @app.post("/admin/connectors/{connector_id}/start")
+    async def start_connector(connector_id: int, _: str = Depends(require_admin),
+                              db: Session = Depends(get_db)) -> dict[str, Any]:
+        connection = db.get(IMConnection, connector_id)
+        if connection is None:
+            raise HTTPException(status_code=404, detail="连接不存在")
+        manager = app.state.connector_manager
+        await manager.configure(connection)
+        return await manager.health(connector_id)
+
+    @app.post("/admin/connectors/{connector_id}/stop")
+    async def stop_connector(connector_id: int, _: str = Depends(require_admin),
+                             db: Session = Depends(get_db)) -> dict[str, Any]:
+        connection = db.get(IMConnection, connector_id)
+        if connection is None:
+            raise HTTPException(status_code=404, detail="连接不存在")
+        await app.state.connector_manager.stop_connection(connector_id)
+        connection.status = ConnectorStatus.OFFLINE
+        db.commit()
+        return {"stopped": True}
+
+    @app.get("/admin/connectors/{connector_id}/health")
+    async def connector_health(connector_id: int, _: str = Depends(require_admin)) -> dict[str, Any]:
+        return await app.state.connector_manager.health(connector_id)
+
+    @app.post("/admin/connectors/{connector_id}/login")
+    async def connector_login(connector_id: int, _: str = Depends(require_admin),
+                              db: Session = Depends(get_db)) -> dict[str, Any]:
+        connection = db.get(IMConnection, connector_id)
+        if connection is None:
+            raise HTTPException(status_code=404, detail="连接不存在")
+        manager = app.state.connector_manager
+        if manager.get(connector_id) is None:
+            await manager.configure(connection)
+        try:
+            return await manager.login(connector_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/admin/connectors/{connector_id}/login")
+    async def connector_login_state(connector_id: int, _: str = Depends(require_admin),
+                                    db: Session = Depends(get_db)) -> dict[str, Any]:
+        connection = db.get(IMConnection, connector_id)
+        if connection is None:
+            raise HTTPException(status_code=404, detail="连接不存在")
+        manager = app.state.connector_manager
+        connector = manager.get(connector_id)
+        if connector is None:
+            await manager.configure(connection)
+            connector = manager.get(connector_id)
+        if not hasattr(connector, "login_snapshot"):
+            raise HTTPException(status_code=400, detail="该平台无登录流程")
+        return connector.login_snapshot()
+
     @app.get("/admin/api-keys", response_model=list[ApiKeySummary])
     def list_keys(_: str = Depends(require_admin), db: Session = Depends(get_db)) -> list[ApiKeySummary]:
         keys = db.execute(select(ApiKey).options(joinedload(ApiKey.human_operator),
@@ -498,6 +567,117 @@ def create_app() -> FastAPI:
         service.mark_completed(db, task.id)
         return JSONResponse(anthropic_json(task, events) if protocol == "anthropic"
                             else openai_json(task, events))
+
+    @app.post("/connectors/webhook/{connector_id}/inbound")
+    async def webhook_inbound(connector_id: int, request: Request,
+                              token: str = Header(default="", alias="X-Connector-Token"),
+                              db: Session = Depends(get_db)) -> dict[str, Any]:
+        connection = db.get(IMConnection, connector_id)
+        if connection is None or connection.platform is not ConnectorPlatform.WEBHOOK:
+            raise HTTPException(status_code=404, detail="连接不存在")
+        try:
+            config = json.loads(connection.config_json or "{}")
+        except json.JSONDecodeError:
+            config = {}
+        if not token or token != str(config.get("inbound_token", "")):
+            raise HTTPException(status_code=403, detail="连接 token 无效")
+        payload = await request.json()
+        text = str(payload.get("text", ""))
+        if not text:
+            raise HTTPException(status_code=400, detail="text 不能为空")
+        message = InboundMessage(
+            connector_id=connector_id,
+            sender_id=str(payload.get("sender_id", "")),
+            text=text,
+            conversation_id=str(payload.get("conversation_id", "")),
+            external_message_id=str(payload.get("external_message_id", "")),
+        )
+        await app.state.connector_manager.dispatch(message)
+        return {"accepted": True}
+
+    @app.api_route("/connectors/wecom/{connector_id}/callback", methods=["GET", "POST"])
+    async def wecom_callback(connector_id: int, request: Request,
+                             msg_signature: str = Query(...), timestamp: str = Query(...),
+                             nonce: str = Query(...), echostr: str = Query(default=""),
+                             db: Session = Depends(get_db)) -> Any:
+        connection = db.get(IMConnection, connector_id)
+        if connection is None or connection.platform is not ConnectorPlatform.WECOM:
+            raise HTTPException(status_code=404, detail="连接不存在")
+        manager = app.state.connector_manager
+        connector = manager.get(connector_id)
+        if connector is None:
+            await manager.configure(connection)
+            connector = manager.get(connector_id)
+        if connector is None:
+            raise HTTPException(status_code=503, detail="连接器未就绪")
+        if request.method == "GET":
+            if not echostr:
+                raise HTTPException(status_code=400, detail="URL 验证需要 echostr")
+            try:
+                return PlainTextResponse(connector.verify_url(msg_signature, timestamp, nonce, echostr))
+            except InvalidSignatureException:
+                raise HTTPException(status_code=403, detail="签名校验失败")
+        body = (await request.body()).decode("utf-8")
+        try:
+            message = connector.parse_inbound(body, msg_signature, timestamp, nonce)
+        except InvalidSignatureException:
+            raise HTTPException(status_code=403, detail="消息解密失败")
+        if message is not None:
+            await manager.dispatch(message)
+        return PlainTextResponse("success")
+
+    @app.websocket("/connectors/ws/{connector_id}")
+    async def ws_connect(websocket: WebSocket, connector_id: int, token: str = Query(default="")) -> None:
+        from .db import SessionLocal
+
+        with SessionLocal() as db:
+            connection = db.get(IMConnection, connector_id)
+            valid = (connection is not None
+                     and connection.platform is ConnectorPlatform.WEBSOCKET)
+            expected_token = ""
+            if valid:
+                try:
+                    config = json.loads(connection.config_json or "{}")
+                    expected_token = str(config.get("auth_token", ""))
+                except json.JSONDecodeError:
+                    valid = False
+        if not valid or not expected_token or token != expected_token:
+            await websocket.close(code=4401)
+            return
+        manager = websocket.app.state.connector_manager
+        connector = manager.get(connector_id)
+        if connector is None:
+            with SessionLocal() as db:
+                conn = db.get(IMConnection, connector_id)
+                if conn is not None:
+                    await manager.configure(conn)
+            connector = manager.get(connector_id)
+        await websocket.accept()
+        if connector is not None:
+            await connector.register(websocket)
+        try:
+            while True:
+                raw = await websocket.receive_text()
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    data = {"text": raw}
+                text = str(data.get("text", ""))
+                if not text:
+                    continue
+                message = InboundMessage(
+                    connector_id=connector_id,
+                    sender_id=str(data.get("sender_id", "")),
+                    text=text,
+                    conversation_id=str(data.get("conversation_id", "")),
+                    external_message_id=str(data.get("external_message_id", "")),
+                )
+                await manager.dispatch(message)
+        except WebSocketDisconnect:
+            pass
+        finally:
+            if connector is not None:
+                await connector.unregister(websocket)
 
     @app.post("/v1/chat/completions")
     async def chat_completions(payload: dict[str, Any], key: ApiKey = Depends(require_api_key),
