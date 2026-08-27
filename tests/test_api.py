@@ -3,16 +3,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
+import app.db as database
 from app.api import create_app
 from app.config import get_settings
-from app.models import AdminUser, Base
-from app.models import RequestTask
-from app.enums import TaskStatus
-import app.db as database
 from app.connectors.sidecar import WeChatSidecarConnector
 from app.dsl import ParsedEvent
-from app.enums import EventKind
+from app.enums import EventKind, TaskStatus
 from app.llm import LLMAdapter
+from app.model_catalog import list_public_models
+from app.models import AdminUser, RequestTask
 from app.security import verify_password
 
 
@@ -102,10 +101,7 @@ def test_admin_configures_provider_route_and_key_binding(client, admin_headers, 
     assert created["route_mode"] == "llm"
     assert client.get(
         "/v1/models", headers={"Authorization": f"Bearer {created['secret']}"}
-    ).json()["data"] == [
-        {"id": "admin-selected", "object": "model", "owned_by": "human-llm-gateway"},
-        {"id": "public-alias", "object": "model", "owned_by": "human-llm-gateway"},
-    ]
+    ).json()["data"] == list_public_models()
     assert (
         client.get("/admin/api-keys", headers=admin_headers).json()[0]["prefix"]
         != created["secret"]

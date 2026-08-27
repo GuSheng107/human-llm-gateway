@@ -29,6 +29,7 @@ from .connectors.base import InboundMessage
 from .db import get_db
 from .dsl import ParsedEvent
 from .enums import ConnectorPlatform, ConnectorStatus, EventKind, ReplySource, RouteMode, TaskStatus
+from .model_catalog import list_public_models
 from .models import (AdminUser, ApiKey, AuditLog, HumanOperator, IMConnection, LLMModel,
                      LLMProvider, ModelRoute, RequestEvent, RequestTask)
 from .schemas import (ApiKeyCreate, ApiKeyCreated, ApiKeySummary, ConnectionCreate,
@@ -184,9 +185,7 @@ def create_app() -> FastAPI:
 
     @app.get("/v1/models")
     def models(key: ApiKey = Depends(require_api_key)) -> dict[str, Any]:
-        return {"object": "list", "data": [{"id": model_name, "object": "model",
-                                               "owned_by": "human-llm-gateway"}
-                                              for model_name in route_model_names(key.route)]}
+        return {"object": "list", "data": list_public_models()}
 
     @app.post("/admin/api-keys", response_model=ApiKeyCreated)
     def create_key(payload: ApiKeyCreate, db: Session = Depends(get_db),
