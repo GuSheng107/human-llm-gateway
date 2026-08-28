@@ -54,7 +54,7 @@ export function AppShell() {
           <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary font-mono text-sm font-bold text-white shadow-card">
             H
           </div>
-          <div className="text-sm font-semibold tracking-wide text-white">Human Gateway</div>
+          <div className="text-sm font-semibold tracking-wide text-white">能工智人</div>
         </div>
         {navBody}
         <div className="border-t border-white/10 p-3">
@@ -89,9 +89,9 @@ export function AppShell() {
             event.target === event.currentTarget && setMobileOpen(false)
           }
         >
-          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col bg-sidebar text-slate-300 shadow-modal animate-slide-in-right">
+          <aside className="absolute inset-y-0 left-0 flex w-64 flex-col bg-sidebar text-slate-300 shadow-modal animate-slide-in-left">
             <div className="flex h-14 items-center justify-between border-b border-white/10 px-4">
-              <span className="text-sm font-semibold text-white">Human Gateway</span>
+              <span className="text-sm font-semibold text-white">能工智人</span>
               <button
                 type="button"
                 onClick={() => setMobileOpen(false)}
@@ -118,7 +118,7 @@ export function AppShell() {
               >
                 <Icon name="list" className="h-4 w-4" />
               </button>
-              <span className="text-slate-400">Human Gateway</span>
+              <span className="text-slate-400">能工智人</span>
               <span className="text-slate-300">/</span>
               <span>{currentRoute?.label ?? "无权访问此页面"}</span>
             </div>

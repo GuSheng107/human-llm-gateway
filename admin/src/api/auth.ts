@@ -24,6 +24,8 @@ export async function registerAccount(payload: {
   display_name: string;
   password: string;
   email?: string | null;
+  captcha_token: string;
+  captcha_code: string;
 }): Promise<CurrentUser> {
   return api<CurrentUser>("/api/auth/register", {
     method: "POST",

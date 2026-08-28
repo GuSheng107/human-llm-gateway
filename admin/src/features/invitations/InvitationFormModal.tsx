@@ -30,8 +30,13 @@ export function InvitationFormModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const originalExpiresAt = invitation?.expires_at ?? null;
   const maxUsesInvalid = maxUses < 1 || maxUses > MAX_USES;
-  const expiresInvalid = !expiresAt || new Date(expiresAt).getTime() <= Date.now();
+  // 过期时间选填：留空表示永久有效；仅当填写了新时间且早于当前时才报错。
+  const expiresInvalid =
+    expiresAt !== "" &&
+    expiresAt !== localInput(originalExpiresAt) &&
+    new Date(expiresAt).getTime() <= Date.now();
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -40,7 +45,7 @@ export function InvitationFormModal({
       return;
     }
     if (expiresInvalid) {
-      setError("请填写晚于当前时间的过期时间");
+      setError("过期时间需晚于当前时间，或留空表示永久有效");
       return;
     }
     setSubmitting(true);
@@ -90,9 +95,12 @@ export function InvitationFormModal({
               className="field-input"
             />
           </FormField>
-          <FormField label="过期时间" required error={expiresInvalid ? "需填写晚于当前时间的时间" : undefined}>
+          <FormField
+            label="过期时间"
+            hint="留空表示永久有效"
+            error={expiresInvalid ? "需晚于当前时间，或留空" : undefined}
+          >
             <input
-              required
               type="datetime-local"
               value={expiresAt}
               onChange={(event) => setExpiresAt(event.target.value)}

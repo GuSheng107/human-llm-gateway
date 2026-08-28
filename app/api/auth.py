@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..core import login_throttle
-from ..core.captcha import generate_captcha, verify_captcha
+from ..core.captcha import allow_captcha_request, generate_captcha, verify_captcha
 from ..core.db import get_db
 from ..domain.enums import Capability, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
@@ -39,6 +39,8 @@ class RegisterRequest(StrictModel):
     display_name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=512)
     email: str | None = Field(default=None, max_length=255)
+    captcha_token: str = Field(min_length=1, max_length=64)
+    captcha_code: str = Field(min_length=1, max_length=8)
 
 
 class CurrentUser(BaseModel):
@@ -77,6 +79,8 @@ def _to_summary(user: User) -> CurrentUser:
 
 @router.post("/register", response_model=CurrentUser, status_code=201)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> CurrentUser:
+    if not verify_captcha(payload.captcha_token, payload.captcha_code):
+        raise DomainError(DomainErrorCode.VALIDATION_FAILED, "验证码错误或已过期", status_code=400)
     user = AuthService().register(
         db,
         invitation_code=payload.invitation_code,
@@ -89,7 +93,14 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> Current
 
 
 @router.get("/captcha", response_model=CaptchaResponse)
-def captcha() -> CaptchaResponse:
+def captcha(request: Request) -> CaptchaResponse:
+    source = request.client.host if request.client is not None else "unknown"
+    if not allow_captcha_request(source):
+        raise DomainError(
+            DomainErrorCode.RATE_LIMIT_EXCEEDED,
+            "验证码请求过于频繁，请稍后再试",
+            status_code=429,
+        )
     token, image = generate_captcha()
     return CaptchaResponse(captcha_token=token, captcha_image=image)
 

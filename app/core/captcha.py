@@ -6,6 +6,7 @@ import base64
 import io
 import random
 import secrets
+import threading
 import time
 
 from PIL import Image, ImageDraw, ImageFont
@@ -16,6 +17,30 @@ _CAPTCHA_TTL = 300  # 秒
 
 _store: dict[str, tuple[str, float]] = {}
 
+# 内存 store 上限：惰性清理仍可能留下大量未消费条目，超出后按最旧优先淘汰。
+_MAX_PENDING = 10_000
+_RATE_WINDOW_SECONDS = 60.0
+_MAX_GENERATIONS_PER_SOURCE = 30
+_generation_times: dict[str, list[float]] = {}
+_lock = threading.Lock()
+
+
+def allow_captcha_request(source: str) -> bool:
+    """限制单一来源的验证码生成频率，避免短时间内消耗过多 CPU。"""
+    now = time.monotonic()
+    with _lock:
+        timestamps = [
+            stamp
+            for stamp in _generation_times.get(source, [])
+            if now - stamp < _RATE_WINDOW_SECONDS
+        ]
+        if len(timestamps) >= _MAX_GENERATIONS_PER_SOURCE:
+            _generation_times[source] = timestamps
+            return False
+        timestamps.append(now)
+        _generation_times[source] = timestamps
+        return True
+
 
 def generate_captcha() -> tuple[str, str]:
     """生成验证码，返回 (token, data_url)。"""
@@ -24,6 +49,9 @@ def generate_captcha() -> tuple[str, str]:
     for stale_token, (_code, created) in tuple(_store.items()):
         if now - created > _CAPTCHA_TTL:
             _store.pop(stale_token, None)
+    while len(_store) >= _MAX_PENDING:
+        oldest = min(_store, key=lambda token: _store[token][1])
+        _store.pop(oldest, None)
     code = "".join(secrets.choice(_CAPTCHA_CHARS) for _ in range(4))
     token = secrets.token_urlsafe(24)
     _store[token] = (code, now)

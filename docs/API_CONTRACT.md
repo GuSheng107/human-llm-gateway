@@ -135,7 +135,7 @@
 
 验证码错误或已过期返回 400 `validation_failed`，token 一次性消费，每次登录需重新获取。
 
-注册请求：
+注册请求（与登录一样需先经 `/api/auth/captcha` 获取验证码）：
 
 ```json
 {
@@ -143,11 +143,13 @@
   "username": "alice",
   "display_name": "Alice",
   "password": "user-password",
-  "email": "alice@example.com"
+  "email": "alice@example.com",
+  "captcha_token": "captcha-token",
+  "captcha_code": "AB3X"
 }
 ```
 
-`email` 选填、唯一，格式 `^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$`，非法返回 400、占用返回 409 `conflict`。头像经 `PATCH /api/account/profile` 的 `avatar_base64`（PNG/JPEG data URL，原图 ≤ 256KB）上传。
+验证码错误或已过期返回 400 `validation_failed`；`email` 选填、唯一，格式 `^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$`，非法返回 400、占用返回 409 `conflict`。头像经 `PATCH /api/account/profile` 的 `avatar_base64`（PNG/JPEG data URL，原图 ≤ 256KB）上传。
 
 邀请码不存在、已过期、已撤销或已达到使用次数时都返回 400，错误码为 `invalid_invitation`；响应不区分更细原因，避免批量探测邀请码状态。成功消费和用户创建必须原子完成。
 

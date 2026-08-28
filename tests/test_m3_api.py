@@ -36,6 +36,16 @@ def _create_invitation(client, admin_headers, *, max_uses: int = 1) -> dict:
     return response.json()
 
 
+def _register(client, payload: dict) -> dict:
+    """注册统一补充验证码字段（校验已在 conftest 中绕过）。"""
+    body = {
+        "captcha_token": "t",
+        "captcha_code": "c",
+        **payload,
+    }
+    return client.post("/api/auth/register", json=body)
+
+
 def test_restricted_session_only_allows_me_logout_and_password(client) -> None:
     body, headers = _login(client, "admin", ADMIN_PASSWORD)
     assert body["must_change_password"] is True
@@ -87,9 +97,9 @@ def test_invitation_lifecycle_and_atomic_registration(client, admin_headers) -> 
         client.delete(f"/api/invitations/{invitation_id}", headers=admin_headers).status_code == 409
     )
 
-    registered = client.post(
-        "/api/auth/register",
-        json={
+    registered = _register(
+        client,
+        {
             "invitation_code": invitation["code"].lower(),
             "username": "alice",
             "display_name": "Alice 用户",
@@ -102,9 +112,9 @@ def test_invitation_lifecycle_and_atomic_registration(client, admin_headers) -> 
     login, _headers = _login(client, "alice", "Alice-Pass1!")
     assert login["username"] == "alice"
 
-    exhausted = client.post(
-        "/api/auth/register",
-        json={
+    exhausted = _register(
+        client,
+        {
             "invitation_code": invitation["code"],
             "username": "bob",
             "display_name": "Bob",
@@ -129,9 +139,9 @@ def test_invitation_lifecycle_and_atomic_registration(client, admin_headers) -> 
 
 def test_failed_registration_does_not_consume_invitation(client, admin_headers) -> None:
     invitation = _create_invitation(client, admin_headers)
-    invalid = client.post(
-        "/api/auth/register",
-        json={
+    invalid = _register(
+        client,
+        {
             "invitation_code": invitation["code"],
             "username": "无效用户名",
             "display_name": "Invalid",
@@ -141,9 +151,9 @@ def test_failed_registration_does_not_consume_invitation(client, admin_headers) 
     assert invalid.status_code == 400
     assert invalid.json()["error"]["code"] == "validation_failed"
 
-    valid = client.post(
-        "/api/auth/register",
-        json={
+    valid = _register(
+        client,
+        {
             "invitation_code": invitation["code"],
             "username": "after-failure",
             "display_name": "After Failure",
@@ -324,9 +334,9 @@ def test_admin_cannot_disable_self(client, admin_headers) -> None:
 def test_email_validation_on_registration(client, admin_headers) -> None:
     invitation = _create_invitation(client, admin_headers)
 
-    invalid = client.post(
-        "/api/auth/register",
-        json={
+    invalid = _register(
+        client,
+        {
             "invitation_code": invitation["code"],
             "username": "email-bad",
             "display_name": "Email Bad",
@@ -336,9 +346,9 @@ def test_email_validation_on_registration(client, admin_headers) -> None:
     )
     assert invalid.status_code == 400
 
-    valid = client.post(
-        "/api/auth/register",
-        json={
+    valid = _register(
+        client,
+        {
             "invitation_code": invitation["code"],
             "username": "email-ok",
             "display_name": "Email Ok",

@@ -1,11 +1,14 @@
 import { type FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { registerAccount } from "../../api/auth";
+import { CaptchaInput } from "../../components/form/CaptchaInput";
 import { FormField } from "../../components/form/FormField";
+import { PasswordInput } from "../../components/form/PasswordInput";
 import { PasswordStrength, passwordValid } from "../../components/form/PasswordStrength";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { notify } from "../../components/feedback/Toast";
 import { Button } from "../../components/ui/Button";
+import { Icon } from "../../icons";
 
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
@@ -19,6 +22,9 @@ export function RegisterPage() {
     password: "",
     confirm: "",
   });
+  const [captchaToken, setCaptchaToken] = useState("");
+  const [captchaCode, setCaptchaCode] = useState("");
+  const [captchaKey, setCaptchaKey] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -26,7 +32,7 @@ export function RegisterPage() {
     setForm((current) => ({ ...current, [name]: value }));
 
   const mismatch = form.confirm !== "" && form.confirm !== form.password;
-  const passwordInvalid = form.password !== "" && !passwordValid(form.password);
+  const passwordInvalid = form.password !== "" && !passwordValid(form.password, form.username);
   const emailInvalid = form.email.trim() !== "" && !EMAIL_PATTERN.test(form.email.trim());
 
   const submit = async (event: FormEvent) => {
@@ -36,7 +42,7 @@ export function RegisterPage() {
       return;
     }
     if (passwordInvalid) {
-      setError("密码需至少 10 位，并包含英文字母、数字和符号");
+      setError("密码需 10-128 位，并包含英文字母、数字和符号");
       return;
     }
     if (emailInvalid) {
@@ -52,11 +58,15 @@ export function RegisterPage() {
         display_name: form.display_name.trim(),
         password: form.password,
         email: form.email.trim() || null,
+        captcha_token: captchaToken,
+        captcha_code: captchaCode,
       });
       notify("注册成功，请登录");
       navigate("/login", { replace: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "注册失败");
+      setCaptchaCode("");
+      setCaptchaKey((key) => key + 1);
     } finally {
       setSubmitting(false);
     }
@@ -75,8 +85,8 @@ export function RegisterPage() {
 
       <section className="relative w-full max-w-lg animate-slide-up rounded-2xl border border-white/70 bg-white/80 p-8 shadow-modal backdrop-blur-xl">
         <div className="mb-7 flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-light font-mono font-bold text-white shadow-card">
-            H
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-light text-white shadow-card">
+            <Icon name="gateway" className="h-5 w-5" strokeWidth={1.7} />
           </div>
           <h1 className="text-xl font-semibold text-slate-800">使用邀请码注册</h1>
         </div>
@@ -90,14 +100,14 @@ export function RegisterPage() {
             />
           </FormField>
           <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="登录账号" required>
+            <FormField label="登录账号" required hint="小写英文开头，可接数字和 . _ -">
               <input
                 autoComplete="username"
                 required
                 value={form.username}
                 onChange={(event) => field("username", event.target.value)}
                 className="field-input"
-                placeholder="仅 ASCII 字母数字及 . _ -"
+                placeholder="例如 zhangsan_01"
               />
             </FormField>
             <FormField label="显示名" required>
@@ -122,15 +132,13 @@ export function RegisterPage() {
             <FormField
               label="密码"
               required
-              error={passwordInvalid ? "至少 10 位，且包含英文字母、数字和符号" : undefined}
+              error={passwordInvalid ? "10-128 位，且包含英文字母、数字和符号" : undefined}
             >
-              <input
+              <PasswordInput
                 autoComplete="new-password"
                 required
-                type="password"
                 value={form.password}
                 onChange={(event) => field("password", event.target.value)}
-                className="field-input"
               />
             </FormField>
             <FormField
@@ -138,17 +146,23 @@ export function RegisterPage() {
               required
               error={mismatch ? "两次输入的密码不一致" : undefined}
             >
-              <input
+              <PasswordInput
                 autoComplete="new-password"
                 required
-                type="password"
                 value={form.confirm}
                 onChange={(event) => field("confirm", event.target.value)}
-                className="field-input"
               />
             </FormField>
           </div>
           <PasswordStrength password={form.password} />
+          <FormField label="验证码" required>
+            <CaptchaInput
+              key={captchaKey}
+              value={captchaCode}
+              onChange={setCaptchaCode}
+              onTokenChange={setCaptchaToken}
+            />
+          </FormField>
           {error && <ErrorBanner message={error} />}
           <Button
             type="submit"

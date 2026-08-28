@@ -62,7 +62,9 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...init, headers });
-  if (response.status === 401) {
+  // 登录/注册自身的 401（密码错误、验证码错误等）不代表现有会话失效，不能广播登出。
+  const isAuthEntry = path === "/api/auth/login" || path === "/api/auth/register";
+  if (response.status === 401 && !isAuthEntry) {
     localStorage.removeItem(TOKEN_KEY);
     window.dispatchEvent(new Event("hlg:unauthorized"));
   }

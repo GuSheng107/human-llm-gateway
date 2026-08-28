@@ -106,7 +106,7 @@ export function AccountPage() {
       return;
     }
     if (passwordInvalid) {
-      setError("新密码需至少 10 位，并包含英文字母、数字和符号");
+      setError("新密码需 10-128 位，并包含英文字母、数字和符号");
       return;
     }
     setSavingPassword(true);
@@ -227,7 +227,7 @@ export function AccountPage() {
             <FormField
               label="新密码"
               required
-              error={passwordInvalid ? "至少 10 位，且包含英文字母、数字和符号" : undefined}
+              error={passwordInvalid ? "10-128 位，且包含英文字母、数字和符号" : undefined}
             >
               <input
                 required

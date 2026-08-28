@@ -38,6 +38,11 @@ class TestPassword:
     def test_ok(self) -> None:
         assert password_problems("Correct-Horse1!") == []
 
+    def test_backslash_is_valid_symbol(self) -> None:
+        # string.punctuation 含反斜杠；前端符号集必须与其一致（见 PasswordStrength.tsx）。
+        assert password_problems("abcdefgh1\\") == []
+        assert password_problems("Back\\slash1!") == []
+
     @pytest.mark.parametrize(
         "password",
         [
