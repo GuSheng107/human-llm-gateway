@@ -2,16 +2,36 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy.orm import Session
 
 from ..core.security import generate_invitation_code, verify_invitation_code
+from ..core.time import utc_now
 from ..domain.enums import AuditAction
 from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.invitations import InvitationRepository
 from ..repositories.models import InvitationCode
 from ..repositories.system import AuditRepository
+
+MAX_INVITATION_USES = 1000
+_MAX_EXPIRY_YEARS = 5
+
+
+def _validate_expiry(expires_at: datetime | None) -> None:
+    if expires_at is None:
+        return
+    now = utc_now()
+    if expires_at <= now:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED, "过期时间必须晚于当前时间", status_code=400
+        )
+    if expires_at > now + timedelta(days=365 * _MAX_EXPIRY_YEARS):
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            f"过期时间不能晚于 {_MAX_EXPIRY_YEARS} 年后",
+            status_code=400,
+        )
 
 
 class InvitationService:
@@ -32,6 +52,13 @@ class InvitationService:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED, "最大使用次数必须大于 0", status_code=400
             )
+        if max_uses > MAX_INVITATION_USES:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                f"最大使用次数不能超过 {MAX_INVITATION_USES}",
+                status_code=400,
+            )
+        _validate_expiry(expires_at)
         code, prefix, code_hash = generate_invitation_code()
         row = InvitationCode(
             created_by_user_id=actor_user_id,
@@ -73,14 +100,15 @@ class InvitationService:
             row.note = note.strip() or None if note is not None else None
             changed.append("note")
         if "expires_at" in fields:
+            _validate_expiry(fields["expires_at"])
             row.expires_at = fields["expires_at"]
             changed.append("expires_at")
         if "max_uses" in fields:
             max_uses = fields["max_uses"]
-            if max_uses <= 0 or max_uses < row.used_count:
+            if max_uses <= 0 or max_uses > MAX_INVITATION_USES or max_uses < row.used_count:
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED,
-                    "最大使用次数不能小于 1 或当前已使用次数",
+                    f"最大使用次数需在 1 到 {MAX_INVITATION_USES} 之间且不小于已使用次数",
                     status_code=400,
                 )
             row.max_uses = max_uses

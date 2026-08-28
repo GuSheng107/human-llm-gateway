@@ -23,6 +23,12 @@ ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 FULL_ADMIN_PASSWORD = "Updated-Admin-Pass2!"
 
 
+@pytest.fixture(autouse=True)
+def bypass_captcha(monkeypatch):
+    """测试环境绕过图形验证码校验（验证码正确性由独立单元测试覆盖）。"""
+    monkeypatch.setattr("app.api.auth.verify_captcha", lambda token, code: True)
+
+
 @pytest.fixture()
 def client():
     engine = create_engine(
@@ -39,7 +45,13 @@ def client():
 @pytest.fixture()
 def admin_headers(client):
     response = client.post(
-        "/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+        "/api/auth/login",
+        json={
+            "username": "admin",
+            "password": ADMIN_PASSWORD,
+            "captcha_token": "test-token",
+            "captcha_code": "test",
+        },
     )
     assert response.status_code == 200, response.text
     headers = {"Authorization": f"Bearer {response.json()['access_token']}"}

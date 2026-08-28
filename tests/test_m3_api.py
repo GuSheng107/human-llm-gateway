@@ -12,7 +12,15 @@ from tests.conftest import ADMIN_PASSWORD
 
 
 def _login(client, username: str, password: str) -> tuple[dict, dict]:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": password,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
     assert response.status_code == 200, response.text
     body = response.json()
     return body, {"Authorization": f"Bearer {body['access_token']}"}
@@ -252,7 +260,7 @@ def test_admin_constraints_reset_and_audit_redaction(client, admin_headers) -> N
         client.patch(
             f"/api/users/{admin_id}", headers=admin_headers, json={"is_active": False}
         ).status_code
-        == 409
+        == 403  # 管理员不能禁用自己
     )
     assert (
         client.patch(
@@ -302,3 +310,41 @@ def test_username_length_is_bounded_at_schema_boundary(client, admin_headers) ->
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "schema_error"
+
+
+def test_admin_cannot_disable_self(client, admin_headers) -> None:
+    me = client.get("/api/auth/me", headers=admin_headers).json()
+    response = client.patch(
+        f"/api/users/{me['id']}", headers=admin_headers, json={"is_active": False}
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_email_validation_on_registration(client, admin_headers) -> None:
+    invitation = _create_invitation(client, admin_headers)
+
+    invalid = client.post(
+        "/api/auth/register",
+        json={
+            "invitation_code": invitation["code"],
+            "username": "email-bad",
+            "display_name": "Email Bad",
+            "password": "Email-Pass1!",
+            "email": "not-an-email",
+        },
+    )
+    assert invalid.status_code == 400
+
+    valid = client.post(
+        "/api/auth/register",
+        json={
+            "invitation_code": invitation["code"],
+            "username": "email-ok",
+            "display_name": "Email Ok",
+            "password": "Email-Pass1!",
+            "email": "user@example.com",
+        },
+    )
+    assert valid.status_code == 201, valid.text
+    assert valid.json()["email"] == "user@example.com"

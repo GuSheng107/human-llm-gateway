@@ -11,7 +11,13 @@ from tests.conftest import ADMIN_PASSWORD
 
 def test_login_and_me(client) -> None:
     response = client.post(
-        "/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+        "/api/auth/login",
+        json={
+            "username": "admin",
+            "password": ADMIN_PASSWORD,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
     )
     assert response.status_code == 200
     body = response.json()
@@ -30,7 +36,13 @@ def test_login_and_me(client) -> None:
 
 def test_login_wrong_password(client) -> None:
     response = client.post(
-        "/api/auth/login", json={"username": "admin", "password": "nope-nope-nope"}
+        "/api/auth/login",
+        json={
+            "username": "admin",
+            "password": "nope-nope-nope",
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
     )
     assert response.status_code == 401
 
@@ -58,7 +70,12 @@ def test_unicode_password_uses_same_nfc_form_for_create_and_login(client) -> Non
 
     response = client.post(
         "/api/auth/login",
-        json={"username": "unicode-admin", "password": decomposed},
+        json={
+            "username": "unicode-admin",
+            "password": decomposed,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
     )
     assert response.status_code == 200
 

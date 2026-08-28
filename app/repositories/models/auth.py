@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -42,6 +43,8 @@ class User(TimestampMixin, Base):
         ForeignKey("invitation_codes.id", ondelete="SET NULL"), nullable=True
     )
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    avatar_base64: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class AuthSession(Base):

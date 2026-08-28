@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import re
 import string
 import unicodedata
@@ -10,6 +11,12 @@ from pydantic import BaseModel, Field
 
 # username：登录标识仅允许 ASCII（Unicode 展示名由 display_name 承担）。
 USERNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
+
+# 邮箱：常规 RFC 5322 简化形态，最长 255。
+EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+# 头像：base64 解码后（原图）上限 256 KiB。
+MAX_AVATAR_BYTES = 256 * 1024
 
 _MIN_PASSWORD_CODEPOINTS = 10
 _MAX_PASSWORD_CODEPOINTS = 128
@@ -47,6 +54,46 @@ def normalize_display_name(raw: str) -> str | None:
     if not normalized or len(normalized) > 100:
         return None
     return normalized
+
+
+def normalize_email(raw: str | None) -> str | None:
+    """strip + 小写归一；空串视为 None；格式或超长返回 None。"""
+    if raw is None:
+        return None
+    normalized = raw.strip().lower()
+    if not normalized:
+        return None
+    if len(normalized) > 255 or not EMAIL_PATTERN.match(normalized):
+        return None
+    return normalized
+
+
+def normalize_avatar_base64(raw: str | None) -> str | None:
+    """校验头像 base64（PNG/JPEG，原图 ≤ MAX_AVATAR_BYTES）。
+
+    返回去除 data URL 前缀后的纯 base64 字符串；非法返回 None。
+    传入 None 表示不修改头像（与空串清空头像区分）。
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return ""
+    if value.startswith("data:"):
+        # data:image/png;base64,xxxx
+        header, _, payload = value.partition(",")
+        if "base64" not in header:
+            return None
+        value = payload
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError):
+        return None
+    if len(decoded) > MAX_AVATAR_BYTES:
+        return None
+    if decoded[:8] == b"\x89PNG\r\n\x1a\n" or decoded[:3] == b"\xff\xd8\xff":
+        return value
+    return None
 
 
 def normalize_password(raw: str) -> str:

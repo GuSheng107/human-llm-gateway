@@ -106,11 +106,14 @@
 | `active_task_count` | integer | 非空，默认 0，CHECK 0-10 |
 | `registered_via_invitation_id` | integer nullable | FK invitation_codes，删除时 SET NULL |
 | `last_login_at` | datetime nullable | 最近登录 |
+| `email` | varchar(255) nullable | 唯一；选填，格式见 API_CONTRACT §3，写入前 strip + 小写归一 |
+| `avatar_base64` | text nullable | 头像 PNG/JPEG 的 base64（去除 data URL 前缀），原图 ≤ 256KB |
 | `created_at` / `updated_at` | datetime | 非空 |
 
 索引：
 
 - 唯一索引 `username`（普通唯一索引）。不使用 `lower(username)` 表达式索引：SQLite 内建 `lower()` 只处理 ASCII、不构成 Unicode casefold，语义在这里不可靠，换数据库也不可移植；由于写入前已强制 ASCII 小写，普通唯一索引即等价。
+- 唯一索引 `email`（普通唯一索引，SQLite 唯一索引允许多个 NULL）。
 - `(role, is_active)` 管理筛选索引。
 
 `active_task_count` 是并发准入的事务计数器，不通过扫描任务表决定第 11 个请求。后台可提供只读一致性检查，将计数与活动任务实际数量对比，但不能在普通请求中静默修正。禁用用户必须通过 UserService 的事务编排执行，不允许只翻转 `is_active`。

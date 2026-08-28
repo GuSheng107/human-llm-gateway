@@ -51,6 +51,7 @@ _SENSITIVE_EXACT_KEYS = frozenset(
         "invitation_code",
         "binding_code",
         "temporary_password",
+        "avatar_base64",
         "code",
     }
 )

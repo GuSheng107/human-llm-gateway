@@ -18,6 +18,8 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 
 class ProfileUpdate(StrictModel):
     display_name: str = Field(min_length=1, max_length=100)
+    email: str | None = Field(default=None, max_length=255)
+    avatar_base64: str | None = Field(default=None, max_length=400_000)
 
 
 class PasswordChange(StrictModel):
@@ -31,7 +33,15 @@ def update_profile(
     user: User = Depends(require_full_session),
     db: Session = Depends(get_db),
 ) -> CurrentUser:
-    UserService().update_display_name(db, user, payload.display_name, actor_user_id=user.id)
+    fields = payload.model_fields_set
+    UserService().update_profile(
+        db,
+        user,
+        display_name=payload.display_name,
+        email=payload.email if "email" in fields else None,
+        avatar_base64=payload.avatar_base64 if "avatar_base64" in fields else None,
+        actor_user_id=user.id,
+    )
     db.commit()
     return _to_summary(user)
 
