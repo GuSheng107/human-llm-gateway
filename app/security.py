@@ -60,6 +60,25 @@ def verify_api_key(secret: str, encoded: str) -> bool:
         return False
 
 
+def generate_binding_code(length: int = 8) -> tuple[str, str]:
+    """生成不易混淆的一次性绑定码，并只返回其哈希用于持久化。"""
+
+    alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+    code = "".join(secrets.choice(alphabet) for _ in range(length))
+    salt = secrets.token_hex(16)
+    digest = hashlib.sha256(f"{salt}:{code}".encode()).hexdigest()
+    return code, f"sha256${salt}${digest}"
+
+
+def verify_binding_code(code: str, encoded: str) -> bool:
+    try:
+        _, salt, expected = encoded.split("$", 2)
+        actual = hashlib.sha256(f"{salt}:{code.upper().strip()}".encode()).hexdigest()
+        return hmac.compare_digest(actual, expected)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 def _fernet(app_secret: str) -> Fernet:
     digest = hashlib.sha256(app_secret.encode()).digest()
     return Fernet(base64.urlsafe_b64encode(digest))
@@ -71,4 +90,3 @@ def encrypt_secret(value: str, app_secret: str) -> str:
 
 def decrypt_secret(value: str, app_secret: str) -> str:
     return _fernet(app_secret).decrypt(value.encode()).decode()
-

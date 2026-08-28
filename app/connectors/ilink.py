@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import io
+import logging
 import threading
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -8,13 +9,20 @@ from typing import Any
 import httpx  # noqa: F401
 import qrcode
 import qrcode.image.svg
-
 from openilink import Client as ILClient
 from openilink import LoginCallbacks, MonitorOptions, extract_text
 from openilink.types import MessageType
 
+from ..dblog import log_event
 from ..enums import ConnectorStatus
-from .base import InboundMessage, OutboundTask
+from .base import (
+    RUNTIME_ERROR_KEY,
+    RUNTIME_STATUS_KEY,
+    InboundMessage,
+    OutboundTask,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def qr_svg_data_url(content: str) -> str:
@@ -101,10 +109,13 @@ class WeChatILinkConnector:
             result = client.login_with_qr(
                 LoginCallbacks(on_qrcode=on_qrcode, on_scanned=on_scanned), timeout=480
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - SDK login boundary
             self._login_state = "error"
             self._error = str(exc) or "登录失败"
             self._status = ConnectorStatus.ERROR
+            log_event("error", "connector.ilink", f"iLink 登录失败: {exc}",
+                      {"connector_id": self.connector_id})
+            self._persist()
             return
         if result.connected:
             self.config["bot_token"] = result.bot_token
@@ -155,7 +166,7 @@ class WeChatILinkConnector:
                 external_message_id=str(msg.message_id),
             )
             future = asyncio.run_coroutine_threadsafe(self._on_message(inbound), self._loop)
-            future.add_done_callback(lambda f: f.exception())
+            future.add_done_callback(self._inbound_done)
 
         try:
             client.monitor(
@@ -167,7 +178,7 @@ class WeChatILinkConnector:
                     on_session_expired=self._note_expired,
                 ),
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - SDK monitor boundary
             self._note_error(str(exc))
 
     def _save_buf(self, buf: str) -> None:
@@ -177,10 +188,16 @@ class WeChatILinkConnector:
     def _note_expired(self) -> None:
         self._status = ConnectorStatus.ERROR
         self._error = "iLink 会话已过期,请重新扫码登录"
+        log_event("warning", "connector.ilink", "iLink 会话已过期",
+                  {"connector_id": self.connector_id})
         self._persist()
 
     def _note_error(self, message: str) -> None:
+        self._status = ConnectorStatus.ERROR
         self._error = message
+        log_event("warning", "connector.ilink", f"iLink monitor 错误: {message}",
+                  {"connector_id": self.connector_id})
+        self._persist()
 
     def _persist(self) -> None:
         if self._on_state:
@@ -192,10 +209,18 @@ class WeChatILinkConnector:
                         "bot_id": self._config_bot_id(),
                         "sync_buf": self.config.get("sync_buf", ""),
                         "chat_id": self._last_sender,
+                        RUNTIME_STATUS_KEY: self._status.value,
+                        RUNTIME_ERROR_KEY: self._error,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - persistence callback boundary
+                logger.warning("iLink 连接 %s 状态持久化失败: %s", self.connector_id, exc)
+
+    def _inbound_done(self, future: Any) -> None:
+        try:
+            future.result()
+        except Exception:
+            logger.exception("iLink 连接 %s 进站消息处理失败", self.connector_id)
 
     def _config_bot_id(self) -> str:
         return str(self.config.get("bot_id", ""))

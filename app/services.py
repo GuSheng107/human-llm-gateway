@@ -6,9 +6,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 
 from .config import Settings
+from .connection_config import load_connection_config
 from .connectors import ConnectorManager, OutboundTask
+from .dblog import log_event
 from .dsl import DSLParseError, ParsedEvent, parse_human_reply
-from .enums import EventKind, ReplySource, RouteMode, TaskStatus
+from .enums import ReplySource, TaskStatus, UserRole
 from .llm import LLMAdapter, LLMError
 from .models import ApiKey, AuditLog, ModelRoute, RequestEvent, RequestTask
 from .security import hash_password, verify_api_key
@@ -21,11 +23,15 @@ class TaskError(RuntimeError):
 class TaskRegistry:
     def __init__(self) -> None:
         self._waiters: dict[str, asyncio.Future[list[ParsedEvent]]] = {}
+        self._resolved: dict[str, list[ParsedEvent]] = {}
 
     def register(self, task_id: str) -> asyncio.Future[list[ParsedEvent]]:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[list[ParsedEvent]] = loop.create_future()
         self._waiters[task_id] = future
+        resolved = self._resolved.pop(task_id, None)
+        if resolved is not None:
+            future.set_result(resolved)
         return future
 
     def resolve(self, task_id: str, events: list[ParsedEvent]) -> None:
@@ -35,9 +41,12 @@ class TaskRegistry:
             # an adapter callback.  Always schedule completion on the waiter's
             # event loop instead of touching its Future from the caller thread.
             future.get_loop().call_soon_threadsafe(future.set_result, events)
+        else:
+            self._resolved[task_id] = events
 
     def remove(self, task_id: str) -> None:
         self._waiters.pop(task_id, None)
+        self._resolved.pop(task_id, None)
 
 
 registry = TaskRegistry()
@@ -78,28 +87,45 @@ class TaskService:
 
     @staticmethod
     def _human_prompt(task: RequestTask, request: dict[str, Any]) -> str:
-        messages = request.get("messages") or []
-        last = messages[-1] if messages else {}
-        content = last.get("content", "") if isinstance(last, dict) else ""
+        messages = request.get("messages") or request.get("input") or []
+        if isinstance(messages, str):
+            content: Any = messages
+        else:
+            last = messages[-1] if isinstance(messages, list) and messages else {}
+            content = last.get("content", "") if isinstance(last, dict) else ""
         if isinstance(content, list):
-            content = " ".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
-        return f"任务 {task.id}\n\n用户消息：\n{content}\n\n请回复完整 DSL（/think /tool /reply /done）。"
+            content = " ".join(
+                str(item.get("text", item.get("input_text", "")))
+                for item in content
+                if isinstance(item, dict)
+            )
+        return (
+            f"任务 {task.id}\n\n用户消息：\n{content}\n\n"
+            "若同时存在多个待处理任务，请在首行写 /task 上方任务ID。\n"
+            "随后回复完整 DSL（/think /tool /reply /done）。"
+        )
 
     @staticmethod
     def _connection_target(key: ApiKey) -> str:
+        if key.im_connection.bound_conversation_id:
+            return key.im_connection.bound_conversation_id
+        if key.im_connection.bound_user_id:
+            return key.im_connection.bound_user_id
         try:
-            config = json.loads(key.im_connection.config_json or "{}")
-        except json.JSONDecodeError:
+            config = load_connection_config(key.im_connection.config_json)
+        except (ValueError, TypeError):
             config = {}
         return str(config.get("chat_id", config.get("conversation_id", "")))
 
     async def _deliver_human(self, key: ApiKey, task: OutboundTask) -> None:
         try:
             await self.connector_manager.send_task(key.im_connection, task)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - connector plugin boundary
             # The task remains human_waiting and can still be answered from
             # the web console.  The caller never receives an upstream 500 just
             # because a connector delivery failed.
+            log_event("warning", "connector", f"任务投递失败: {exc}",
+                      {"task_id": task.task_id, "im_connection_id": key.im_connection_id})
             return
 
     def create_llm_task(self, db: Session, key: ApiKey, protocol: str, model: str,
@@ -130,6 +156,8 @@ class TaskService:
             events = await self.llm.complete(provider, upstream_model, messages, self.settings.app_secret)
         except LLMError as exc:
             self.fail_task(db, task.id, str(exc))
+            log_event("error", "llm", f"LLM 请求失败: {exc}",
+                      {"task_id": task.id, "provider_id": provider.id, "model": upstream_model})
             raise TaskError(str(exc)) from exc
         for index, event in enumerate(events, start=1):
             db.add(RequestEvent(task_id=task.id, sequence=index, kind=event.kind,
@@ -146,7 +174,7 @@ class TaskService:
         future = registry._waiters.get(task_id) or registry.register(task_id)
         try:
             return await asyncio.wait_for(future, timeout=timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise TaskError("人工回复超时") from exc
         finally:
             registry.remove(task_id)
@@ -212,9 +240,23 @@ class TaskService:
 def seed_admin(db: Session, username: str, password: str) -> None:
     from .models import AdminUser
 
-    if db.execute(select(AdminUser).where(AdminUser.username == username)).scalar_one_or_none() is None:
-        db.add(AdminUser(username=username, password_hash=hash_password(password)))
-        db.commit()
+    user = db.execute(
+        select(AdminUser).where(AdminUser.username == username)
+    ).scalar_one_or_none()
+    if user is None:
+        db.add(
+            AdminUser(
+                username=username,
+                display_name=username,
+                password_hash=hash_password(password),
+                role=UserRole.ADMIN,
+            )
+        )
+    else:
+        user.role = UserRole.ADMIN
+        if not user.display_name:
+            user.display_name = username
+    db.commit()
 
 
 def find_api_key(db: Session, secret: str) -> ApiKey | None:

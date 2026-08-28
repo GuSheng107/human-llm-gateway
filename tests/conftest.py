@@ -25,6 +25,26 @@ def client():
 
 @pytest.fixture()
 def admin_headers(client):
-    response = client.post("/admin/login", json={"username": "admin", "password": "change-me-now"})
+    response = client.post("/auth/login", json={"username": "admin", "password": "change-me-now"})
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
+
+
+@pytest.fixture()
+def user_headers(client, admin_headers):
+    created = client.post(
+        "/admin/users",
+        headers=admin_headers,
+        json={
+            "username": "operator",
+            "display_name": "测试操作员",
+            "password": "operator-password",
+        },
+    )
+    assert created.status_code == 200, created.text
+    login = client.post(
+        "/auth/login",
+        json={"username": "operator", "password": "operator-password"},
+    )
+    assert login.status_code == 200, login.text
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}

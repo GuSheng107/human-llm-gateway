@@ -1,7 +1,12 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "human-llm-gateway"
 version = "0.1.0"
 description = "Human-operated IM-backed OpenAI and Anthropic compatible gateway"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi>=0.115,<1",
@@ -12,7 +17,7 @@ dependencies = [
   "cryptography>=44,<46",
   "python-multipart>=0.0.20,<1",
   "openilink-sdk-python",
-  "wechatpy>=1.8.18",
+  "wecom-aibot-sdk>=1.0.6,<2",
   "websockets>=17.1",
   "qrcode>=8.2",
 ]
@@ -31,6 +36,12 @@ asyncio_mode = "auto"
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+"app/api.py" = ["B008"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
 
 [tool.uv.sources]
 openilink-sdk-python = { git = "https://github.com/openilink/openilink-sdk-python.git" }

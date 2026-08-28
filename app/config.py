@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     stream_delay_min_ms: int = 20
     stream_delay_max_ms: int = 90
     allow_plain_human_reply: bool = True
+    binding_code_ttl_seconds: int = 300
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -29,4 +30,3 @@ def get_settings() -> Settings:
     settings = Settings()
     settings.ensure_data_dir()
     return settings
-

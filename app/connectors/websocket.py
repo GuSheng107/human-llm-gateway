@@ -66,6 +66,6 @@ class WebSocketConnector:
             try:
                 await ws.send_text(payload)
                 sent += 1
-            except Exception:
+            except Exception:  # noqa: BLE001 - WebSocket transport boundary
                 await self.unregister(ws)
         return {"accepted": sent > 0, "sent_to": sent}

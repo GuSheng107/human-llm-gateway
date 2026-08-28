@@ -19,10 +19,13 @@ class PseudoStreamer:
             if event.kind.value == "tool_call":
                 yield event
                 continue
-            for index in range(0, len(event.content), self.chunk_size):
-                part = event.content[index:index + self.chunk_size]
-                delay = self.rng.uniform(self.delay_min_ms, self.delay_max_ms) / 1000
-                if delay:
-                    await self.sleep(delay)
+            async for part in self.text_chunks(event.content):
                 yield ParsedEvent(event.kind, part, event.tool_name, event.tool_args_json)
 
+    async def text_chunks(self, text: str) -> AsyncIterator[str]:
+        for index in range(0, len(text), self.chunk_size):
+            part = text[index : index + self.chunk_size]
+            delay = self.rng.uniform(self.delay_min_ms, self.delay_max_ms) / 1000
+            if delay:
+                await self.sleep(delay)
+            yield part

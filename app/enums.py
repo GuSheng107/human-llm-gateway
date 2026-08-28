@@ -2,10 +2,7 @@ from enum import StrEnum
 
 
 class ConnectorPlatform(StrEnum):
-    FAKE = "fake"
-    TELEGRAM = "telegram"
     WECOM = "wecom"
-    WECHAT_SIDECAR = "wechat_sidecar"
     WECHAT_ILINK = "wechat_ilink"
     WEBHOOK = "webhook"
     WEBSOCKET = "websocket"
@@ -15,8 +12,21 @@ class ConnectorPlatform(StrEnum):
 class ConnectorStatus(StrEnum):
     DISABLED = "disabled"
     OFFLINE = "offline"
+    CONNECTING = "connecting"
     ONLINE = "online"
     ERROR = "error"
+
+
+class BindingStatus(StrEnum):
+    UNBOUND = "unbound"
+    BINDING = "binding"
+    BOUND = "bound"
+    EXPIRED = "expired"
+
+
+class UserRole(StrEnum):
+    ADMIN = "admin"
+    USER = "user"
 
 
 class RouteMode(StrEnum):

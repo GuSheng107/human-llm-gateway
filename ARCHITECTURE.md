@@ -1,158 +1,100 @@
-# Human LLM Gateway 架构设计
+# Human LLM Gateway 架构
 
-> V1 状态：架构已确认，进入实现阶段。
+## 1. 边界
 
-## 1. 目标与非目标
-
-### 目标
-
-- 对外兼容 OpenAI Chat Completions、Anthropic Messages，以及 JSON/SSE。
-- 请求可路由到人工 IM、真实 LLM，或人工超时后的真实 LLM。
-- 真人在 IM 中发送一段 DSL 文本，由系统解析为 reasoning、tool_call、final 事件并模拟流式输出。
-- 后台配置 API Key、真人、IM 连接、LLM 供应商、模型路由、超时和伪流式策略。
-- 管理员可在任务详情页直接发送人工回复；网页回复与 IM 回复共用同一个 DSL、状态机和幂等规则。
-- 支持多组 `API Key + 真人 + IM 账号/连接`，每组相互隔离。
-
-### 非目标
-
-- V1 不引入 PostgreSQL、Redis、分布式队列或多节点高可用。
-- V1 不宣称个人微信已实现；个人微信只保留 Windows Sidecar 契约。
-- 不复制 cc-connect、OpenClaw、Koishi、NoneBot、Wechaty 或 AstrBot 的业务代码。
-- reasoning 是人工提供的展示轨迹，不声称是模型内部思维。
-
-## 2. 技术栈与部署
-
-- 核心：Python 3.12、FastAPI、Pydantic v2、SQLAlchemy 2、SQLite、asyncio。
-- 管理台：React、TypeScript、Vite；生产环境由核心服务提供静态文件。
-- IM：统一 Connector 接口；Telegram 使用 Python SDK，企业微信使用官方 Python SDK/协议；个人微信未来通过独立 Sidecar。
-- 真实 LLM：统一 `LLMAdapter`；供应商配置保存于数据库，支持 OpenAI-compatible Chat Completions 和 Anthropic Messages。模型目录由管理员显式同步上游 `/models` 获取，不在核心中写死版本号。
-
-```mermaid
-flowchart LR
-  Client[OpenAI/Anthropic Client] --> API[FastAPI Gateway]
-  Admin[React Admin] --> API
-  API --> Auth[API Key/Auth]
-  Auth --> Router[Key Route]
-  Router --> Task[Task + DSL Service]
-  Task --> Bus[asyncio Event Bus]
-  Bus --> TG[Telegram Connector]
-  Bus --> WC[WeCom Connector]
-  Bus -. future .-> WX[WeChat Sidecar]
-  Router --> LLM[LLM Adapter]
-  API --> DB[(SQLite)]
-  Task --> DB
-```
-
-V1 是单 Python 进程：API、任务调度、Connector Manager 和 LLM Adapter 在同一进程；连接器可在 V2 拆为独立进程，不改变核心契约。
-
-## 3. 分层边界
-
-1. **协议层**：解析 OpenAI/Anthropic 请求，生成 JSON/SSE；不得包含 IM SDK 逻辑。
-2. **鉴权与路由层**：校验 Key，读取唯一绑定关系，决定 human/llm/fallback。
-3. **任务层**：创建任务、关联会话、状态迁移、超时、取消、幂等。
-4. **人工 DSL 层**：把完整 IM 文本解析为有序事件，并验证命令和 JSON 参数。
-5. **渲染层**：将事件按 chunk 策略和随机延迟变为协议事件；测试可禁用睡眠并注入固定随机源。
-6. **连接器层**：只负责平台收发、连接状态和平台消息归一化。
-7. **配置/持久化层**：SQLAlchemy Repository；所有环境值从 Settings 读取。
-8. **网页人工台**：管理员任务列表/详情和回复入口，回复源标记为 `web`，按任务所属 Key 校验权限。
-
-## 4. 绑定规则与实体
-
-核心约束：
-
-- `ApiKey 1:1 HumanOperator`。
-- `ApiKey 1:1 ImConnection`。
-- 可存在很多 ApiKey、真人和 IM 连接；不同 Key 的任务、会话、状态互不可见。
-- 同一个 Key 不进入多人抢答池；收到非绑定真人消息必须拒绝或忽略并审计。
-- V1 默认一个 IM 连接实例只服务一个 Key，避免多个 Key 在同一聊天窗口串线；未来可显式支持共享连接。
-- `LLMProvider 1:N ModelRoute`；模型供应商可被多个路由引用，Key 只引用路由。路由同时保存对外模型名和后台指定的 `upstream_model`；客户端请求体里的 `model` 永远不参与上游选择。
-
-主要表：`api_keys`、`human_operators`、`im_connections`、`llm_providers`、`model_routes`、`requests`、`request_events`、`conversations`、`system_settings`、`audit_logs`。
-
-## 5. 请求状态机
-
-```mermaid
-stateDiagram-v2
-  [*] --> received
-  received --> authenticated: Key valid
-  received --> failed: invalid request/key
-  authenticated --> routed
-  routed --> human_waiting: human/fallback
-  routed --> llm_streaming: llm
-  human_waiting --> tool_pending: /tool parsed
-  tool_pending --> human_waiting: continue
-  human_waiting --> pseudo_streaming: /reply + /done
-  human_waiting --> timeout: deadline
-  timeout --> llm_streaming: fallback route
-  pseudo_streaming --> completed
-  llm_streaming --> completed
-  llm_streaming --> failed
-  human_waiting --> cancelled: client cancel
-  pseudo_streaming --> cancelled: client disconnect
-```
-
-终态为 `completed`、`timeout`、`cancelled`、`failed`。状态迁移必须带版本号，重复 IM 消息使用 `external_message_id` 幂等。
-
-## 6. 人工 DSL
+系统是单进程 FastAPI 应用，包含协议适配、任务状态、IM 连接器、真实 LLM 适配和 SQLite 持久化。React 管理台构建后由同一进程托管。
 
 ```text
-/think
-先判断问题，再调用天气工具。
-/tool get_weather {"city":"北京","unit":"c"}
-/reply
-北京今天晴，最高 25°C。
-/done
+OpenAI / Anthropic client
+          |
+     protocol layer
+          |
+  API key + model route
+          |
+       task service -------- real LLM adapter
+          |
+   inbound processor
+          |
+ connector registry/manager
+    |      |      |      |
+ iLink  WeCom  Webhook  WS/HTTP
 ```
 
-- `/think` 和 `/reply` 支持多行，内容直到下一个命令。
-- `/tool <name> <JSON>` 产生模拟 `tool_call`，V1 不执行真实工具。
-- `/done` 结束解析并开始伪流式；缺失 `/done` 继续等待或超时。
-- 无命令纯文本可按配置作为快捷 `/reply`。
-- 命令错误、JSON 错误、顺序错误要向人工回执，并保留失败审计。
+项目只支持当前模型直接创建的新数据库，不包含表结构迁移或旧数据兼容分支。
 
-网页回复使用 `POST /admin/tasks/{task_id}/reply`，请求体为完整 DSL 文本；它不绕过
-Connector，也不创建新的 Key，服务端会写入同样的 `RequestEvent`，并将 `source=web`。
+## 2. 分层
 
-## 7. Connector 契约
+- `app/protocols/`：OpenAI Chat、OpenAI Responses、Anthropic Messages 的 JSON/SSE 渲染。
+- `app/services.py`：任务创建、等待、人工回复解析、真实 LLM 回退和终态更新。
+- `app/inbound.py`：所有 IM 消息的绑定校验、精确任务选择和全局幂等。
+- `app/im_connections.py`：用户 Bot 生命周期和一次性绑定流程。
+- `app/connectors/registry.py`：平台元数据、配置字段、能力和 Factory 注册。
+- `app/connectors/manager.py`：连接实例生命周期、状态持久化和统一投递。
+- `app/connection_config.py`：IM 凭据整体加密和严格解密。
+- `app/dblog.py`：标准化运行日志写入 `app_logs`，存储失败时输出结构化 stderr。
+- `app/models.py`：当前数据库的唯一结构定义。
+- `app/model_catalog.py`：公开模型目录的默认种子常量与幂等种子函数；运行时真源是 `public_models` 表。
 
-进程内接口：
+## 3. 身份与所有权
 
-```python
-class Connector(Protocol):
-    async def start(self, config: Mapping[str, Any]) -> None: ...
-    async def stop(self) -> None: ...
-    async def status(self) -> ConnectorStatus: ...
-    async def health(self) -> HealthResult: ...
-    async def send_task(self, task: OutboundTask) -> DeliveryResult: ...
-    async def handle_inbound(self, message: InboundMessage) -> None: ...
+`AdminUser` 同时表示管理员和普通用户，角色由 `UserRole` 区分。每个 `IMConnection` 必须有非空 `owner_id`：
+
+- 普通用户只能列出和管理自己的连接。
+- 管理员可以列出、检查、启动、停止和删除全部连接。
+- 管理员不能创建 Bot、生成绑定码或读取扫码登录状态。
+- 一次性绑定码只保存哈希；成功后记录平台 userid 和 conversation id。
+- 新回复必须来自连接当前绑定的 userid。
+
+API Key 绑定一个 `HumanOperator`、一个用户 Bot 和一个 `ModelRoute`。管理员负责建立 API 路由，Bot 所有权仍属于普通用户。
+
+## 4. 进站消息
+
+所有平台归一化为 `InboundMessage`：
+
+```text
+connector_id
+sender_id
+conversation_id
+external_message_id
+reply_to_task_id
+text
 ```
 
-`InboundMessage` 至少含 `connector_id`、`account_id`、`sender_id`、`conversation_id`、`external_message_id`、`text`、`received_at`。核心通过 `connector_id + sender_id` 校验 Key 绑定。
+处理顺序固定为：连接存在检查、发送者存在检查、幂等占位、绑定命令、绑定身份校验、任务定位、DSL 解析与事件持久化。
 
-## 8. 未来 Sidecar 契约
+没有显式 task id 时，仅在恰好一个任务等待时自动选择。多个任务等待时不猜测最新任务，而是要求用户发送 `/task <任务ID>`。
 
-- 上行：`POST /internal/connectors/{id}/events`，事件带 `event_id`、签名、时间戳、连接器 ID。
-- 下行：`GET/WS /internal/connectors/{id}/commands`，命令包含 `task_id`、目标会话、文本和幂等 ID。
-- Sidecar 只拿到自身连接配置，不拿 API Key 或其它连接器的密钥。
-- 传输失败采用幂等重试；核心以数据库状态为准，不以网络响应直接判定人工已回复。
+## 5. 连接器扩展
 
-## 9. 安全与配置
+`ConnectorRegistry` 是平台唯一注册入口。定义包含：
 
-- API Key 创建时明文只展示一次，数据库只存 hash 和 prefix。
-- IM/LLM 密钥使用主密钥加密或安全引用；日志、错误和后台列表全部脱敏。
-- 管理后台首期单管理员；密码使用强哈希，登录限速，配置修改写审计。
-- 请求、人工内容和 reasoning 的留存策略可配置；默认不记录完整密钥。
-- 所有超时、延迟、chunk 大小、端口和 URL 使用 Settings/数据库配置，不散落硬编码。
+- 平台枚举和展示信息。
+- 面向前端的配置字段。
+- 能力集合，如 login、binding、cursor、ack。
+- 构造连接实例的 Factory。
 
-## 10. 关键取舍与演进
+新增飞书或钉钉时实现 `Connector` 契约并注册 `ConnectorDefinition`。Manager 不包含平台 `if/elif`。
 
-- 先用 SQLite + asyncio 降低部署复杂度；Repository 和事件接口为 V2 PostgreSQL/Redis 保留边界。
-- 业务核心自研；Python/TypeScript 技术栈匹配的 SDK 可依赖，Go/Node 网关仅作为 Sidecar 或参考。
-- V2 可加入独立 Worker、Redis Stream、多租户、共享 IM 连接、更多平台、真实 tool 执行和任务恢复。
+企业微信使用 `wecom-aibot-sdk.WSClient` 长连接，不实现旧式企业应用 HTTP 回调。自定义 HTTP 轮询持久化 cursor，并在成功处理后向 `ack_url` 提交消息 id。
 
-## 11. 模型目录与管理员权威路由
+## 6. 协议输出
 
-- `GET /v1/models` 只返回当前 API Key 所属路由发布的对外模型名。
-- 客户端可以传入任意兼容 SDK 要求的 `model` 字符串；网关不按它切换模型，实际请求始终使用路由的 `upstream_model`。
-- 管理员可调用 `POST /admin/providers/{id}/models/sync`，显式从已配置供应商的 `/models` 拉取目录并保存；未配置凭据或网络不可用时不会自动探测，也不会在启动时发出请求。
-- 供应商支持 `openai_compatible` 和 `anthropic` 协议；因此 OpenAI、Claude、Kimi、MiniMax、DeepSeek、Qwen 等只要提供相应兼容 API 地址和凭据，即可通过后台配置，不依赖写死模型版本。
+人工在一条消息中完成 reasoning、tool call 和 final。工具不执行、不等待：
+
+- Chat Completions 输出 `reasoning_content`、`tool_calls` 和 `content`。
+- Responses 输出 reasoning、function_call 和 message output item。
+- Anthropic 输出 thinking、tool_use 和 text content block。
+
+非流式请求一次返回完整结构。流式请求在完整回复落库后按 `STREAM_CHUNK_SIZE` 和延迟范围生成协议事件，因此是可控的伪流式，不是假装实时执行工具。
+
+## 7. 持久化与日志
+
+SQLite 是当前唯一运行数据库。启动调用 `create_all`，随后按环境变量播种管理员，并对 `public_models` 执行一次性幂等默认种子（以 `system_settings` 标记完成；管理员清空目录后重启不会补种）。`GET /v1/models` 只读 `public_models`；`llm_models` 是上游供应商同步目录，仅用于管理员挑选上游模型，不直接对外公开。IM 配置和 LLM Key 使用 `APP_SECRET` 派生的 Fernet Key 加密；API Key 与绑定码只存哈希。
+
+`AuditLog` 记录业务动作，`AppLog` 记录运行故障。连接器、网络和 SDK 异常必须更新连接状态并进入统一日志，不允许静默吞错。
+
+## 8. 前端范围
+
+菜单顺序固定为：控制台、连接 IM、API 管理、LLM 管理、网页回复端、系统设置。系统设置下包含基础设置和用户管理。
+
+本轮仅“连接 IM”是完整页面。默认仍进入控制台，其余页面显示未开放占位。连接页采用浅色、紧凑的若依后台风格；管理员视图与普通用户视图共享列表，但权限操作不同。

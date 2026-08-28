@@ -1,25 +1,23 @@
 from .base import Connector, InboundMessage, OutboundTask
-from .fake import FakeConnector
 from .http_poll import HttpPollConnector
 from .ilink import WeChatILinkConnector
 from .manager import ConnectorManager
-from .sidecar import WeChatSidecarConnector
-from .telegram import TelegramConnector
+from .registry import ConnectorDefinition, ConnectorRegistry, connector_registry
 from .webhook import WebhookConnector
 from .websocket import WebSocketConnector
 from .wecom import WeComConnector
 
 __all__ = [
     "Connector",
+    "ConnectorDefinition",
+    "ConnectorManager",
+    "ConnectorRegistry",
+    "HttpPollConnector",
     "InboundMessage",
     "OutboundTask",
-    "ConnectorManager",
-    "FakeConnector",
-    "HttpPollConnector",
     "WeChatILinkConnector",
-    "WeChatSidecarConnector",
-    "TelegramConnector",
-    "WebhookConnector",
-    "WebSocketConnector",
     "WeComConnector",
+    "WebSocketConnector",
+    "WebhookConnector",
+    "connector_registry",
 ]
