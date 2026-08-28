@@ -53,6 +53,7 @@ Human LLM Gateway 是一个对外兼容真实 LLM API、对内允许用户通过
 - 最少 15 个 Unicode code points，最大支持至少 128；不强制大小写、数字或特殊字符组合（遵循 NIST SP 800-63B）。
 - 输入按 NFC 归一化后哈希；允许空格和 Unicode 字符。
 - 拒绝常见弱密码、与用户名相同或近似、明显部署默认词的 blocklist。
+- 存储使用 Argon2id（`m=19456 KiB`、`t=2`、`p=1`）的 PHC 编码字符串；登录成功且参数低于当前策略时同流程重新哈希。不使用 bcrypt（72 字节截断与“最长至少 128 code points”冲突），不保留 M0 的 scrypt 实现。
 - 初始化环境变量 `ADMIN_PASSWORD` 不满足策略时启动失败，不得降级为警告后继续。
 
 `must_change_password=true` 的用户（环境变量初始化的首个管理员、使用系统生成临时密码的 CLI 创建管理员、被管理员重置为临时密码的用户）登录成功后获得受限会话：

@@ -143,7 +143,9 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 ### M2-B：Repository、Service 与安全基础
 
 - [ ] 建立所有权查询、原子条件更新和事务边界，Router 不再直接操作 SQL。
-- [ ] 密码使用安全哈希（≥15 code points、NFC、blocklist）；邀请码和 API Key 只存哈希；LLM/IM Secret 加密保存。
+- [ ] 密码使用 Argon2id（`m=19456 KiB`、`t=2`、`p=1`，PHC 编码字符串），登录成功且参数低于策略时同流程重哈希；不保留 M0 的 scrypt 实现，不使用 bcrypt。邀请码和 API Key 只存哈希。
+- [ ] LLM/IM Secret 按 DATABASE §2.4 契约加密保存：`hlg1.<key_version>.<nonce>.<ciphertext||tag>` 文本 envelope、按用途绑定的 AAD、envelope key_version 与 `*_key_version` 列一致校验。
+- [ ] 在 `pyproject.toml` 引入 Argon2id 实现（如 `argon2-cffi`）并按 `uv.lock` 锁定；HKDF 与 AES-GCM 沿用 `cryptography`。
 - [ ] 建立统一 ReplyDraft、任务状态机、首个回复、fallback 声明和名额释放领域规则。
 - [ ] 建立稳定审计 action、结构化日志和敏感字段过滤。
 - [ ] 建立管理员初始化与受控管理员 CLI（`python -m app.cli admin create`，`getpass` 双次输入或 `--password-stdin --yes` / `--generate-password --yes`），禁止后台 API 提升管理员并保护最后一个有效管理员。

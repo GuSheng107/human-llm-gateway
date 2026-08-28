@@ -162,7 +162,8 @@ Fake Model、LLM 配置和 API Key 权限必须严格区分：
 - 每个用户资源查询都显式包含所有权过滤；管理员能力也必须单独授权。
 - 管理员不能替用户回复或取得用户 Secret。
 - 禁用用户必须撤销会话和 Key、终止活动任务并幂等释放名额，不能只更新 `is_active`。
-- 密码使用安全哈希；邀请码和 API Key 只存哈希；LLM/IM Secret 认证加密。
+- 密码使用 Argon2id（`m=19456 KiB`、`t=2`、`p=1`，PHC 编码字符串）；邀请码和 API Key 只存哈希；LLM/IM Secret 按 DATABASE §2.4 的加密契约保存（文本 envelope + 按用途绑定 AAD）。
+- Secret 明文永不通过 API 返回给管理员或其他用户；只有受信任的内部 Service 与 Connector Runtime 可为执行已授权动作临时解密。
 - 日志、错误、审计和测试快照不能包含完整 Key、Authorization、Cookie、密码、Token、二维码或自定义 Header 值。
 - 原始 LLM JSON 完整落库，但认证 Header 必须过滤。
 - 同协议未知字段默认透传；跨协议实现必须逐项遵循 API 契约矩阵，不允许静默忽略、猜测转换或塞入 metadata。

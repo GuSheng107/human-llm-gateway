@@ -60,9 +60,29 @@
 1. **主密钥格式**：`APP_SECRET` 是 32 字节 CSPRNG 随机值的 base64url 表示（无填充，43 个字符）。启动时校验：缺失、解码后不是 32 字节，或仍为 `.env.example` 默认值（`replace-with-a-long-random-secret`）时直接启动失败，不降级为警告。
 2. **密钥派生**：使用 HKDF-SHA256 从 APP_SECRET 的 32 字节原始值派生当前版本加密密钥；HKDF info 固定为 `human-llm-gateway/secret-encryption/v1`，salt 为空。
 3. **加密算法**：AES-256-GCM。每次加密生成全新 CSPRNG 96-bit nonce，同一 nonce 绝不复用。
-4. **envelope 格式**：`version(1) + key_version + nonce(12B) + ciphertext||tag`，整体 base64url 编码后存入 `*_ciphertext` 字段；`version` 是 envelope 结构版本，`key_version` 对应 `encryption_key_version`/`config_key_version` 列。
-5. **key version**：当前固定为 1。M10 才利用该字段实现 key ring 与主密钥轮换；解密时遇到未知 `key_version` 按配置错误处理，不得静默跳过。
-6. **适用范围**：解密能力只属于资源所有者路径；管理员接口无法回读任何 Secret。
+4. **AAD（附加认证数据）**：固定为 `human-llm-gateway/<purpose>/v1`，按用途取值：
+   - LLM Secret：`human-llm-gateway/llm-secret/v1`
+   - LLM 自定义 Header：`human-llm-gateway/llm-headers/v1`
+   - IM 连接配置：`human-llm-gateway/im-config/v1`
+   - 加密自检 sentinel：`human-llm-gateway/sentinel/v1`
+
+   AAD 绑定用途而不绑定 row ID：一个合法的 llm_secret 密文被复制到 im_config 字段后必须解密失败，同时不引入行级绑定带来的实现复杂度。
+5. **envelope 格式**：文本格式，不做二进制拼接，避免字段宽度歧义：
+
+   ```text
+   hlg1.<key_version>.<nonce_b64url>.<ciphertext_and_tag_b64url>
+   ```
+
+   例如：
+
+   ```text
+   hlg1.1.k9T4xQ.AB3pZ…
+   ```
+
+   规则：`hlg1` 是 envelope 结构版本（固定前缀，非 `hlg1` 视为非法）；`<key_version>` 是十进制整数（当前为 1）；`<nonce_b64url>` 必须解码为 12 字节；`<ciphertext_and_tag_b64url>` 包含 AES-GCM 密文及其 16 字节认证 tag。四段之间以 `.` 分隔，格式不合法时按数据完整性错误处理，不得尝试猜测解析。
+6. **key version**：当前固定为 1。M10 才利用该字段实现 key ring 与主密钥轮换；解密时遇到未知 `key_version` 按配置错误处理，不得静默跳过。
+7. **列与 envelope 的一致性**：`encryption_key_version` / `config_key_version` 列必须与对应 envelope 中的 `<key_version>` 相同。两者不一致时按数据完整性错误处理（记录错误日志并拒绝该资源），不得自动选择其中一方——否则数据库列与密文会形成两份互相冲突的事实来源。
+8. **解密权限**：Secret 明文永不通过任何 API 返回给管理员或其他用户。只有受信任的内部 Service 与 Connector Runtime 可以为执行已授权业务动作而临时解密（例如启动或 apply 连接需要读取用户 IM 凭据）。管理员触发生命周期治理动作（启动、停止、apply、检查、删除）时，服务端可以在内部使用该 Secret，但任何响应、日志、审计和错误都不得暴露明文或其可推导材料。
 
 ## 3. 身份与访问
 
@@ -73,7 +93,7 @@
 | `id` | integer | PK |
 | `username` | varchar(64) | 非空，唯一；登录标识仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`，写入前 strip 并做 ASCII 小写归一。Unicode 展示名由 `display_name` 承担 |
 | `display_name` | varchar(100) | 非空 |
-| `password_hash` | varchar(255) | 非空，自适应密码哈希 |
+| `password_hash` | varchar(255) | 非空，Argon2id 的 PHC 编码字符串（见下方密码哈希规则） |
 | `must_change_password` | boolean | 非空，默认 false；置 true 时会话受限 |
 | `role` | enum | 非空，默认 `user` |
 | `is_active` | boolean | 非空，默认 true |
@@ -97,6 +117,19 @@
 - 输入按 NFC 归一化后再哈希；允许空格和 Unicode 字符。
 - 拒绝常见弱密码、与用户名相同或近似、以及明显部署默认词的 blocklist。
 - 初始化环境变量 `ADMIN_PASSWORD` 不满足策略时启动失败，不得降级为警告后继续。
+
+密码哈希规则（M2 必须按此实现，不允许保留当前 M0 的 scrypt 参数）：
+
+- **算法固定为 Argon2id**。不使用 bcrypt（常见实现存在 72 字节输入截断，与“最长至少 128 个 code points”的密码策略冲突）；M0 代码使用的 scrypt `n=2**14, r=8, p=1` 低于 OWASP 推荐基线（scrypt 基线为 `N=2**17, r=8, p=1`），M2 直接切换到 Argon2id，不保留旧格式读取。
+- **基线参数**：`m = 19456 KiB`（19 MiB）、`t = 2`、`p = 1`。
+- **存储格式**：Argon2id 的 PHC 编码字符串，自身携带算法、版本和参数，例如：
+
+  ```text
+  $argon2id$v=19$m=19456,t=2,p=1$<salt_b64>$<hash_b64>
+  ```
+
+  `varchar(255)` 足够容纳该格式。验证时按 PHC 字符串中的参数执行，不依赖额外配置列。
+- **参数升级**：未来可以提高 `m`/`t`。登录成功且发现存储的哈希参数低于当前策略时，在同一次认证流程中用已验证的明文重新哈希并更新该行，不要求全库迁移或强制用户改密；参数升级属于服务端行为，不写入审计明文。
 
 `must_change_password` 只属于用户行，不写入 `system_settings`。置位规则：
 
