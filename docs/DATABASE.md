@@ -69,17 +69,21 @@
    AAD 绑定用途而不绑定 row ID：一个合法的 llm_secret 密文被复制到 im_config 字段后必须解密失败，同时不引入行级绑定带来的实现复杂度。
 5. **envelope 格式**：文本格式，不做二进制拼接，避免字段宽度歧义：
 
+   规范形式（占位符表示）：
+
    ```text
    hlg1.<key_version>.<nonce_b64url>.<ciphertext_and_tag_b64url>
    ```
 
-   例如：
+   完全有效的示例（值为占位，结构合规）：
 
    ```text
-   hlg1.1.k9T4xQ.AB3pZ…
+   hlg1.1.Mfn1vOQpJr8x4Z0L.k7Fv2mNqP9xR3sT0yL5wZcQ1oH8jI6aB
    ```
 
-   规则：`hlg1` 是 envelope 结构版本（固定前缀，非 `hlg1` 视为非法）；`<key_version>` 是十进制整数（当前为 1）；`<nonce_b64url>` 必须解码为 12 字节；`<ciphertext_and_tag_b64url>` 包含 AES-GCM 密文及其 16 字节认证 tag。四段之间以 `.` 分隔，格式不合法时按数据完整性错误处理，不得尝试猜测解析。
+   规则：`hlg1` 是 envelope 结构版本（固定前缀，非 `hlg1` 视为非法）；`<key_version>` 是十进制整数（当前为 1）；`<nonce_b64url>` 必须解码为 12 字节；`<ciphertext_and_tag_b64url>` 是 AES-GCM 密文及其 16 字节认证 tag 拼接后的结果。四段之间以 `.` 分隔。
+
+   **Base64 编码规范**：`<nonce_b64url>` 与 `<ciphertext_and_tag_b64url>` 都必须使用 RFC 4648 §5 的 URL-safe Base64，**不带 `=` padding**；存在 `=` padding、混用字符集（标准 base64 的 `+/` 与 URL-safe 的 `-_`）或段长度不符（例如 nonce 段长度不是 16 字符）一律视为格式非法。写入与读出都使用同一规范形式，不得在存储层或解密层做宽容式自动转换——同一条密文只能有一种 wire/storage 表示，避免不同实现写入的 envelope 互相无法识别。格式非法时按数据完整性错误处理（记录日志并拒绝该资源），不得尝试猜测解析。
 6. **key version**：当前固定为 1。M10 才利用该字段实现 key ring 与主密钥轮换；解密时遇到未知 `key_version` 按配置错误处理，不得静默跳过。
 7. **列与 envelope 的一致性**：`encryption_key_version` / `config_key_version` 列必须与对应 envelope 中的 `<key_version>` 相同。两者不一致时按数据完整性错误处理（记录错误日志并拒绝该资源），不得自动选择其中一方——否则数据库列与密文会形成两份互相冲突的事实来源。
 8. **解密权限**：Secret 明文永不通过任何 API 返回给管理员或其他用户。只有受信任的内部 Service 与 Connector Runtime 可以为执行已授权业务动作而临时解密（例如启动或 apply 连接需要读取用户 IM 凭据）。管理员触发生命周期治理动作（启动、停止、apply、检查、删除）时，服务端可以在内部使用该 Secret，但任何响应、日志、审计和错误都不得暴露明文或其可推导材料。
