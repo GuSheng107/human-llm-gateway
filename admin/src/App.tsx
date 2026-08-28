@@ -15,8 +15,8 @@ import type { Capability } from "./types/auth";
 
 function LoadingScreen() {
   return (
-    <main className="grid min-h-screen place-items-center bg-[#f4f6f9]">
-      <span className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-[#409eff]" />
+    <main className="grid min-h-screen place-items-center bg-page">
+      <span className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-primary" />
     </main>
   );
 }
@@ -67,7 +67,7 @@ function PasswordChangeRoute() {
 
 function ForbiddenPage() {
   return (
-    <section className="mx-auto max-w-xl rounded-lg border border-slate-200 bg-white p-8 text-center shadow-sm">
+    <section className="mx-auto max-w-xl rounded-lg border border-slate-200 bg-white p-8 text-center shadow-card">
       <h1 className="text-lg font-semibold text-slate-800">无权访问此页面</h1>
       <p className="mt-2 text-xs leading-5 text-slate-400">该功能仅向系统管理员开放。</p>
     </section>

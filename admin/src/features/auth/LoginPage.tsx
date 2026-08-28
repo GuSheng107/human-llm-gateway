@@ -1,6 +1,8 @@
 import { type FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../../api/client";
+import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { Button } from "../../components/ui/Button";
 import { useAuth } from "./AuthContext";
 
 export function LoginPage() {
@@ -27,47 +29,104 @@ export function LoginPage() {
   };
 
   return (
-    <main className="grid min-h-screen bg-[#f4f6f9] lg:grid-cols-[minmax(420px,46%)_1fr]">
-      <section className="hidden bg-[#263445] px-12 py-14 text-white lg:flex lg:flex-col lg:justify-between">
-        <div className="flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-md bg-[#409eff] font-mono text-base font-bold">H</div>
-          <div>
-            <div className="text-sm font-semibold">Human LLM Gateway</div>
-            <div className="mt-1 text-[10px] uppercase tracking-[.18em] text-slate-400">operator console</div>
+    <main className="relative grid min-h-screen overflow-hidden bg-gradient-to-br from-primary-faint via-page to-white lg:grid-cols-[minmax(440px,44%)_1fr]">
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -left-24 -top-24 h-96 w-96 rounded-full bg-primary/15 blur-3xl"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -bottom-32 -right-16 h-[28rem] w-[28rem] rounded-full bg-sky-200/40 blur-3xl"
+      />
+
+      <section className="relative hidden p-10 lg:flex">
+        <div className="relative flex w-full flex-col justify-between overflow-hidden rounded-2xl border border-white/70 bg-gradient-to-br from-white/80 to-primary-soft/50 p-12 shadow-modal backdrop-blur-xl">
+          <div
+            aria-hidden
+            className="pointer-events-none absolute inset-0 opacity-50"
+            style={{
+              backgroundImage:
+                "radial-gradient(circle, rgba(64,158,255,0.14) 1px, transparent 1px)",
+              backgroundSize: "22px 22px",
+            }}
+          />
+          <div
+            aria-hidden
+            className="pointer-events-none absolute -right-16 -top-16 h-56 w-56 rounded-full bg-primary/20 blur-3xl"
+          />
+
+          <div className="relative">
+            <div className="flex items-center gap-3">
+              <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-light font-mono text-lg font-bold text-white shadow-card">
+                H
+              </div>
+              <div>
+                <div className="text-base font-semibold text-slate-800">Human Gateway</div>
+                <div className="mt-0.5 text-caption uppercase tracking-widest text-slate-400">
+                  operator console
+                </div>
+              </div>
+            </div>
+            <h1 className="mt-12 text-3xl font-semibold leading-tight text-slate-900">
+              真人驱动的模型兼容网关
+            </h1>
+          </div>
+
+          <div className="relative text-caption tracking-wide text-slate-400">
+            Human Gateway Administration
           </div>
         </div>
-        <div className="max-w-md">
-          <div className="mb-5 h-1 w-10 rounded-full bg-[#409eff]" />
-          <h1 className="text-3xl font-semibold leading-tight">真人驱动的模型兼容网关</h1>
-          <p className="mt-4 text-sm leading-7 text-slate-400">在自己的 IM Bot 中完成身份绑定，并把完整回复转换为兼容的模型响应。</p>
-        </div>
-        <div className="text-[11px] text-slate-500">Human Gateway Administration</div>
       </section>
 
-      <section className="flex items-center justify-center px-5 py-12">
-        <div className="w-full max-w-[380px] rounded-lg border border-slate-200 bg-white p-8 shadow-[0_12px_40px_rgba(15,23,42,.08)]">
-          <div className="mb-7 lg:hidden">
-            <div className="inline-grid h-10 w-10 place-items-center rounded-md bg-[#409eff] font-mono font-bold text-white">H</div>
+      <section className="relative flex items-center justify-center px-5 py-12">
+        <div className="w-full max-w-[400px] animate-slide-up">
+          <div className="mb-8 lg:hidden">
+            <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-light font-mono font-bold text-white shadow-card">
+              H
+            </div>
           </div>
-          <h2 className="text-xl font-semibold text-slate-800">登录管理台</h2>
-          <p className="mt-2 text-xs text-slate-400">管理员与普通用户使用各自账号登录</p>
-          <form onSubmit={submit} className="mt-7 space-y-4">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">账号</span>
-              <input autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} className="field-input" />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">密码</span>
-              <input autoComplete="current-password" required type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="field-input" />
-            </label>
-            {error && <div className="rounded-md border border-red-100 bg-red-50 px-3 py-2.5 text-xs text-red-500">{error}</div>}
-            <button disabled={submitting} className="flex h-10 w-full items-center justify-center rounded-md bg-[#409eff] text-sm font-medium text-white transition hover:bg-[#337ecc] disabled:cursor-not-allowed disabled:opacity-60">
-              {submitting ? "正在登录…" : "登录"}
-            </button>
-          </form>
-          <p className="mt-5 text-center text-xs text-slate-400">
-            持有邀请码？ <Link to="/register" className="text-[#409eff] hover:underline">注册账号</Link>
-          </p>
+
+          <div className="rounded-2xl border border-white/70 bg-white/80 p-8 shadow-modal backdrop-blur-xl">
+            <h2 className="text-xl font-semibold text-slate-800">登录管理台</h2>
+            <form onSubmit={submit} className="mt-7 space-y-4">
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">账号</span>
+                <input
+                  autoComplete="username"
+                  required
+                  value={username}
+                  onChange={(event) => setUsername(event.target.value)}
+                  className="field-input"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">密码</span>
+                <input
+                  autoComplete="current-password"
+                  required
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  className="field-input"
+                />
+              </label>
+              {error && <ErrorBanner message={error} />}
+              <Button
+                type="submit"
+                size="lg"
+                loading={submitting}
+                className="h-11 w-full bg-gradient-to-r from-primary to-primary-light hover:brightness-105"
+              >
+                {submitting ? "正在登录…" : "登录"}
+              </Button>
+            </form>
+            <p className="mt-6 text-center text-xs text-slate-400">
+              持有邀请码？{" "}
+              <Link to="/register" className="font-medium text-primary hover:underline">
+                注册账号
+              </Link>
+            </p>
+          </div>
         </div>
       </section>
     </main>

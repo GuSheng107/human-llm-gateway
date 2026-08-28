@@ -10,10 +10,10 @@ interface Props {
 export function Pagination({ page, pageSize, total, onChange }: Props) {
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   if (totalPages <= 1) {
-    return <span className="text-[10px] text-slate-400">共 {total} 条</span>;
+    return <span className="text-micro text-slate-400">共 {total} 条</span>;
   }
   return (
-    <div className="flex items-center gap-2 text-[10px] text-slate-400">
+    <div className="flex items-center gap-2 text-micro text-slate-400">
       <span>共 {total} 条 · 第 {page}/{totalPages} 页</span>
       <div className="flex gap-1">
         <button

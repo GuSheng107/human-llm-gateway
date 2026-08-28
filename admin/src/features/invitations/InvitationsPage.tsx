@@ -7,10 +7,14 @@ import {
   updateInvitation,
   type InvitationPayload,
 } from "../../api/invitations";
+import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
+import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
+import { PageHeader } from "../../components/layout/PageHeader";
+import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type { Invitation, InvitationCreated } from "../../types/governance";
 import { InvitationFormModal } from "./InvitationFormModal";
@@ -81,43 +85,110 @@ export function InvitationsPage() {
 
   return (
     <div className="space-y-5">
-      <section className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white px-5 py-5 shadow-sm sm:flex-row sm:items-center sm:justify-between">
-        <div><h1 className="text-lg font-semibold text-slate-800">邀请码管理</h1><p className="mt-1 text-xs text-slate-400">签发、更新和撤销用户注册邀请码。</p></div>
-        <button onClick={() => setEditing(null)} className="inline-flex items-center justify-center gap-2 rounded-md bg-[#409eff] px-4 py-2 text-xs font-medium text-white"><Icon name="plus" className="h-4 w-4" />创建邀请码</button>
-      </section>
+      <PageHeader
+        title="邀请码管理"
+        actions={
+          <Button onClick={() => setEditing(null)}>
+            <Icon name="plus" className="h-4 w-4" />
+            创建邀请码
+          </Button>
+        }
+      />
 
-      <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <Card>
         <form onSubmit={submitSearch} className="flex gap-2 border-b border-slate-100 p-4">
-          <input value={input} onChange={(event) => setInput(event.target.value)} className="field-input min-w-0 flex-1 sm:max-w-sm" placeholder="搜索前缀或备注" />
-          <button className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md border border-slate-200 px-4 text-xs text-slate-600"><Icon name="search" className="h-3.5 w-3.5" />搜索</button>
+          <input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            className="field-input min-w-0 flex-1 sm:max-w-sm"
+            placeholder="搜索前缀或备注"
+          />
+          <Button variant="ghost" type="submit">
+            <Icon name="search" className="h-3.5 w-3.5" />
+            搜索
+          </Button>
         </form>
-        {error && <div className="m-4 rounded-md bg-red-50 px-4 py-3 text-xs text-red-600">{error}</div>}
+        {error && <ErrorBanner message={error} className="m-4" />}
         <div className="overflow-x-auto">
           <table className="min-w-[760px] w-full text-left text-xs">
-            <thead className="bg-slate-50 text-slate-400"><tr><th className="px-4 py-3 font-medium">前缀</th><th className="px-4 py-3 font-medium">备注</th><th className="px-4 py-3 font-medium">状态</th><th className="px-4 py-3 font-medium">使用次数</th><th className="px-4 py-3 font-medium">过期时间</th><th className="sticky right-0 z-10 bg-slate-50 px-4 py-3 text-right font-medium">操作</th></tr></thead>
+            <thead className="bg-slate-50 text-slate-400">
+              <tr>
+                <th className="px-4 py-3 font-medium">前缀</th>
+                <th className="px-4 py-3 font-medium">备注</th>
+                <th className="px-4 py-3 font-medium">状态</th>
+                <th className="px-4 py-3 font-medium">使用次数</th>
+                <th className="px-4 py-3 font-medium">过期时间</th>
+                <th className="sticky right-0 z-10 bg-slate-50 px-4 py-3 text-right font-medium">
+                  操作
+                </th>
+              </tr>
+            </thead>
             <tbody className="divide-y divide-slate-100">
               {items.map((item) => (
                 <tr key={item.id} className="group hover:bg-slate-50/60">
                   <td className="px-4 py-3 font-mono text-slate-700">{item.code_prefix}…</td>
                   <td className="max-w-xs truncate px-4 py-3 text-slate-500">{item.note || "-"}</td>
-                  <td className="px-4 py-3"><StatusBadge status={item.status} /></td>
-                  <td className="px-4 py-3 text-slate-500">{item.used_count} / {item.max_uses}</td>
+                  <td className="px-4 py-3">
+                    <StatusBadge status={item.status} />
+                  </td>
+                  <td className="px-4 py-3 text-slate-500">
+                    {item.used_count} / {item.max_uses}
+                  </td>
                   <td className="px-4 py-3 text-slate-500">{formatDate(item.expires_at)}</td>
                   <td className="sticky right-0 space-x-3 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
-                    <button onClick={() => setEditing(item)} className="text-[#409eff]">编辑</button>
-                    {item.status !== "revoked" ? <button onClick={() => void revoke(item)} className="text-red-500">撤销</button> : <button onClick={() => void remove(item)} className="text-red-500">删除</button>}
+                    <button onClick={() => setEditing(item)} className="text-primary">
+                      编辑
+                    </button>
+                    {item.status !== "revoked" ? (
+                      <button onClick={() => void revoke(item)} className="text-red-500">
+                        撤销
+                      </button>
+                    ) : (
+                      <button onClick={() => void remove(item)} className="text-red-500">
+                        删除
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
-              {!loading && items.length === 0 && <tr><td colSpan={6} className="px-4 py-12 text-center text-slate-400">暂无邀请码</td></tr>}
+              {!loading && items.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-4 py-12 text-center text-slate-400">
+                    暂无邀请码
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
-        <div className="flex justify-end border-t border-slate-100 px-4 py-3"><Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} /></div>
-      </section>
+        <div className="flex justify-end border-t border-slate-100 px-4 py-3">
+          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+        </div>
+      </Card>
 
-      {editing !== undefined && <InvitationFormModal invitation={editing ?? undefined} onClose={() => setEditing(undefined)} onSubmit={save} />}
-      {created && <Modal title="邀请码已创建" description="明文关闭后无法再次查看，请立即复制并安全交付。" onClose={() => setCreated(null)}><div className="space-y-4 p-6"><div className="break-all rounded-md border border-blue-100 bg-blue-50 p-4 font-mono text-sm text-blue-700">{created.code}</div><div className="flex justify-end"><button onClick={() => { void navigator.clipboard.writeText(created.code); notify("已复制邀请码"); }} className="inline-flex items-center gap-2 rounded-md bg-[#409eff] px-4 py-2 text-xs text-white"><Icon name="copy" className="h-4 w-4" />复制</button></div></div></Modal>}
+      {editing !== undefined && (
+        <InvitationFormModal invitation={editing ?? undefined} onClose={() => setEditing(undefined)} onSubmit={save} />
+      )}
+      {created && (
+        <Modal title="邀请码已创建" description="关闭后不再显示，请立即复制。" onClose={() => setCreated(null)}>
+          <div className="space-y-4 p-6">
+            <div className="break-all rounded-md border border-blue-100 bg-blue-50 p-4 font-mono text-sm text-blue-700">
+              {created.code}
+            </div>
+            <div className="flex justify-end">
+              <Button
+                onClick={() => {
+                  void navigator.clipboard.writeText(created.code);
+                  notify("已复制邀请码");
+                }}
+              >
+                <Icon name="copy" className="h-4 w-4" />
+                复制
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

@@ -3,6 +3,90 @@
 @theme {
   --font-sans: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
   --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+
+  /* 字号微档 */
+  --text-micro: 10px;
+  --text-caption: 11px;
+
+  /* 品牌色 */
+  --color-primary: #409eff;
+  --color-primary-hover: #337ecc;
+  --color-primary-light: #66b1ff;
+  --color-primary-soft: #ecf5ff;
+  --color-primary-ghost: #d9ecff;
+  --color-primary-faint: #f4f9ff;
+  --color-sidebar: #263445;
+  --color-page: #f4f6f9;
+
+  /* 功能语义色 */
+  --color-success: #67c23a;
+  --color-warning: #e6a23c;
+  --color-danger: #f56c6c;
+  --color-info: #909399;
+
+  /* 圆角 */
+  --radius-md: 4px;
+  --radius-lg: 8px;
+
+  /* 阴影分层 */
+  --shadow-sm: 0 1px 2px 0 rgb(15 23 42 / 0.04);
+  --shadow-card: 0 1px 3px 0 rgb(15 23 42 / 0.06), 0 1px 2px -1px rgb(15 23 42 / 0.05);
+  --shadow-modal: 0 12px 40px rgb(15 23 42 / 0.12);
+  --shadow-drawer: -8px 0 24px rgb(15 23 42 / 0.1);
+
+  /* z-index 分层 */
+  --z-30: 30;
+  --z-40: 40;
+  --z-50: 50;
+  --z-60: 60;
+
+  /* 动效 */
+  --animate-fade-in: fade-in 0.2s ease-out both;
+  --animate-scale-in: scale-in 0.16s ease-out both;
+  --animate-slide-in-right: slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-up: slide-up 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes slide-in-right {
+    from {
+      opacity: 0.4;
+      transform: translateX(24px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 }
 
 @layer base {
@@ -12,14 +96,14 @@
 
   html {
     color-scheme: light;
-    background: #f4f6f9;
+    background: var(--color-page);
   }
 
   body {
     margin: 0;
     min-width: 320px;
     min-height: 100vh;
-    background: #f4f6f9;
+    background: var(--color-page);
     color: #475569;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
@@ -43,7 +127,7 @@
   }
 
   ::selection {
-    background: #d9ecff;
+    background: var(--color-primary-ghost);
     color: #1e3a5f;
   }
 
@@ -63,11 +147,11 @@
     width: 100%;
     min-height: 40px;
     border: 1px solid #dfe4ed;
-    border-radius: 5px;
+    border-radius: var(--radius-md);
     background: #fff;
     padding: 9px 11px;
     color: #334155;
-    font-size: 12px;
+    font-size: 13px;
     outline: none;
     transition: border-color 150ms, box-shadow 150ms;
   }
@@ -77,7 +161,13 @@
   }
 
   .field-input:focus {
-    border-color: #409eff;
-    box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.1);
+    border-color: var(--color-primary);
+    box-shadow: 0 0 0 3px rgb(64 158 255 / 0.14);
+  }
+
+  .field-input:disabled {
+    background: #f8fafc;
+    color: #94a3b8;
+    cursor: not-allowed;
   }
 }

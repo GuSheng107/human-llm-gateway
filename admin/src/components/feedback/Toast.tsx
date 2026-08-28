@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 let globalNotify: ((message: string) => void) | null = null;
 
@@ -25,7 +25,7 @@ export function ToastHost() {
   return (
     <div
       role="status"
-      className="fixed bottom-5 right-5 z-[70] max-w-sm rounded-md bg-slate-800 px-4 py-3 text-xs text-white shadow-xl"
+      className="fixed bottom-5 right-5 z-60 max-w-sm rounded-md bg-slate-800 px-4 py-3 text-xs text-white shadow-modal animate-slide-up"
     >
       {notice}
     </div>
