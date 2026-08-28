@@ -13,19 +13,13 @@ from __future__ import annotations
 
 import argparse
 import getpass
-import secrets
-import string
 import sys
 
 from .core.config import get_settings
 from .core.db import SessionLocal
+from .core.security import generate_temporary_password
 from .services.bootstrap import BootstrapService
 from .services.user_service import UserService
-
-
-def _generate_password(length: int = 20) -> str:
-    alphabet = string.ascii_letters + string.digits
-    return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -57,7 +51,7 @@ def _read_password(args: argparse.Namespace) -> tuple[str, bool]:
         if not args.yes:
             print("错误：--generate-password 需要同时指定 --yes", file=sys.stderr)
             sys.exit(2)
-        return _generate_password(), True
+        return generate_temporary_password(), True
     password = getpass.getpass("密码: ")
     confirm = getpass.getpass("再次输入密码: ")
     if password != confirm:
@@ -73,7 +67,8 @@ def main() -> None:
         sys.exit(2)
 
     settings = get_settings()
-    BootstrapService().initialize(SessionLocal(), settings)
+    with SessionLocal() as bootstrap_session:
+        BootstrapService().initialize(bootstrap_session, settings)
 
     password, generated = _read_password(args)
 

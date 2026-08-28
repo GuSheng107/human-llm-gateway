@@ -48,6 +48,12 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+def begin_immediate_if_sqlite(session: Session) -> None:
+    """关键 SQLite 写用例在任何读取前取得写锁，避免并发超卖。"""
+    if session.get_bind().dialect.name == "sqlite" and not session.in_transaction():
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+
+
 def create_schema() -> None:
     """按目标模型创建全部表和索引（不写入种子）。"""
     from ..repositories import models  # noqa: F401  # 确保所有模型已注册

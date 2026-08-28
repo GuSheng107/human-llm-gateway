@@ -136,6 +136,8 @@
 
 `username` 是登录标识，仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`：服务端先 strip 再做 ASCII 小写归一并校验，数据库以普通唯一索引保证唯一；Unicode 名称、中文、Emoji 一律放 `display_name`。
 
+`GET /api/auth/me`、登录和改密响应返回稳定的 `capabilities` 数组，前端菜单和路由不得自行从角色推断权限。M3 能力值为：`account.password.change`、`account.profile.update`、`invitation.manage`、`user.manage`。受限会话只返回 `account.password.change`。
+
 ### 3.1 密码策略
 
 注册、修改密码、管理员重置和 CLI 创建统一适用：
@@ -177,6 +179,8 @@
 | GET | `/api/users/{id}` | 查看用户非敏感详情和资源计数。 |
 | PATCH | `/api/users/{id}` | 修改显示名、角色允许范围内的状态。 |
 | POST | `/api/users/{id}/reset-password` | 生成或设置一次性新密码，不回显旧密码。 |
+
+管理员创建普通用户和重置密码时，`password` 均为可选字段：省略时由服务端生成并只在本次响应返回明文，提交时由管理员安全交付且响应不回显。两种方式都会设置 `must_change_password=true`，用户首次使用临时密码登录后必须自行改密。
 
 禁止通过用户接口把普通用户提升为管理员。管理员初始化和新增管理员属于部署级受控流程，不在普通后台 API 中开放；首次管理员来自环境变量，后续管理员由受控 CLI 创建并写入审计：
 

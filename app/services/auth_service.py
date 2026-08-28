@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..core.db import begin_immediate_if_sqlite
 from ..core.security import generate_session_token, hash_session_token
 from ..core.time import utc_now
 from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.models import User
 from ..repositories.sessions import AuthSessionRepository
+from .invitation_service import InvitationService
 from .user_service import UserService
 
 _SESSION_TTL = timedelta(hours=8)
@@ -20,6 +23,35 @@ class AuthService:
     def __init__(self) -> None:
         self.sessions = AuthSessionRepository()
         self.users = UserService()
+        self.invitations = InvitationService()
+
+    def register(
+        self,
+        session: Session,
+        *,
+        invitation_code: str,
+        username: str,
+        display_name: str,
+        password: str,
+    ) -> User:
+        begin_immediate_if_sqlite(session)
+        invitation = self.invitations.match_plaintext(session, invitation_code)
+        if not self.invitations.invitations.atomic_consume(session, invitation.id):
+            raise DomainError(DomainErrorCode.INVALID_INVITATION, "邀请码无效", status_code=400)
+        try:
+            user = self.users.create_user(
+                session,
+                username=username,
+                display_name=display_name,
+                password=password,
+                must_change_password=False,
+                registered_via_invitation_id=invitation.id,
+            )
+            session.commit()
+            return user
+        except IntegrityError as exc:
+            session.rollback()
+            raise DomainError(DomainErrorCode.CONFLICT, "用户名已存在", status_code=409) from exc
 
     def login(self, session: Session, username: str, password: str) -> tuple[str, datetime, User]:
         user = self.users.authenticate(session, username, password)

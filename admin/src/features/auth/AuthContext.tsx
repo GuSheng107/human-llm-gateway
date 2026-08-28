@@ -28,14 +28,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [checking, setChecking] = useState(Boolean(localStorage.getItem(TOKEN_KEY)));
 
   useEffect(() => {
+    const unauthorized = () => setUser(null);
+    window.addEventListener("hlg:unauthorized", unauthorized);
     if (!localStorage.getItem(TOKEN_KEY)) {
       setChecking(false);
-      return;
+      return () => window.removeEventListener("hlg:unauthorized", unauthorized);
     }
     fetchMe()
       .then(setUser)
       .catch(() => localStorage.removeItem(TOKEN_KEY))
       .finally(() => setChecking(false));
+    return () => window.removeEventListener("hlg:unauthorized", unauthorized);
   }, []);
 
   const logout = async () => {

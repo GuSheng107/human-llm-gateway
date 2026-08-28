@@ -62,7 +62,10 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   const response = await fetch(path, { ...init, headers });
-  if (response.status === 401) localStorage.removeItem(TOKEN_KEY);
+  if (response.status === 401) {
+    localStorage.removeItem(TOKEN_KEY);
+    window.dispatchEvent(new Event("hlg:unauthorized"));
+  }
   const body = await response.json().catch(() => null);
   if (!response.ok) throw new ApiError(response.status, parseErrorBody(body, response.status));
   return body as T;

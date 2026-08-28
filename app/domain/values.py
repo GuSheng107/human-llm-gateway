@@ -35,6 +35,13 @@ def normalize_username(raw: str) -> str | None:
     return normalized
 
 
+def normalize_display_name(raw: str) -> str | None:
+    normalized = raw.strip()
+    if not normalized or len(normalized) > 100:
+        return None
+    return normalized
+
+
 def normalize_password(raw: str) -> str:
     """密码 NFC 归一化后存储/哈希。"""
     return unicodedata.normalize("NFC", raw)

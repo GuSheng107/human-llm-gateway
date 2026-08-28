@@ -4,12 +4,21 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..core.time import utc_now
 from ..domain.enums import UserRole
-from .models import User
+from .models import (
+    ApiKey,
+    AssistantSession,
+    FakeModel,
+    ImConnection,
+    LlmConfig,
+    ModelGroup,
+    RequestTask,
+    User,
+)
 
 
 def _now() -> datetime:
@@ -22,6 +31,35 @@ class UserRepository:
 
     def get_by_username(self, session: Session, username: str) -> User | None:
         return session.execute(select(User).where(User.username == username)).scalar_one_or_none()
+
+    def list_page(
+        self,
+        session: Session,
+        *,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        is_active: bool | None = None,
+    ) -> tuple[list[User], int]:
+        filters = []
+        if search:
+            term = search.strip()
+            filters.append(
+                or_(User.username.ilike(f"%{term}%"), User.display_name.ilike(f"%{term}%"))
+            )
+        if is_active is not None:
+            filters.append(User.is_active.is_(is_active))
+        total = session.scalar(select(func.count()).select_from(User).where(*filters)) or 0
+        rows = list(
+            session.scalars(
+                select(User)
+                .where(*filters)
+                .order_by(User.created_at.desc(), User.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        return rows, total
 
     def create(
         self,
@@ -45,11 +83,15 @@ class UserRepository:
         session.add(user)
         return user
 
-    def count_active_admins(self, session: Session) -> int:
-        return (
-            session.query(User)
-            .filter(User.role == UserRole.ADMIN, User.is_active.is_(True))
-            .count()
+    def lock_active_admin_ids(self, session: Session) -> list[int]:
+        """锁定有效管理员集合，防止并发请求同时禁用最后两个管理员。"""
+        return list(
+            session.scalars(
+                select(User.id)
+                .where(User.role == UserRole.ADMIN, User.is_active.is_(True))
+                .order_by(User.id)
+                .with_for_update()
+            )
         )
 
     def atomic_acquire_slot(self, session: Session, user_id: int) -> bool:
@@ -91,3 +133,47 @@ class UserRepository:
             values["disabled_by_user_id"] = None
         result = session.execute(update(User).where(User.id == user_id).values(**values))
         return result.rowcount
+
+    def clear_active_task_count(self, session: Session, user_id: int) -> int:
+        result = session.execute(
+            update(User).where(User.id == user_id).values(active_task_count=0, updated_at=_now())
+        )
+        return result.rowcount
+
+    def resource_counts(self, session: Session, user_id: int) -> dict[str, int]:
+        def count(model, *filters) -> int:
+            return session.scalar(select(func.count()).select_from(model).where(*filters)) or 0
+
+        return {
+            "im_connections": count(
+                ImConnection,
+                ImConnection.owner_user_id == user_id,
+                ImConnection.deleted_at.is_(None),
+            ),
+            "llm_configs": count(
+                LlmConfig,
+                LlmConfig.owner_user_id == user_id,
+                LlmConfig.deleted_at.is_(None),
+            ),
+            "fake_models": count(
+                FakeModel,
+                FakeModel.owner_user_id == user_id,
+                FakeModel.deleted_at.is_(None),
+            ),
+            "model_groups": count(
+                ModelGroup,
+                ModelGroup.owner_user_id == user_id,
+                ModelGroup.deleted_at.is_(None),
+            ),
+            "api_keys": count(
+                ApiKey,
+                ApiKey.owner_user_id == user_id,
+                ApiKey.deleted_at.is_(None),
+            ),
+            "tasks": count(RequestTask, RequestTask.owner_user_id == user_id),
+            "assistant_sessions": count(
+                AssistantSession,
+                AssistantSession.owner_user_id == user_id,
+                AssistantSession.deleted_at.is_(None),
+            ),
+        }

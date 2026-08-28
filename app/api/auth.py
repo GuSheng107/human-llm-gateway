@@ -8,25 +8,35 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
-from ..domain.enums import UserRole
+from ..domain.enums import Capability, UserRole
 from ..repositories.models import User
 from ..services.auth_service import AuthService
+from .common import StrictModel
 from .deps import require_current_user
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 bearer = HTTPBearer(auto_error=False)
 
 
-class LoginRequest(BaseModel):
-    username: str
-    password: str
+class LoginRequest(StrictModel):
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=1, max_length=512)
+
+
+class RegisterRequest(StrictModel):
+    invitation_code: str = Field(min_length=1, max_length=64)
+    username: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=512)
 
 
 class CurrentUser(BaseModel):
-    id: int
+    id: str
     username: str
     display_name: str
     role: UserRole
+    must_change_password: bool
+    capabilities: list[Capability]
 
 
 class LoginResponse(CurrentUser):
@@ -35,12 +45,31 @@ class LoginResponse(CurrentUser):
 
 
 def _to_summary(user: User) -> CurrentUser:
+    capabilities = [Capability.ACCOUNT_PASSWORD_CHANGE]
+    if not user.must_change_password:
+        capabilities.append(Capability.ACCOUNT_PROFILE_UPDATE)
+        if user.role is UserRole.ADMIN:
+            capabilities.extend([Capability.INVITATION_MANAGE, Capability.USER_MANAGE])
     return CurrentUser(
-        id=user.id,
+        id=str(user.id),
         username=user.username,
         display_name=user.display_name or user.username,
         role=user.role,
+        must_change_password=user.must_change_password,
+        capabilities=capabilities,
     )
+
+
+@router.post("/register", response_model=CurrentUser, status_code=201)
+def register(payload: RegisterRequest, db: Session = Depends(get_db)) -> CurrentUser:
+    user = AuthService().register(
+        db,
+        invitation_code=payload.invitation_code,
+        username=payload.username,
+        display_name=payload.display_name,
+        password=payload.password,
+    )
+    return _to_summary(user)
 
 
 @router.post("/login", response_model=LoginResponse)

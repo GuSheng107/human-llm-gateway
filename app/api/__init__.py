@@ -13,8 +13,11 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from .account import router as account_router
 from .auth import router as auth_router
 from .errors import RequestIdMiddleware, install_error_handlers
+from .invitations import router as invitations_router
+from .users import router as users_router
 
 
 def create_app() -> FastAPI:
@@ -33,6 +36,9 @@ def create_app() -> FastAPI:
     install_error_handlers(app)
 
     app.include_router(auth_router)
+    app.include_router(account_router)
+    app.include_router(invitations_router)
+    app.include_router(users_router)
 
     @app.get("/healthz")
     def health() -> dict[str, Any]:

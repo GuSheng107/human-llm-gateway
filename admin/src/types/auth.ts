@@ -1,10 +1,17 @@
 export type UserRole = "admin" | "user";
+export type Capability =
+  | "account.password.change"
+  | "account.profile.update"
+  | "invitation.manage"
+  | "user.manage";
 
 export interface CurrentUser {
-  id: number;
+  id: string;
   username: string;
   display_name: string;
   role: UserRole;
+  must_change_password: boolean;
+  capabilities: Capability[];
 }
 
 export interface LoginResponse extends CurrentUser {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..core.time import utc_now
@@ -54,3 +54,17 @@ class AuthSessionRepository:
             .values(revoked_at=_now())
         )
         return result.rowcount
+
+    def count_active_for_user(self, session: Session, user_id: int) -> int:
+        return (
+            session.scalar(
+                select(func.count())
+                .select_from(AuthSession)
+                .where(
+                    AuthSession.user_id == user_id,
+                    AuthSession.revoked_at.is_(None),
+                    AuthSession.expires_at > _now(),
+                )
+            )
+            or 0
+        )

@@ -1,23 +1,8 @@
 import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import { Icon } from "../../icons";
 import { useAuth } from "../../features/auth/AuthContext";
-
-interface MenuItem {
-  to: string;
-  label: string;
-  icon: string;
-}
-
-const NAV: { label: string; items: MenuItem[] }[] = [
-  { label: "工作台", items: [{ to: "/", label: "控制台", icon: "dashboard" }] },
-  { label: "账号", items: [{ to: "/account", label: "账号设置", icon: "settings" }] },
-];
-
-function pageDescription(pathname: string): string {
-  if (pathname.startsWith("/account")) return "个人资料与安全";
-  return "运行概览与关键指标";
-}
+import { Icon } from "../../icons";
+import { canAccess, matchNavigation, NAVIGATION } from "../../navigation";
 
 export function AppShell() {
   const { user, logout } = useAuth();
@@ -25,17 +10,22 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (!user) return null;
+  const visibleNav = NAVIGATION.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => canAccess(user.capabilities, item)),
+  })).filter((group) => group.items.length > 0);
+  const currentRoute = matchNavigation(location.pathname);
   const navBody = (
     <nav className="flex-1 overflow-y-auto px-3 py-4">
-      {NAV.map((group) => (
+      {visibleNav.map((group) => (
         <section key={group.label} className="mb-5">
           <h2 className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[.16em] text-slate-500">{group.label}</h2>
           <div className="space-y-1">
             {group.items.map((item) => (
               <NavLink
-                key={item.to}
-                to={item.to}
-                end={item.to === "/"}
+                key={item.path}
+                to={item.path}
+                end
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
                   `group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-[13px] transition ${
@@ -77,7 +67,7 @@ export function AppShell() {
             </div>
             <button
               type="button"
-              onClick={logout}
+              onClick={() => void logout()}
               className="rounded p-1.5 text-slate-500 transition hover:bg-white/10 hover:text-white"
               title="退出登录"
             >
@@ -115,16 +105,15 @@ export function AppShell() {
               </button>
               <span className="text-slate-400">Human Gateway</span>
               <span className="text-slate-300">/</span>
-              <span>{NAV.flatMap((g) => g.items).find((item) =>
-                item.to === location.pathname ||
-                (item.to !== "/" && location.pathname.startsWith(item.to)),
-              )?.label ?? "控制台"}</span>
+              <span>{currentRoute?.label ?? "访问受限"}</span>
             </div>
-            <p className="mt-0.5 hidden text-[11px] text-slate-400 sm:block">{pageDescription(location.pathname)}</p>
+            <p className="mt-0.5 hidden text-[11px] text-slate-400 sm:block">
+              {currentRoute?.description ?? "当前账号没有访问该页面的权限"}
+            </p>
           </div>
           <button
             type="button"
-            onClick={logout}
+            onClick={() => void logout()}
             className="grid h-9 w-9 place-items-center rounded-md border border-slate-200 bg-white text-slate-500 lg:hidden"
             title="退出登录"
           >

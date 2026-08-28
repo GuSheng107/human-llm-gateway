@@ -9,7 +9,7 @@ export function DashboardPage() {
           {user?.role === "admin" ? "监管控制台" : `你好，${user?.display_name || user?.username}`}
         </h1>
         <p className="mt-2 text-xs leading-5 text-slate-400">
-          领域模型已切换至目标结构。连接 IM、LLM 配置、API Key 与任务工作台等业务模块将在后续里程碑逐步上线。
+          用户、邀请码与权限闭环已可用。连接 IM、LLM 配置、API Key 与任务工作台等业务模块将在后续里程碑逐步上线。
         </p>
       </section>
 

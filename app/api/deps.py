@@ -28,6 +28,14 @@ def require_current_user(
 
 
 def require_admin(user: User = Depends(require_current_user)) -> User:
+    if user.must_change_password:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "请先修改临时密码", status_code=403)
     if user.role is not UserRole.ADMIN:
         raise DomainError(DomainErrorCode.FORBIDDEN, "需要管理员权限", status_code=403)
+    return user
+
+
+def require_full_session(user: User = Depends(require_current_user)) -> User:
+    if user.must_change_password:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "请先修改临时密码", status_code=403)
     return user

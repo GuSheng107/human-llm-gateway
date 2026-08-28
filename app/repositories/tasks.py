@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..core.time import utc_now
@@ -122,3 +122,33 @@ class TaskRepository:
             )
         )
         return result.rowcount == 1
+
+    def count_active_for_user(self, session: Session, user_id: int) -> int:
+        return (
+            session.scalar(
+                select(func.count())
+                .select_from(RequestTask)
+                .where(
+                    RequestTask.owner_user_id == user_id,
+                    RequestTask.slot_released_at.is_(None),
+                    RequestTask.state.not_in(list(TERMINAL_STATES)),
+                )
+            )
+            or 0
+        )
+
+    def cancel_all_for_user(self, session: Session, user_id: int, reason: str) -> int:
+        """禁用用户时批量取消全部活动任务，并逐行语义等价地释放名额。"""
+        result = session.execute(
+            update(RequestTask)
+            .where(
+                RequestTask.owner_user_id == user_id,
+                RequestTask.slot_released_at.is_(None),
+                RequestTask.state.not_in(list(TERMINAL_STATES)),
+            )
+            .values(
+                **_terminal_values(TaskState.CANCELLED),
+                cancel_reason_code=reason,
+            )
+        )
+        return result.rowcount

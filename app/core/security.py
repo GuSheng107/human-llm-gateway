@@ -167,7 +167,7 @@ def generate_invitation_code(length: int = 16) -> tuple[str, str, str]:
 
 
 def verify_invitation_code(code: str, encoded: str) -> bool:
-    return _verify_salted_digest(code, encoded)
+    return _verify_salted_digest(code.upper().strip(), encoded)
 
 
 def generate_session_token() -> tuple[str, str, str]:
@@ -193,3 +193,8 @@ def generate_binding_code(length: int = 8) -> tuple[str, str]:
 
 def verify_binding_code(code: str, encoded: str) -> bool:
     return _verify_salted_digest(code.upper().strip(), encoded)
+
+
+def generate_temporary_password() -> str:
+    """生成满足当前长度与 blocklist 策略的一次性临时密码。"""
+    return secrets.token_urlsafe(18)

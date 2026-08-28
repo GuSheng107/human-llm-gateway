@@ -19,6 +19,8 @@ const STATUS_META: Record<string, { label: string; className: string; dot: strin
   cancelled: { label: "已取消", className: "border-slate-200 bg-slate-50 text-slate-400", dot: "bg-slate-300" },
   active: { label: "启用", className: "border-emerald-200 bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
   inactive: { label: "停用", className: "border-slate-200 bg-slate-50 text-slate-400", dot: "bg-slate-300" },
+  revoked: { label: "已撤销", className: "border-red-200 bg-red-50 text-red-700", dot: "bg-red-500" },
+  exhausted: { label: "已用尽", className: "border-slate-200 bg-slate-50 text-slate-500", dot: "bg-slate-400" },
 };
 
 export function StatusBadge({ status, fallback }: { status: string; fallback?: string }) {

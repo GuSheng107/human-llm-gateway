@@ -1,7 +1,6 @@
 import { type FormEvent, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { login } from "../../api/client";
-import { TOKEN_KEY } from "../../api/client";
 import { useAuth } from "./AuthContext";
 
 export function LoginPage() {
@@ -18,9 +17,8 @@ export function LoginPage() {
     setError("");
     try {
       const result = await login(username.trim(), password);
-      localStorage.setItem(TOKEN_KEY, result.access_token);
       setUser(result);
-      navigate("/", { replace: true });
+      navigate(result.must_change_password ? "/change-password" : "/console", { replace: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "登录失败");
     } finally {
@@ -67,6 +65,9 @@ export function LoginPage() {
               {submitting ? "正在登录…" : "登录"}
             </button>
           </form>
+          <p className="mt-5 text-center text-xs text-slate-400">
+            持有邀请码？ <Link to="/register" className="text-[#409eff] hover:underline">注册账号</Link>
+          </p>
         </div>
       </section>
     </main>

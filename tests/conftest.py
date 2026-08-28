@@ -20,6 +20,7 @@ import app.core.db as database
 from app.api import create_app
 
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
+FULL_ADMIN_PASSWORD = "updated-admin-password-for-tests"
 
 
 @pytest.fixture()
@@ -41,4 +42,11 @@ def admin_headers(client):
         "/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}
     )
     assert response.status_code == 200, response.text
-    return {"Authorization": f"Bearer {response.json()['access_token']}"}
+    headers = {"Authorization": f"Bearer {response.json()['access_token']}"}
+    changed = client.post(
+        "/api/account/password",
+        headers=headers,
+        json={"current_password": ADMIN_PASSWORD, "new_password": FULL_ADMIN_PASSWORD},
+    )
+    assert changed.status_code == 200, changed.text
+    return headers

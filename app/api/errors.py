@@ -24,6 +24,8 @@ class ApiErrorCode(StrEnum):
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"
     VALIDATION_FAILED = "validation_failed"
+    SCHEMA_ERROR = "schema_error"
+    INVALID_INVITATION = "invalid_invitation"
     INTERNAL_ERROR = "internal_error"
 
 
@@ -47,7 +49,7 @@ _DOMAIN_MAPPING: dict[DomainErrorCode, tuple[int, ApiErrorCode, ApiErrorAction]]
     ),
     DomainErrorCode.INVALID_INVITATION: (
         400,
-        ApiErrorCode.VALIDATION_FAILED,
+        ApiErrorCode.INVALID_INVITATION,
         ApiErrorAction.FIX_INPUT,
     ),
 }
@@ -116,6 +118,8 @@ def install_error_handlers(app: FastAPI) -> None:
         status, code, action = _DOMAIN_MAPPING.get(
             exc.code, (500, ApiErrorCode.INTERNAL_ERROR, ApiErrorAction.VIEW_LOGS)
         )
+        if 400 <= exc.status_code < 600:
+            status = exc.status_code
         return JSONResponse(
             status_code=status,
             content=error_body(code.value, exc.message, action.value, {}, get_request_id(request)),
@@ -132,13 +136,17 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def handle_validation(request: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = [
+            {key: item[key] for key in ("type", "loc", "msg") if key in item}
+            for item in exc.errors()
+        ]
         return JSONResponse(
             status_code=422,
             content=error_body(
-                ApiErrorCode.VALIDATION_FAILED.value,
+                ApiErrorCode.SCHEMA_ERROR.value,
                 "请求参数校验失败",
                 ApiErrorAction.FIX_INPUT.value,
-                {"errors": exc.errors()},
+                {"errors": errors},
                 get_request_id(request),
             ),
         )

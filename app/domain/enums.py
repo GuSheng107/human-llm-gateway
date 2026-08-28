@@ -10,6 +10,15 @@ class UserRole(StrEnum):
     USER = "user"
 
 
+class Capability(StrEnum):
+    """管理台会话能力；前端权限只依赖这些稳定值。"""
+
+    ACCOUNT_PASSWORD_CHANGE = "account.password.change"
+    ACCOUNT_PROFILE_UPDATE = "account.profile.update"
+    INVITATION_MANAGE = "invitation.manage"
+    USER_MANAGE = "user.manage"
+
+
 class ConnectionState(StrEnum):
     STOPPED = "stopped"
     STARTING = "starting"
@@ -113,11 +122,13 @@ class AuditAction(StrEnum):
 
     ADMIN_CREATED = "admin.created"
     USER_CREATED = "user.created"
+    USER_UPDATED = "user.updated"
     USER_DISABLED = "user.disabled"
     USER_ENABLED = "user.enabled"
     USER_PASSWORD_RESET = "user.password_reset"
     USER_PASSWORD_CHANGED = "user.password_changed"
     INVITATION_CREATED = "invitation.created"
+    INVITATION_UPDATED = "invitation.updated"
     INVITATION_REVOKED = "invitation.revoked"
     INVITATION_DELETED = "invitation.deleted"
     CONNECTION_CREATED = "connection.created"
