@@ -63,6 +63,7 @@
 | `username` | varchar(64) | 非空，大小写归一后唯一 |
 | `display_name` | varchar(100) | 非空 |
 | `password_hash` | varchar(255) | 非空，自适应密码哈希 |
+| `must_change_password` | boolean | 非空，默认 false；置 true 时会话受限 |
 | `role` | enum | 非空，默认 `user` |
 | `is_active` | boolean | 非空，默认 true |
 | `disabled_at` | datetime nullable | 管理员禁用时间 |
@@ -78,6 +79,25 @@
 - `(role, is_active)` 管理筛选索引。
 
 `active_task_count` 是并发准入的事务计数器，不通过扫描任务表决定第 11 个请求。后台可提供只读一致性检查，将计数与活动任务实际数量对比，但不能在普通请求中静默修正。禁用用户必须通过 UserService 的事务编排执行，不允许只翻转 `is_active`。
+
+密码策略（注册、修改密码、管理员重置、CLI 创建和初始化环境变量统一适用）：
+
+- 最少 15 个 Unicode code points，最大支持至少 128；不强制大小写、数字或特殊字符组合。
+- 输入按 NFC 归一化后再哈希；允许空格和 Unicode 字符。
+- 拒绝常见弱密码、与用户名相同或近似、以及明显部署默认词的 blocklist。
+- 初始化环境变量 `ADMIN_PASSWORD` 不满足策略时启动失败，不得降级为警告后继续。
+
+`must_change_password` 只属于用户行，不写入 `system_settings`。置位规则：
+
+| 场景 | 值 |
+| --- | --- |
+| 环境变量初始化的第一个管理员 | true |
+| CLI 创建管理员且使用系统生成的临时密码 | true |
+| CLI 创建管理员且操作者亲自输入密码 | false |
+| 管理员重置普通用户为临时密码 | true |
+| 用户成功主动修改密码 | false |
+
+`must_change_password=true` 不阻止认证成功，否则用户无法调用改密接口；认证产生受限会话：仅允许 `GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/account/password`，其余 `/api/*` 返回 403。
 
 ### 3.2 `auth_sessions`
 
@@ -148,6 +168,12 @@
 管理员列表只能读取平台、所有者、状态和脱敏错误，不能解密配置、绑定码或临时二维码。
 
 普通网络错误且 `desired_running=true` 时更新 `retry_count` 和 `next_retry_at`，由运行时按带抖动的指数退避重连；认证失效时进入 `auth_required`、清空 `next_retry_at` 并等待所有者重新登录。手动停止会设置 `desired_running=false`，不得被后台重试重新拉起。
+
+`retry_count` 定义为“连续自动重试次数”，重置采用稳定成功语义：
+
+- 进入 `online` 时立即清空 `next_retry_at`。
+- 只有连续保持健康 60 秒后才把 `retry_count` 重置为 0；期间再次断线则继承上一轮退避级别继续退避，不从头开始。
+- 这样既避免长期正常后每次故障都从最短退避重来，也避免网络抖动时因瞬时连接成功形成紧密重连循环。
 
 ### 4.2 `connector_outbox`
 
@@ -327,10 +353,10 @@ effective = grouped                       if key has no api_key_fake_models rows
 | --- | --- | --- |
 | `id` | integer | PK |
 | `public_id` | varchar(64) | 非空，唯一，供 UI/IM/协议日志使用 |
-| `response_public_id` | varchar(64) nullable | OpenAI Responses 等对外响应 ID，唯一 |
+| `response_public_id` | varchar(64) nullable | OpenAI Responses 对外响应 ID，唯一；格式为 `resp_` + 32 位小写 hex（CSPRNG 生成） |
 | `previous_task_id` | integer nullable | FK request_tasks，同一 API Key 的历史响应链 |
 | `owner_user_id` | integer | FK users，非空 |
-| `api_key_id` | integer | FK api_keys，非空 |
+| `api_key_id` | integer | FK api_keys，非空，ON DELETE RESTRICT |
 | `api_key_prefix_snapshot` | varchar(20) | 创建任务时 Key 前缀快照 |
 | `fake_model_id` | integer nullable | FK fake_models，删除时 SET NULL |
 | `requested_model` | varchar(255) | Fake Model 字符串快照 |
@@ -367,6 +393,10 @@ effective = grouped                       if key has no api_key_fake_models rows
 原始请求不经过字段白名单重建后再保存；必须序列化接收到的完整 JSON。Authorization、Cookie、API Key 等认证 Header 不进入 `request_headers_json`。
 
 `previous_response_id` 原始值留在 `raw_payload_json`，解析成功后写入 `previous_task_id`。引用必须属于同一 `api_key_id` 且指向已完成响应；规范化请求保存等价展开后的上下文。历史清理必须保留仍被引用任务的最小请求/回复快照，不能留下悬空链。
+
+`api_key_id` 物理清理依赖 `ON DELETE RESTRICT` 保护；API Key 的“删除”采用软删除，历史任务的 FK 始终指向存在的 Key 行。`api_key_prefix_snapshot` 仅作为历史展示快照，不替代 FK。物理清理必须由未来的 retention job 按完整依赖关系执行，平时不把历史任务的 `api_key_id` 设为 NULL。
+
+`response_public_id` 使用 `resp_` + 32 位小写 hex（CSPRNG，例如 `resp_a10c46f728e24da0970ba9e7189f429d`）。这是网关在自己命名空间内签发的协议兼容 ID，不是冒充真实 OpenAI response ID；任务内部仍以 integer PK 为主键。
 
 `response_payload_json` 是 IM DSL、Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构：
 
@@ -443,11 +473,13 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `page_context_json` | text nullable | 经双重过滤的页面上下文 |
 | `page_route` | varchar(255) nullable | 发送时当前路由 |
 | `page_feature` | varchar(100) nullable | 发送时 feature 代码 |
-| `context_version` | varchar(64) nullable | 页面上下文版本 |
+| `context_version` | integer nullable | 页面上下文版本，按 feature 独立递增 |
 | `upstream_metadata_json` | text nullable | 脱敏用量、结束原因 |
 | `created_at` | datetime | 非空 |
 
 索引 `(session_id, id)`。Secret 过滤前的页面上下文不得落库。每条消息只保存发送时当前浏览器标签页的上下文快照；页面切换不修改历史消息，也不把旧页面上下文自动合并进新消息。
+
+`page_feature` 是 feature 在 `PageContextRegistry` 中注册的稳定标识（如 `api_keys`），`context_version` 是该 feature 自己递增的整数。feature 的 context serializer 是版本 owner，序列化结构或字段语义变化必须 bump 版本号；多个 feature 各自维护版本，互相独立。历史消息不迁移、不回写，新消息使用新版本。读取时按 `page_feature` + `context_version` 解释上下文；不再支持时按历史 opaque JSON 展示即可，不得为了旧版本重新构造字段。
 
 ## 9. 设置、审计与日志
 
@@ -592,7 +624,23 @@ WHERE id = :task_id
 
 ### 10.8 历史响应引用
 
-解析 `previous_response_id` 时，在同一只读快照中校验 response ID、`api_key_id`、完成状态和创建时间，再把 `previous_task_id` 与新任务一起写入。其他 Key 的响应统一按无效引用返回，不能暴露其是否存在。展开链必须检测循环和上下文长度；超过限制返回 400，不截断历史。
+解析 `previous_response_id` 时，在同一只读快照中校验 response ID、`api_key_id`、完成状态和创建时间，再把 `previous_task_id` 与新任务一起写入。其他 Key 的响应统一按无效引用返回，不能暴露其是否存在。
+
+网关层采用三重硬性保护，三项任一超限直接整请求返回 400 `context_length_exceeded`，不部分截断：
+
+| 限制 | 默认值 | 含义 |
+| --- | --- | --- |
+| `max_chain_depth` | 20 | 递归追 `previous_task_id` 的最大层数。 |
+| `max_expanded_items` | 512 | 展开后消息、工具、reasoning 项等累计条目上限。 |
+| `max_expanded_context_bytes` | 2 MiB | 规范化展开 JSON 的 UTF-8 字节上限。 |
+
+Fake Model 与真实上游模型解耦，领域层不存在通用 tokenizer，因此网关不在准入阶段估算 token。M7 在协议 adapter 中处理真实模型的 token 限制：有可靠本地 tokenizer 就预检；没有就正常转发并把上游明确的上下文超限错误映射为 400 `context_length_exceeded`。每次推理不强制调用额外远程 `count_tokens`。
+
+规范化展开必须有唯一语义：链 A→B→C 时 A 不会被重复展开；展开过程按时间顺序串联历史请求与回复，并保留原始 `previous_response_id` 以便审计和回放。
+
+### 10.9 加密自检 sentinel
+
+初始化阶段在数据库写入一个固定明文的认证加密 ciphertext（位置和键名由 `system_settings` 提供，例如 `key=encryption_sentinel`），并在每次启动的 `/readyz` 流程中解密验证。这样能发现“数据库恢复了但 `APP_SECRET` 错误”这一类灾难性配置漂移；哨兵本身不携带业务数据。
 
 ## 11. 删除与引用规则
 
@@ -614,13 +662,13 @@ WHERE id = :task_id
 新数据库在单个初始化事务中：
 
 1. 创建全部表和索引。
-2. 写入当前 `schema_version`。
-3. 校验 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，创建管理员并只保存密码哈希。
+2. 写入当前 `schema_version` 和加密自检 sentinel。
+3. 按 §3.1 密码策略校验 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，不满足时启动失败；创建管理员时 `must_change_password=true`，只保存密码哈希。
 4. 写入默认系统设置。
 5. 从代码中的默认目录创建系统 Fake Model，并写入种子版本。
 6. 提交后启动连接器运行时。
 
-同一新 Schema 的重复启动必须幂等：已有管理员不被环境变量覆盖密码，管理员后来停用或删除的默认 Fake Model 不因普通重启被补回。种子只在全新数据库或显式受控初始化时执行。后续管理员只能通过受控 CLI 创建；CLI 调用同一 UserService、记录审计并拒绝产生“零个有效管理员”。
+同一新 Schema 的重复启动必须幂等：已有管理员不被环境变量覆盖密码，管理员后来停用或删除的默认 Fake Model 不因普通重启被补回。种子只在全新数据库或显式受控初始化时执行。后续管理员只能通过受控 CLI 创建：`uv run python -m app.cli admin create --username <name> --display-name <name>`。CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `--password` 明文参数；自动化场景使用 `--password-stdin --yes` 从 stdin 读取。CLI 复用同一 UserService、密码策略、审计机制和应用配置（数据库路径、主密钥），不允许另搞一套；使用系统生成临时密码时 `must_change_password=true`。操作系统级数据库与部署访问权即该 CLI 的授权边界。CLI 记录审计并拒绝产生“零个有效管理员”。
 
 ## 13. 明确删除的旧结构
 
@@ -653,6 +701,8 @@ M2 的单个目标提交直接删除并不再创建：
 - 模型分组和 Key 选择只能缩小有效模型集合；空 Key 选择表示全部候选模型。
 - `/v1/models` 和推理准入使用同一有效模型查询。
 - `previous_response_id` 只能引用同一 API Key 的完成响应，历史链不会因清理产生悬空引用。
+- `previous_response_id` 展开遵守链深、条目数和字节数三重上限，超限整请求 400 且不部分截断。
 - IM DSL 与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
 - Secret、Token、完整 Key 和密码不以明文落库或进入日志。
+- 初始化环境变量密码不符合策略时启动失败；首个管理员 `must_change_password=true` 且登录后处于受限会话。
 - M2 目标 Schema 中不存在旧表或新旧共存元数据。

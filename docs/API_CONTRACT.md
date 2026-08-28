@@ -13,10 +13,34 @@
 | `/v1/*` | 外部 LLM 兼容 API | 用户创建的 API Key |
 | `/connectors/*` | IM/Webhook/WebSocket/HTTP 连接器入口 | 每个连接独立凭据 |
 | `/healthz` | 进程存活检查，不访问数据库或连接器 | 无 |
-| `/readyz` | 数据库、Schema、加密配置和核心服务就绪检查 | 无或仅部署网络可达 |
-| `/metrics` | 不含用户标识和 Secret 的基础运行指标 | 仅部署网络或独立监控凭据 |
+| `/readyz` | 就绪检查（定义见下） | 无或仅部署网络可达 |
+| `/metrics` | Prometheus 格式基础运行指标 | 仅部署网络或独立监控凭据 |
 
 管理 API 与推理 API 使用不同的鉴权依赖和错误映射。用户登录 Token 不能调用 `/v1/*`，外部 API Key 不能调用 `/api/*`。
+
+### 1.1 `/readyz` 就绪条件
+
+固定为 5 项，全部满足才返回 200：
+
+1. 应用 startup 已完成。
+2. 数据库可访问，`schema_version` 匹配，且最近一次写能力自测正常。
+3. 主加密密钥加载成功，并能成功解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）。
+4. 三个协议 adapter/renderer registry 初始化成功。
+5. 任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。
+
+`/readyz` 不检查任何用户 IM 连接是否在线、不检查真实 LLM 连通性、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
+
+### 1.2 `/metrics` 指标契约
+
+使用 Prometheus exposition format（`Content-Type: text/plain; version=0.0.4`），M10 实现。首版只做低基数指标：
+
+| 类型 | 指标 |
+| --- | --- |
+| Counter | HTTP 请求、推理请求、任务终态、上游调用、连接器重连。 |
+| Histogram | HTTP 延迟、推理总耗时、人工等待时长、上游 LLM 耗时。 |
+| Gauge | 全局活动任务数、pending outbox 数、按 platform + state 聚合的连接数量。 |
+
+标签只允许有限枚举：`protocol` / `strategy` / `outcome` / `platform` / `state` / `status_class` / `surface`。禁止 `user_id`、`api_key_id`、`task_id`、`connection_id`、`model`、`base_url`、`error_message` 出现在 label 中——既防 Secret 泄露，也防 Prometheus cardinality 爆炸。
 
 ## 2. 通用管理 API 约定
 
@@ -91,9 +115,9 @@
 | --- | --- | --- | --- |
 | POST | `/api/auth/login` | 公开 | 用户名和密码登录。 |
 | POST | `/api/auth/register` | 公开 | 使用邀请码注册普通用户。 |
-| GET | `/api/auth/me` | 登录用户 | 返回当前用户、角色和能力。 |
+| GET | `/api/auth/me` | 登录用户 | 返回当前用户、角色和能力，含 `must_change_password` 状态。 |
 | POST | `/api/auth/logout` | 登录用户 | 使当前登录 Token 失效。 |
-| PATCH | `/api/account/profile` | 登录用户 | 修改自己的显示名。 |
+| PATCH | `/api/account/profile` | 完整会话 | 修改自己的显示名。 |
 | POST | `/api/account/password` | 登录用户 | 校验旧密码后修改自己的密码。 |
 
 注册请求：
@@ -108,6 +132,22 @@
 ```
 
 邀请码不存在、已过期、已撤销或已达到使用次数时都返回 400，错误码为 `invalid_invitation`；响应不区分更细原因，避免批量探测邀请码状态。成功消费和用户创建必须原子完成。
+
+### 3.1 密码策略
+
+注册、修改密码、管理员重置和 CLI 创建统一适用：
+
+- 最少 15 个 Unicode code points，最大支持至少 128；不强制大小写、数字或特殊字符组合。
+- NFC 归一化后哈希；允许空格和 Unicode 字符。
+- 拒绝常见弱密码、与用户名相同或近似、明显部署默认词的 blocklist。
+
+### 3.2 受限会话
+
+`must_change_password=true` 的用户（环境变量初始化的首个管理员、使用临时密码的 CLI 创建管理员、被管理员重置为临时密码的用户）登录成功后获得受限会话：
+
+- 仅允许 `GET /api/auth/me`、`POST /api/auth/logout`、`POST /api/account/password`。
+- 其余 `/api/*` 返回 403 `forbidden`，响应体提示需要先修改密码。
+- 前端登录后直接重定向到强制改密页面；改密成功后 `must_change_password` 置 false，会话立即恢复完整权限，无需重新登录。
 
 ## 4. 管理员治理 API
 
@@ -134,7 +174,13 @@
 | PATCH | `/api/users/{id}` | 修改显示名、角色允许范围内的状态。 |
 | POST | `/api/users/{id}/reset-password` | 生成或设置一次性新密码，不回显旧密码。 |
 
-禁止通过用户接口把普通用户提升为管理员。管理员初始化和新增管理员属于部署级受控流程，不在普通后台 API 中开放；首次管理员来自环境变量，后续管理员由受控 CLI 创建并写入审计。
+禁止通过用户接口把普通用户提升为管理员。管理员初始化和新增管理员属于部署级受控流程，不在普通后台 API 中开放；首次管理员来自环境变量，后续管理员由受控 CLI 创建并写入审计：
+
+```powershell
+uv run python -m app.cli admin create --username alice --display-name "Alice"
+```
+
+CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `--password` 明文参数（避免 shell history 与进程列表泄密）；自动化部署使用 `--password-stdin --yes` 从 stdin 读取密码。CLI 复用 UserService、密码策略、审计与应用配置；使用系统生成临时密码时新管理员 `must_change_password=true`。
 
 管理员把 `is_active` 更新为 false 时，服务端立即撤销目标用户会话、停用其全部 API Key、终止全部活动任务并幂等释放任务名额。新登录和新推理请求返回 401；已准入请求只收到通用协议错误。禁止禁用最后一个有效管理员。
 
@@ -383,12 +429,16 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机械发送给用户配置的真实 LLM：
 
-1. 每个 Responses 成功结果生成稳定的网关 response ID，并关联当前任务和 API Key。
+1. 每个 Responses 成功结果生成稳定的网关 response ID（格式为 `resp_` + 32 位小写 hex），并关联当前任务和 API Key。
 2. 新请求携带 `previous_response_id` 时，只允许引用同一 API Key 的历史响应；不存在、属于其他 Key、尚未完成或形成非法链时返回 400 `invalid_previous_response_id`。
-3. 网关完整保存本次原始 payload 和原始 ID，加载历史规范化请求与响应，并按时间顺序等价展开成本次上下文。
+3. 网关完整保存本次原始 payload 和原始 ID，加载历史规范化请求与响应，并按时间顺序等价展开成本次上下文。展开具有唯一语义：链 A→B→C 时 A 不会被重复展开。
 4. 人工流程向用户展示展开后的上下文；真实 LLM 转发使用展开后的消息，不把无法识别的网关 ID 发送给上游。
-5. 展开结果超过目标上下文限制时返回明确的协议兼容 400 `context_length_exceeded`，不静默截断。
-6. 历史清理不得破坏仍被引用的链；可以保留最小非敏感上下文快照代替完整任务，但不能留下悬空 ID。
+5. 展开结果受三重网关硬性保护，任一超限整请求返回协议兼容 400 `context_length_exceeded`，不静默截断：
+   - `max_chain_depth = 20`（递归追 `previous_task_id` 的最大层数）；
+   - `max_expanded_items = 512`（展开后消息、工具、reasoning 项等累计条目上限）；
+   - `max_expanded_context_bytes = 2 MiB`（规范化展开 JSON 的 UTF-8 字节上限）。
+6. Fake Model 与真实模型解耦，网关不在准入阶段估算 token；M7 由协议 adapter 处理真实模型 token 限制（本地 tokenizer 预检或映射上游超限错误），不强制每次推理调用远程 `count_tokens`。
+7. 历史清理不得破坏仍被引用的链；可以保留最小非敏感上下文快照代替完整任务，但不能留下悬空 ID。
 
 这是一项公开声明的网关等价转换，不违反原始请求完整落库原则。除契约明确列出的控制字段、服务端身份 system 指令和上游真实模型替换外，同协议字段仍默认原样透传。
 
@@ -531,6 +581,27 @@ Chat、Responses 和 `/v1/models` 在尚未开始 SSE 时返回：
 | 人工超时、IM/上游或内部失败 | 500，或按后续降级策略统一 429 | 通用服务错误 |
 
 一旦 SSE 响应头已经发出，错误使用目标协议允许的流内错误事件并立即结束。对外消息不出现人工、IM、真实供应商、fallback、数据库或内部堆栈。
+
+### 16.4 SSE 中断语义
+
+流式响应头已发送后发生不可恢复错误（用户被禁用、上游失败、内部错误或服务关闭）时，必须按目标协议发送失败终态，绝不能伪造正常完成。对外只显示 generic error，不泄露 `user_disabled`、IM、fallback、真实供应商或内部路径。
+
+| 协议 | 中断处理 |
+| --- | --- |
+| OpenAI Responses | 发送 `response.failed` 事件，沿用同一 `resp_...` ID，公开状态 `failed`，错误类型 generic `server_error`；随后结束流。不得再发送 `response.completed`。 |
+| Anthropic Messages | 发送 `event: error`，内容使用 generic `api_error`；随后结束流。不得再发送 `message_stop`。Anthropic 官方明确允许 HTTP 200 后在 SSE 内出现 `event: error`。 |
+| OpenAI Chat Completions | 不得伪造正常完成或发送 `[DONE]`。网关应使用经项目锁定版本 OpenAI SDK 契约测试验证的流内错误表示；若目标 SDK 无可靠的流内错误表示，则直接终止流。具体错误帧格式由 M6-A 兼容测试固化。 |
+
+如果传输层已经不可写，则直接断流即可。数据库内部仍记录 `CANCELLED` + 内部 `cancel_reason_code`（如 `user_disabled`）；公开 SSE 只显示通用错误。
+
+M6-A 必须使用项目锁定的 `openai` Python SDK 实际调用 Chat Completions 流，验证以下场景的 SDK 行为，并以真实结果决定 Chat 最终采用 `error frame + EOF` 还是单纯 `EOF`：
+
+- 正常完成。
+- 中途 generic error frame。
+- 无 error frame 直接断流。
+- 客户端主动取消。
+
+SDK 升级时必须重新运行该契约测试。Responses 和 Anthropic 因协议本身有明确失败事件，直接按上表固定，无需依赖 SDK 行为验证。
 
 ## 17. 连接器协议
 

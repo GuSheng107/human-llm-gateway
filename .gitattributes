@@ -1,0 +1,35 @@
+# 强制仓库内统一使用 LF 行尾，避免 Windows 上的 CRLF 导致 git diff --check 警告
+# 也避免 .venv、node_modules、dist、data 等目录触发跨平台行尾判定
+
+* text=auto eol=lf
+
+# 明确声明常见文本源码使用 LF
+*.py text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.example text eol=lf
+*.gitignore text eol=lf
+LICENSE text eol=lf
+
+# 二进制/不可重写格式不做行尾转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.lock binary
+
+# 忽略构建和运行时产物
+.venv/** linguist-generated=true
+node_modules/** linguist-generated=true
+dist/** linguist-generated=true
+data/** linguist-generated=true
+logs/** linguist-generated=true
+admin/dist/** linguist-generated=true
