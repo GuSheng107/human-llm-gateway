@@ -2,7 +2,7 @@
 
 > 文档状态：M1 目标架构基线
 >
-> 当前代码处于过渡期；M2 起按本文件重建领域模型和模块边界，不保留旧结构兼容层。
+> 当前代码处于过渡期；M2 必须在一个完整提交中一次性切换到本文件定义的领域模型和模块边界，不允许新旧表、新旧运行链路或兼容代理共存。
 
 ## 1. 架构原则
 
@@ -15,6 +15,7 @@
 7. **敏感数据默认不可见**：Secret 加密、凭据只存哈希、日志脱敏、管理员也不能回读用户 Secret。
 8. **数据库承担并发裁决**：邀请码消费、并发名额和首个回复都通过条件更新原子完成。
 9. **无历史兼容层**：目标结构直接创建，不维护旧表、旧字段、旧路由或旧连接器别名。
+10. **M2 原子切换**：M2-A/B/C 只是同一里程碑的进度工作包，不是可独立提交的新旧共存阶段；目标 Schema、服务、API、前端和测试必须一起切换。
 
 ## 2. 系统上下文
 
@@ -44,11 +45,10 @@ app/
 ├── api/             # FastAPI 路由、鉴权依赖、请求/响应 Schema
 ├── domain/          # 实体、值对象、枚举、状态机和领域错误
 ├── services/        # 用例编排、事务边界和跨模块协调
-├── repositories/    # SQLAlchemy 持久化实现和原子条件更新
+├── repositories/    # SQLAlchemy 模型、持久化实现和原子条件更新
 ├── connectors/      # IM 平台适配器、注册表和运行时管理
 ├── protocols/       # OpenAI/Anthropic 解析、转换、SSE 和错误映射
 ├── core/            # 配置、加密、日志、request ID 和应用生命周期
-├── models.py        # M2 过渡后可拆入 repositories/models/
 └── main.py          # 应用装配，不承载业务规则
 ```
 
@@ -115,6 +115,7 @@ erDiagram
 
     REQUEST_TASK ||--o{ TASK_EVENT : records
     REQUEST_TASK ||--o{ TASK_DRAFT : drafts
+    REQUEST_TASK o|--o{ REQUEST_TASK : continues_from
     ASSISTANT_SESSION ||--o{ ASSISTANT_MESSAGE : contains
 ```
 
@@ -240,6 +241,26 @@ sequenceDiagram
     DB-->>U: 拒绝覆盖并记录审计
 ```
 
+### 5.5 禁用用户
+
+```mermaid
+sequenceDiagram
+    participant A as 管理员 API
+    participant U as UserService
+    participant DB as 数据库
+    participant R as 运行时协调器
+    participant C as 外部等待请求
+
+    A->>U: disable_user(user_id)
+    U->>DB: 禁用用户、撤销会话和 Key
+    U->>DB: 活动任务 -> CANCELLED 并幂等释放名额
+    DB-->>U: 提交终态
+    U-->>R: 取消等待、上游调用和流
+    R-->>C: 通用协议错误后结束
+```
+
+数据库终态是事实来源。进程通知失败时由恢复任务补发取消，但不能重复释放名额或把任务恢复为活动态。
+
 ## 6. 任务状态机
 
 目标状态：
@@ -254,7 +275,7 @@ sequenceDiagram
 | `COMPLETED` | 响应正常结束。 | 否 |
 | `FAILED` | 内部或上游失败，已生成对外通用错误。 | 否 |
 | `TIMED_OUT` | 人工超时且没有可用 fallback。 | 否 |
-| `CANCELLED` | 请求被明确取消或服务关闭时安全终止。 | 否 |
+| `CANCELLED` | 请求被明确取消、用户被禁用或服务关闭时安全终止。 | 否 |
 
 ```mermaid
 stateDiagram-v2
@@ -276,6 +297,8 @@ stateDiagram-v2
     RECEIVED --> CANCELLED
     WAITING_HUMAN --> CANCELLED
     FORWARDING_LLM --> CANCELLED
+    RESPONSE_READY --> CANCELLED
+    RESPONDING --> CANCELLED
 ```
 
 只有终态释放用户活动名额。状态推进、`slot_released_at` 标记和用户计数扣减必须在同一事务内幂等完成。
@@ -294,7 +317,9 @@ stateDiagram-v2
 1. `raw_payload`：调用方原始 JSON，完整落库并用于同协议保真转发。
 2. `normalized_request`：模型、消息文本、tools、stream 等标准语义，用于展示、人工编辑和跨协议转换。
 
-未知字段保留在原始表示中。任何跨协议无法等价表达的供应商专有字段都返回 400，不能在转换时静默删除。
+人工回复使用第三个统一表示 `normalized_reply`，包含 reasoning、tool calls 和 final text。Web 编辑器直接读写该结构；IM DSL 只负责把文本解析为同一结构；三个协议渲染器只从该结构生成 JSON/SSE。提交成功后结构不可撤销或覆盖。
+
+未知字段保留在原始表示中。同协议默认原样透传；`previous_response_id` 等声明为网关控制的字段由服务层验证并等价展开。跨协议严格执行字段转换矩阵，无法等价表达的供应商专有字段返回 400，不能静默删除。
 
 ### 7.2 响应输出
 
@@ -303,6 +328,7 @@ stateDiagram-v2
 - 真实 LLM 跨协议流式：边接收边转换成目标协议事件。
 - tool call 只是响应数据；协议层不触发工具执行。
 - 所有响应、事件和最终摘要使用请求中的 Fake Model。
+- OpenAI Responses 的 `previous_response_id` 只能引用同一 API Key 的历史响应；网关把历史请求和回复展开为本次上下文，并保留原始引用和关联链。
 
 ### 7.3 错误适配
 
@@ -333,7 +359,7 @@ handle_inbound(platform_message)
 
 进站处理统一执行：连接鉴权、绑定身份校验、`connection_id + external_message_id` 幂等、任务定位、回复解析、首个回复条件提交。Connector 不绕过 TaskService 直接更新任务。
 
-运行时状态和数据库状态分离：实例是否在线是瞬时状态，最后认证结果、错误摘要、启动意图和健康时间写入数据库。单连接启动、停止、重新应用配置或故障恢复不得影响其他连接。
+运行时状态和数据库状态分离：实例是否在线是瞬时状态，最后认证结果、错误摘要、启动意图、重试次数、下次重试时间和健康时间写入数据库。期望运行的长连接遇到普通网络故障时使用带抖动的指数退避自动重连；进入 `auth_required` 后停止重试并等待所有者重新登录。单连接启动、停止、重新应用配置或故障恢复不得影响其他连接。
 
 ## 9. LLM 转发架构
 
@@ -342,7 +368,7 @@ handle_inbound(platform_message)
 1. 解密当前用户的配置 Secret。
 2. 判断同协议透传或跨协议转换。
 3. 在原调用方 system 内容之后追加服务端身份指令。
-4. 保留调用方提供的 tools 和未知字段，不授予任何执行权限。
+4. 保留调用方提供的 tools 和未知字段，不授予任何执行权限；按契约处理已声明的网关控制字段。
 5. 调用真实 LLM，实施连接/读取/总超时。
 6. 改写响应模型标识为 Fake Model。
 7. 保存事件、用量摘要和脱敏错误。
@@ -351,7 +377,7 @@ LLM 配置是用户资源，不能被其他用户或管理员选用。Web 小助
 
 ## 10. Web 小助手架构
 
-前端每个 feature 可实现 `AssistantContextProvider`，只返回白名单字段。全局小助手收集：当前路由、页面类型、所选资源的非敏感摘要和用户显式输入。后端再次执行敏感字段过滤后才发送上游。
+前端每个 feature 可实现 `AssistantContextProvider`，只返回白名单字段。每次发送时，全局小助手只收集当前浏览器标签页的当前路由、页面类型、所选资源、当前未提交编辑内容的非敏感摘要和用户显式输入。路由或选择变化会替换待发送上下文，不自动累积旧页面数据；每条历史消息保留其发送时的脱敏上下文快照和版本。后端再次过滤后才发送上游。
 
 第一阶段调用链：
 
@@ -383,6 +409,7 @@ flowchart LR
 - fallback：仅一个执行者能把 `WAITING_HUMAN` 原子推进到 `FORWARDING_LLM`。
 - 名额释放：依靠 `slot_released_at IS NULL` 保证只扣减一次。
 - IM 消息幂等：数据库唯一约束覆盖 `connection_id + external_message_id`。
+- 禁用用户：撤销会话、停用 Key、把活动任务推进到取消终态并释放全部名额必须在可恢复事务编排中完成。
 
 SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、IM、LLM 调用不得占用写事务。未来替换数据库时，Repository 接口和条件更新语义保持不变。
 
@@ -404,9 +431,21 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 
 ### 12.3 审计
 
-用户、邀请码、连接、API Key、LLM 配置、Fake Model、任务回复、fallback、管理员治理和未来工具执行都写入不可由普通用户修改的审计事件。审计数据不保存 Secret 的旧值或新值。
+用户、邀请码、连接、API Key、LLM 配置、Fake Model、任务回复、fallback、管理员治理和未来工具执行都写入不可由普通用户修改的审计事件。动作使用稳定枚举；管理员可以看到操作者、动作、资源 ID、所有者、时间、结果和发生变更的字段名，但审计不保存请求正文、字段值、Secret 的旧值或新值及任何可恢复凭据的材料。
 
-## 13. 当前实现到目标架构的差异
+管理员账号不通过后台 API 创建或提升。首次管理员来自部署环境，后续管理员通过受控 CLI 创建；CLI 复用同一用户服务和审计，并拒绝禁用最后一个有效管理员。
+
+## 13. 部署与运维架构
+
+- `/healthz` 只表示进程存活，不访问数据库或连接器。
+- `/readyz` 检查数据库可写、Schema 版本、加密配置和核心服务是否可接收请求；单个用户 IM 离线不导致整个实例未就绪。
+- 每个连接的健康状态继续通过连接管理 API 单独展示。
+- SQLite 备份使用在线备份 API 或经过验证的 `VACUUM INTO` 流程，不在 WAL 写入期间直接复制单个数据库文件；发布前必须验证恢复。
+- 应用日志优先输出结构化 stderr，由 Docker、systemd 或部署平台轮转；数据库日志按保留期清理。
+- CI 在 `master` push 和手动触发时执行完整质量门禁；本地门禁仍是推送前要求。
+- 部署文档必须覆盖环境变量校验、反向代理、TLS、优雅关闭、数据库与 Secret 备份恢复。
+
+## 14. 当前实现到目标架构的差异
 
 | 当前过渡结构 | 目标结构 | 处理阶段 |
 | --- | --- | --- |
@@ -415,12 +454,12 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 | `ModelRoute` 决定人工/LLM 路由 | `ApiKey.reply_strategy` 等字段直接决定 | M2 删除，不做兼容 |
 | API Key 关联 route/operator | API Key 关联用户、入口、策略、LLM 配置、模型分组和可选模型集合 | M2 重建 |
 | 部分管理写操作使用 `POST /update`、`POST /delete` | 目标管理 API 使用 `PATCH`、`DELETE` | M2-M9 直接替换 |
-| `app/models.py`、部分 service 仍较集中 | 按领域拆分 domain/service/repository | M2 起逐步拆分 |
+| `app/models.py`、部分 service 仍较集中 | 按领域拆分 domain/service/repository | M2 一次性切换 |
 | 当前连接页已可操作 | 按新所有权、Secret 和 API Key 投递关系重新接入 | M4 |
 
-这些当前端点和表仅用于保持 M0 基线可运行，不构成兼容承诺。后续实现目标接口时直接删除旧路径和旧数据模型。
+这些当前端点和表仅用于保持 M0 基线可运行，不构成兼容承诺。M2 提交必须同时删除旧路径、旧数据模型、旧前端引用和旧测试，不允许以中间提交形式让它们与目标结构共存。
 
-## 14. 架构验收清单
+## 15. 架构验收清单
 
 - 新用例遵循 API → Service → Repository/Domain 依赖方向。
 - Router 中不存在任务状态推进、平台分支或 SQL。
@@ -428,9 +467,13 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 - 用户私有 Fake Model 不会出现在其他用户或其 API Key 的候选集中。
 - 模型分组和 API Key 显式选择都只能收窄用户可见模型集合。
 - 所有推理请求保留完整原始 payload。
+- 同协议未知字段原样保留，网关控制字段和跨协议字段严格遵循契约矩阵。
+- IM DSL 与 Web 编辑器生成完全相同的规范化回复结构，提交后不可撤销。
 - 邀请码、任务名额、首个回复和 fallback 有数据库原子测试。
+- 禁用用户会终止活动任务并幂等释放全部名额。
 - 人工伪流式在完整回复持久化之后开始。
 - 自动上游流和人工伪流式在代码路径和事件语义上明确区分。
 - 新 IM 平台只需注册定义和实现统一接口。
 - 管理员接口无法回读或代用用户 Secret。
 - 错误和日志不会暴露人工流程、真实模型或凭据。
+- M2 的目标提交中不存在旧表、旧路由、双写或兼容代理。

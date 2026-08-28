@@ -2,7 +2,7 @@
 
 > 文档状态：M1 目标契约
 >
-> 目标接口将在 M2-M9 分阶段实现。文末列出的当前接口只是 M0 过渡现状，不提供兼容承诺。
+> 目标业务接口将在 M2-M9 分阶段实现，运维接口在 M10 完成。文末列出的当前接口只是 M0 过渡现状，不提供兼容承诺。
 > 支持的推理格式仅限 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
 
 ## 1. 命名空间与职责
@@ -12,7 +12,9 @@
 | `/api/*` | 登录后的管理后台 API | 用户会话 Token |
 | `/v1/*` | 外部 LLM 兼容 API | 用户创建的 API Key |
 | `/connectors/*` | IM/Webhook/WebSocket/HTTP 连接器入口 | 每个连接独立凭据 |
-| `/healthz` | 进程存活检查 | 无 |
+| `/healthz` | 进程存活检查，不访问数据库或连接器 | 无 |
+| `/readyz` | 数据库、Schema、加密配置和核心服务就绪检查 | 无或仅部署网络可达 |
+| `/metrics` | 不含用户标识和 Secret 的基础运行指标 | 仅部署网络或独立监控凭据 |
 
 管理 API 与推理 API 使用不同的鉴权依赖和错误映射。用户登录 Token 不能调用 `/v1/*`，外部 API Key 不能调用 `/api/*`。
 
@@ -117,8 +119,8 @@
 | POST | `/api/invitations` | 创建邀请码，明文只在本次响应中返回。 |
 | GET | `/api/invitations/{id}` | 查看非敏感详情。 |
 | PATCH | `/api/invitations/{id}` | 修改备注、有效期和最大使用次数。 |
-| POST | `/api/invitations/{id}/revoke` | 撤销邀请码。 |
-| DELETE | `/api/invitations/{id}` | 删除持久化记录；已产生用户关系时保留审计快照。 |
+| POST | `/api/invitations/{id}/revoke` | 立即撤销并保留可见记录。 |
+| DELETE | `/api/invitations/{id}` | 仅对已撤销邀请码执行软删除；注册来源和审计继续保留。 |
 
 创建字段：`note`、`expires_at`、`max_uses`。`max_uses` 必须大于 0；已使用次数不能因更新上限而变得非法。只有管理员可调用这些接口。
 
@@ -132,7 +134,9 @@
 | PATCH | `/api/users/{id}` | 修改显示名、角色允许范围内的状态。 |
 | POST | `/api/users/{id}/reset-password` | 生成或设置一次性新密码，不回显旧密码。 |
 
-禁止通过用户接口把普通用户提升为管理员。管理员初始化和新增管理员属于部署级受控流程，不在普通后台 API 中开放。
+禁止通过用户接口把普通用户提升为管理员。管理员初始化和新增管理员属于部署级受控流程，不在普通后台 API 中开放；首次管理员来自环境变量，后续管理员由受控 CLI 创建并写入审计。
+
+管理员把 `is_active` 更新为 false 时，服务端立即撤销目标用户会话、停用其全部 API Key、终止全部活动任务并幂等释放任务名额。新登录和新推理请求返回 401；已准入请求只收到通用协议错误。禁止禁用最后一个有效管理员。
 
 ## 5. IM 连接 API
 
@@ -164,6 +168,8 @@
 
 管理员可启动、停止、应用和检查任意连接，但不能调用登录或绑定接口，也不能取得二维码和绑定码。
 
+期望运行的长连接遇到普通网络故障后自动指数退避重连；进入 `auth_required` 后停止自动重试。重新登录由所有者执行，`apply` 只重启目标连接。
+
 ## 6. LLM 配置 API
 
 目标资源名统一为 `llm-configs`，不再暴露 Provider、LLMModel 或 ModelRoute。
@@ -174,7 +180,7 @@
 | POST | `/api/llm-configs` | 用户创建配置。 |
 | GET | `/api/llm-configs/{id}` | 查看自己的非敏感详情。 |
 | PATCH | `/api/llm-configs/{id}` | 修改配置；省略 Secret 表示保留。 |
-| DELETE | `/api/llm-configs/{id}` | 删除未被有效 API Key 使用的配置。 |
+| DELETE | `/api/llm-configs/{id}` | 被有效 API Key 或活动任务引用时返回 409，否则清空 Secret 后软删除。 |
 | POST | `/api/llm-configs/{id}/test` | 使用最小请求测试连通性，不回显 Secret。 |
 
 主要字段：
@@ -196,6 +202,8 @@
 
 `protocol` 初期支持 `openai_compatible`、`anthropic`。自定义 Header 整体按 Secret 处理，列表和详情只返回 header 名称，不返回值。
 
+历史任务保留配置名称、协议、规范化 Base URL 和真实模型等非敏感快照，不保留 Secret、自定义 Header 值，也不能用已删除配置重新执行。
+
 ## 7. Fake Model 与模型分组 API
 
 ### 7.1 Fake Model
@@ -210,7 +218,7 @@
 
 Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型或回复策略。管理员创建的系统模型对全部用户可见；普通用户创建的私有模型只对所有者可见，其他普通用户即使猜到 ID 也返回 404。管理员治理私有模型时不能把它改绑或转授给其他用户。
 
-### 7.2 模型分组（M10）
+### 7.2 模型分组（M5）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -228,7 +236,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | POST | `/api/api-keys` | 用户创建 Key，明文只返回一次。 |
 | GET | `/api/api-keys/{id}` | 返回配置和 Key 前缀。 |
 | PATCH | `/api/api-keys/{id}` | 修改名称、状态、入口和策略。 |
-| DELETE | `/api/api-keys/{id}` | 停用并删除 Key；历史任务保留脱敏引用。 |
+| DELETE | `/api/api-keys/{id}` | 立即阻止新请求并软删除 Key；已准入任务按创建快照继续完成。 |
 
 目标写入结构：
 
@@ -272,7 +280,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 管理员只能查看允许的任务元数据和脱敏请求，不可调用草稿或回复写接口。
 
-回复请求使用统一的协议无关表示：
+回复请求使用统一的协议无关 `ReplyDraft` 表示。Web 编辑器直接读写该结构，IM DSL 解析器也必须生成完全相同的结构：
 
 ```json
 {
@@ -289,7 +297,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 }
 ```
 
-`arguments` 必须是合法 JSON 值。系统为不同协议生成对应 tool call 结构，但绝不执行。提交成功后草稿不可继续修改；竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
+`arguments` 必须是合法 JSON 值。系统为不同协议生成对应 tool call 结构，但绝不执行。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
 
 ## 10. Web 小助手 API（M8）
 
@@ -298,9 +306,9 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | GET/POST | `/api/assistant/sessions` | 查看或创建自己的会话。 |
 | GET | `/api/assistant/sessions/{id}` | 查看自己的会话与消息。 |
 | DELETE | `/api/assistant/sessions/{id}` | 删除自己的会话和消息。 |
-| POST | `/api/assistant/sessions/{id}/messages` | 使用选定 LLM 配置发送文本和白名单页面上下文。 |
+| POST | `/api/assistant/sessions/{id}/messages` | 使用选定 LLM 配置发送文本和当前页面上下文快照。 |
 
-后端忽略或拒绝上下文中的密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。M8 第一阶段不提供可执行系统工具。
+每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。M8 第一阶段不提供可执行系统工具。
 
 ## 11. 设置、日志与审计
 
@@ -312,6 +320,8 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 普通用户在任务时间线中只能看到自己的相关业务事件，不能直接读取全局应用日志。
 
+审计 action 使用稳定枚举。管理员可读取操作者、动作、资源 ID、所有者、时间、结果和变更字段名；接口不得返回请求正文、字段值、Secret 旧值/新值或任何凭据恢复材料。
+
 ## 12. 推理 API 通用契约
 
 ### 12.1 鉴权
@@ -319,6 +329,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 - `GET /v1/models`、OpenAI Chat 和 OpenAI Responses 使用 `Authorization: Bearer <API_KEY>`。
 - Anthropic Messages 接受官方客户端使用的 `x-api-key: <API_KEY>`，并接收 `anthropic-version`。
 - 服务端不得在错误、日志或追踪中输出完整 Key。
+- `/v1/models` 不接受匿名访问，因为目录必须按 Key 所有者、模型分组和 Key 选择计算。SDK 或适配器必须先设置 Key，再进行模型发现；匿名请求稳定返回 401，而不是空目录。
 
 ### 12.2 通用准入顺序
 
@@ -361,11 +372,54 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 ### 12.4 请求保真
 
 - 原始 JSON payload 完整落库。
-- 同协议真实 LLM 转发保留全部调用方字段和未知扩展字段。
+- 同协议真实 LLM 转发默认保留全部调用方字段和未知扩展字段。
 - 服务端不移除 tools、tool choice、metadata 或供应商扩展。
 - 身份 system 指令追加在调用方已有 system 内容之后。
+- API 契约明确声明的网关控制字段可以被校验、消费或等价重写，但必须完整保存在原始 payload，并记录转换决定。
 - 跨协议只转换可等价语义；存在不可转换的专有字段时返回 400。
 - 任何上游返回的 tool call 只转发，不由本系统执行。
+
+### 12.5 网关控制字段
+
+OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机械发送给用户配置的真实 LLM：
+
+1. 每个 Responses 成功结果生成稳定的网关 response ID，并关联当前任务和 API Key。
+2. 新请求携带 `previous_response_id` 时，只允许引用同一 API Key 的历史响应；不存在、属于其他 Key、尚未完成或形成非法链时返回 400 `invalid_previous_response_id`。
+3. 网关完整保存本次原始 payload 和原始 ID，加载历史规范化请求与响应，并按时间顺序等价展开成本次上下文。
+4. 人工流程向用户展示展开后的上下文；真实 LLM 转发使用展开后的消息，不把无法识别的网关 ID 发送给上游。
+5. 展开结果超过目标上下文限制时返回明确的协议兼容 400 `context_length_exceeded`，不静默截断。
+6. 历史清理不得破坏仍被引用的链；可以保留最小非敏感上下文快照代替完整任务，但不能留下悬空 ID。
+
+这是一项公开声明的网关等价转换，不违反原始请求完整落库原则。除契约明确列出的控制字段、服务端身份 system 指令和上游真实模型替换外，同协议字段仍默认原样透传。
+
+### 12.6 跨协议字段转换矩阵
+
+每个字段只能采用四种处理：`透传`、`等价转换`、`网关消费`、`拒绝 400`。禁止使用“忽略”“尽量转换”或把未知字段塞进 metadata 冒充等价支持。
+
+| 语义 | OpenAI Chat | OpenAI Responses | Anthropic Messages | 跨协议规则 |
+| --- | --- | --- | --- | --- |
+| 系统指令 | system/developer message | `instructions` 或输入项 | 顶级 `system` | 按原有顺序转换，再在末尾追加 Fake Model 身份指令。 |
+| 用户/助手内容 | `messages` | `input` message/items | `messages` content blocks | 文本和角色等价转换；不支持的内容块返回 400。 |
+| Fake Model | `model` | `model` | `model` | 用于权限校验和对外身份；上游请求使用 LLM 配置的真实模型，响应改回 Fake Model。 |
+| 输出上限 | `max_completion_tokens` 或兼容 `max_tokens` | `max_output_tokens` | `max_tokens` | 数值与边界等价转换；同一请求同时给出冲突字段时返回 400。 |
+| 采样参数 | `temperature`, `top_p` | `temperature`, `top_p` | `temperature`, `top_p` | 目标协议支持且范围兼容时转换，否则 400。 |
+| 停止序列 | `stop` | 适配器声明的等价字段 | `stop_sequences` | 字符串转单元素数组；数量或限制超出目标能力时返回 400。 |
+| 流式开关 | `stream` | `stream` | `stream` | 布尔值等价转换；事件结构由目标协议渲染器负责。 |
+| 函数工具 Schema | `tools[].function.parameters` | function tool parameters | `tools[].input_schema` | JSON Schema 子集等价转换；目标不支持的关键字或托管工具类型返回 400。 |
+| 工具选择 | `none/auto/required/指定函数` | 对应 function tool choice | `none/auto/any/tool` | `required` ↔ `any`，指定函数 ↔ `tool{name}`；其他不可等价值返回 400。 |
+| 并行工具控制 | `parallel_tool_calls` | `parallel_tool_calls` | `disable_parallel_tool_use` | 布尔语义取反转换；目标版本不支持时返回 400。 |
+| 工具调用/结果 | assistant tool_calls / tool role | function_call / function_call_output | tool_use / tool_result | 保留 call ID、name、JSON arguments 和结果配对；结构不完整返回 400。 |
+| reasoning 输出 | `reasoning_content` 兼容字段 | reasoning output item | thinking content block | 已生成文本可进入统一 reply schema；签名等不可伪造字段不转换。 |
+| reasoning 请求控制 | 供应商扩展 | `reasoning` 等控制 | thinking/budget 配置 | 只有矩阵后续明确证明等价的组合才转换，其他跨协议请求返回 400。 |
+| JSON/结构化输出 | `response_format` / json_schema | text format/json schema | 无通用等价字段 | OpenAI 两格式间可按 Schema 转换；转 Anthropic 时返回 400，不用提示词伪装等价支持。 |
+| metadata/用户标识 | `user`, `metadata` 或扩展 | `metadata`, `safety_identifier` 等 | `metadata.user_id` | 仅已列出的等价键可转换；额外键不静默丢弃，返回 400。 |
+| 历史响应引用 | 无 | `previous_response_id` | 无 | 由网关消费并展开，遵循 12.5。 |
+| Prompt Cache | 供应商扩展 | 供应商扩展 | `cache_control` | 同协议原样透传；跨协议没有明确等价项时返回 400。 |
+| 托管工具和文件能力 | 供应商专有类型 | file search/computer 等 item | 供应商专有 block | 只有目标适配器明确实现同等能力才转换；默认返回 400，系统绝不执行。 |
+| `service_tier`、background、store 等平台能力 | 供应商字段 | 供应商字段 | 供应商字段 | 同协议透传；跨协议未逐项声明等价时返回 400。 |
+| 未知扩展字段 | 原样保留 | 原样保留 | 原样保留 | 同协议原样透传；跨协议返回 400 `unsupported_parameter`。 |
+
+转换适配器必须为每个非透传字段记录字段名、处理类型和结果，不记录字段值。新增支持前先更新此矩阵和契约测试。
 
 ## 13. OpenAI Chat Completions
 
@@ -399,6 +453,8 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 最低要求：`model` 为非空字符串，`input` 为有效字符串或输入项数组。`instructions`、tools 和所有扩展字段完整保存。
 
+`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。
+
 ### 14.2 输出项
 
 - reasoning 映射为 reasoning output item。
@@ -417,6 +473,8 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 `POST /v1/messages`
 
 最低要求：`model`、非空 `messages` 和合法 `max_tokens`。接收官方 `x-api-key` 与 `anthropic-version` 请求头。`system` 可为字符串或内容块；原始结构完整保存。
+
+`cache_control` 等 Anthropic 专有块在同协议转发时完整保留；人工流程只保存而不执行其缓存语义；跨协议按 12.6 的矩阵处理。
 
 ### 15.2 非流式响应
 
@@ -467,7 +525,7 @@ Chat、Responses 和 `/v1/models` 在尚未开始 SSE 时返回：
 | 场景 | HTTP | 稳定语义 |
 | --- | --- | --- |
 | JSON、字段或不可转换参数错误 | 400 | `invalid_request_error` |
-| API Key 无效或停用 | 401 | `authentication_error` |
+| API Key 无效、停用或所属用户被禁用 | 401 | `authentication_error` |
 | Fake Model 不存在、停用或不在 Key 有效集合 | 404 | `model_not_found` |
 | 用户活动任务已达 10 | 429 | `rate_limit_exceeded` |
 | 人工超时、IM/上游或内部失败 | 500，或按后续降级策略统一 429 | 通用服务错误 |
@@ -490,7 +548,7 @@ HTTP 轮询响应返回单调 cursor；重复 cursor、ACK 或回复必须幂等
 
 ## 18. 当前 M0 过渡接口
 
-以下接口描述当前代码，便于 M2 删除和替换，不代表需要兼容：
+以下接口描述当前代码，只用于界定 M2 必须一次性删除的范围，不代表需要兼容：
 
 | 当前接口 | 目标处理 |
 | --- | --- |
@@ -502,7 +560,7 @@ HTTP 轮询响应返回单调 cursor；重复 cursor、ACK 或回复必须幂等
 | `POST /api/api-keys/{id}/disable` | 删除，以 `PATCH {"enabled": false}` 替换。 |
 | 当前 `/v1/*` 由 `ModelRoute` 选择行为 | 重建为 API Key 策略、Fake Model 校验和用户级并发准入。 |
 
-后续不得为了旧前端或旧数据库保留代理路由、字段别名、双写或自动迁移。
+M2 的一个完整提交必须同时切换目标 Schema、服务、API、前端和测试，并删除这些接口及其旧模型。不得提交新旧表或运行链路共存的中间状态，也不得为了旧前端或旧数据库保留代理路由、字段别名、双写或自动迁移。
 
 ## 19. 契约变更要求
 

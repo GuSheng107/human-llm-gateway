@@ -2,7 +2,7 @@
 
 > 文档状态：M1 目标 Schema 设计
 >
-> M2 将按本文件直接重建 SQLAlchemy 模型。项目不做历史数据库迁移，也不为旧表或旧字段补兼容逻辑。
+> M2 将在一个完整提交中按本文件直接重建 SQLAlchemy 模型。项目不做历史数据库迁移，不为旧表或旧字段补兼容逻辑，也不允许新旧表或两套 metadata 共存。
 
 ## 1. 存储原则
 
@@ -65,6 +65,8 @@
 | `password_hash` | varchar(255) | 非空，自适应密码哈希 |
 | `role` | enum | 非空，默认 `user` |
 | `is_active` | boolean | 非空，默认 true |
+| `disabled_at` | datetime nullable | 管理员禁用时间 |
+| `disabled_by_user_id` | integer nullable | FK users，执行禁用的管理员 |
 | `active_task_count` | integer | 非空，默认 0，CHECK 0-10 |
 | `registered_via_invitation_id` | integer nullable | FK invitation_codes，删除时 SET NULL |
 | `last_login_at` | datetime nullable | 最近登录 |
@@ -75,7 +77,7 @@
 - 唯一索引 `lower(username)`。
 - `(role, is_active)` 管理筛选索引。
 
-`active_task_count` 是并发准入的事务计数器，不通过扫描任务表决定第 11 个请求。后台可提供只读一致性检查，将计数与活动任务实际数量对比，但不能在普通请求中静默修正。
+`active_task_count` 是并发准入的事务计数器，不通过扫描任务表决定第 11 个请求。后台可提供只读一致性检查，将计数与活动任务实际数量对比，但不能在普通请求中静默修正。禁用用户必须通过 UserService 的事务编排执行，不允许只翻转 `is_active`。
 
 ### 3.2 `auth_sessions`
 
@@ -110,7 +112,7 @@
 
 索引：`(expires_at, revoked_at, deleted_at)`、`created_by_user_id`。
 
-明文邀请码只在创建响应展示一次。删除采用软删除，保证既满足管理端删除能力，又能保留用户来源和审计证据。
+明文邀请码只在创建响应展示一次。撤销负责立即禁止消费并继续显示；删除只允许作用于已撤销邀请码，采用软删除从普通列表隐藏，同时保留用户来源和审计证据。
 
 ## 4. 用户连接与真实 LLM
 
@@ -133,6 +135,8 @@
 | `last_health_at` | datetime nullable | 最近健康检查 |
 | `last_error_code` | varchar(64) nullable | 脱敏错误类别 |
 | `last_error_message` | varchar(500) nullable | 脱敏摘要 |
+| `retry_count` | integer | 连续自动重试次数，默认 0 |
+| `next_retry_at` | datetime nullable | 下次自动重试时间 |
 | `created_at` / `updated_at` / `deleted_at` | datetime | 软删除 |
 
 约束和索引：
@@ -142,6 +146,8 @@
 - `binding_code_hash` 存在时唯一。
 
 管理员列表只能读取平台、所有者、状态和脱敏错误，不能解密配置、绑定码或临时二维码。
+
+普通网络错误且 `desired_running=true` 时更新 `retry_count` 和 `next_retry_at`，由运行时按带抖动的指数退避重连；认证失效时进入 `auth_required`、清空 `next_retry_at` 并等待所有者重新登录。手动停止会设置 `desired_running=false`，不得被后台重试重新拉起。
 
 ### 4.2 `connector_outbox`
 
@@ -321,8 +327,11 @@ effective = grouped                       if key has no api_key_fake_models rows
 | --- | --- | --- |
 | `id` | integer | PK |
 | `public_id` | varchar(64) | 非空，唯一，供 UI/IM/协议日志使用 |
+| `response_public_id` | varchar(64) nullable | OpenAI Responses 等对外响应 ID，唯一 |
+| `previous_task_id` | integer nullable | FK request_tasks，同一 API Key 的历史响应链 |
 | `owner_user_id` | integer | FK users，非空 |
 | `api_key_id` | integer | FK api_keys，非空 |
+| `api_key_prefix_snapshot` | varchar(20) | 创建任务时 Key 前缀快照 |
 | `fake_model_id` | integer nullable | FK fake_models，删除时 SET NULL |
 | `requested_model` | varchar(255) | Fake Model 字符串快照 |
 | `protocol` | enum | 三种入站协议 |
@@ -334,11 +343,13 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `delivery_mode_snapshot` | enum | 创建时入口快照 |
 | `im_connection_id_snapshot` | integer nullable | 当时使用的连接 |
 | `llm_config_id_snapshot` | integer nullable | 当时使用的上游配置 ID，仅内部 |
+| `llm_config_snapshot_json` | text nullable | 名称、协议、规范化 Base URL、真实模型等非敏感快照 |
 | `human_deadline_at` | datetime nullable | fallback/超时时间 |
 | `state` | enum | 任务状态 |
 | `version` | integer | 乐观版本，默认 1 |
-| `response_payload_json` | text nullable | 完整规范化结果或协议快照 |
+| `response_payload_json` | text nullable | 完整规范化 ReplyDraft 结果 |
 | `public_error_code` | varchar(64) nullable | 对外稳定错误码 |
+| `cancel_reason_code` | varchar(64) nullable | 内部取消类别，不直接回显 |
 | `slot_acquired_at` | datetime | 非空 |
 | `slot_released_at` | datetime nullable | 名额幂等释放标记 |
 | `response_started_at` | datetime nullable | 对外响应开始 |
@@ -349,10 +360,27 @@ effective = grouped                       if key has no api_key_fake_models rows
 
 - `(owner_user_id, state, created_at)`：用户活动任务和工作台。
 - `(api_key_id, created_at)`、`(requested_model, created_at)`。
+- `response_public_id` 唯一索引、`previous_task_id` 历史链索引。
 - `(state, human_deadline_at)`：超时协调器。
 - `slot_released_at`：一致性检查。
 
 原始请求不经过字段白名单重建后再保存；必须序列化接收到的完整 JSON。Authorization、Cookie、API Key 等认证 Header 不进入 `request_headers_json`。
+
+`previous_response_id` 原始值留在 `raw_payload_json`，解析成功后写入 `previous_task_id`。引用必须属于同一 `api_key_id` 且指向已完成响应；规范化请求保存等价展开后的上下文。历史清理必须保留仍被引用任务的最小请求/回复快照，不能留下悬空链。
+
+`response_payload_json` 是 IM DSL、Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构：
+
+```json
+{
+  "reasoning": "可选文本",
+  "tool_calls": [
+    {"id": "call_01", "name": "lookup", "arguments": {"id": 1}}
+  ],
+  "final_text": "最终回复"
+}
+```
+
+协议专有 ID、SSE 序号和 finish reason 由渲染器生成，不反向改变该结构。首个提交成功后没有撤销或覆盖事务。
 
 ### 7.2 `task_events`
 
@@ -413,10 +441,13 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `role` | enum | system/user/assistant |
 | `content_json` | text | 消息内容 |
 | `page_context_json` | text nullable | 经双重过滤的页面上下文 |
+| `page_route` | varchar(255) nullable | 发送时当前路由 |
+| `page_feature` | varchar(100) nullable | 发送时 feature 代码 |
+| `context_version` | varchar(64) nullable | 页面上下文版本 |
 | `upstream_metadata_json` | text nullable | 脱敏用量、结束原因 |
 | `created_at` | datetime | 非空 |
 
-索引 `(session_id, id)`。Secret 过滤前的页面上下文不得落库。
+索引 `(session_id, id)`。Secret 过滤前的页面上下文不得落库。每条消息只保存发送时当前浏览器标签页的上下文快照；页面切换不修改历史消息，也不把旧页面上下文自动合并进新消息。
 
 ## 9. 设置、审计与日志
 
@@ -446,7 +477,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `metadata_json` | text nullable | 脱敏变更摘要 |
 | `created_at` | datetime | 非空 |
 
-索引 `(created_at)`、`(actor_user_id, created_at)`、`(resource_type, resource_id)`、`owner_user_id`、`request_id`。审计记录不保存 Secret 变更前后值。
+索引 `(created_at)`、`(actor_user_id, created_at)`、`(resource_type, resource_id)`、`owner_user_id`、`request_id`。`action` 必须来自集中枚举。`metadata_json` 只允许字段名、非敏感状态、计数和关联 ID，不保存请求正文、业务内容、Secret 变更前后值或任何凭据恢复材料；管理员能够看到发生过“凭据已轮换”属于预期审计能力。
 
 ### 9.3 `app_logs`
 
@@ -547,18 +578,34 @@ WHERE id = :task_id
 
 空集合删除全部关联行，语义为允许全部候选模型。
 
+### 10.7 禁用用户
+
+管理员禁用用户由 UserService 编排，不允许直接修改单列：
+
+1. 在短事务中条件更新 `users.is_active=false`，记录操作者和禁用时间。
+2. 撤销全部未失效 `auth_sessions`，停用该用户全部 API Key。
+3. 把所有尚未终止的任务条件推进到 `cancelled`，写入内部 `user_disabled` 原因。
+4. 对每个 `slot_released_at IS NULL` 的任务幂等设置释放时间，并把 `active_task_count` 扣减到 0。
+5. 提交后通知本进程和其他实例取消等待、上游请求与流式输出；对外仅产生通用协议错误。
+
+事务和进程通知之间发生崩溃时，启动恢复任务必须根据数据库终态补发取消信号，但不能重复扣减名额。最后一个有效管理员不能被禁用。
+
+### 10.8 历史响应引用
+
+解析 `previous_response_id` 时，在同一只读快照中校验 response ID、`api_key_id`、完成状态和创建时间，再把 `previous_task_id` 与新任务一起写入。其他 Key 的响应统一按无效引用返回，不能暴露其是否存在。展开链必须检测循环和上下文长度；超过限制返回 400，不截断历史。
+
 ## 11. 删除与引用规则
 
 | 资源 | 删除行为 |
 | --- | --- |
-| 邀请码 | 软删除，立即不可消费，用户来源和审计保留。 |
-| 用户 | 默认禁用；存在历史任务时不物理删除。 |
+| 邀请码 | 先撤销使其立即不可消费；删除只对已撤销记录执行软删除，用户来源和审计保留。 |
+| 用户 | 禁用时撤销会话和 Key、终止活动任务并释放名额；存在历史任务时不物理删除。 |
 | IM 连接 | 先停止运行并清空凭据，再软删除；引用它的有效 Key 必须先改为 Web 或停用。 |
-| LLM 配置 | 清空 Secret 后软删除；被有效转发 Key 引用时返回 409。 |
+| LLM 配置 | 清空 Secret 后软删除；被有效转发 Key 或活动任务引用时返回 409，历史任务保留非敏感快照。 |
 | Fake Model | 软删除并从目录立即消失；活动任务使用 requested_model 快照继续完成。 |
 | 模型分组 | 被有效 Key 引用时返回 409。 |
-| API Key | 立即停用、清空可撤销材料并软删除，历史任务保留 ID 和前缀。 |
-| 任务/事件 | 普通用户不能删除；按未来保留策略由管理员任务清理。 |
+| API Key | 立即停用并软删除，阻止新请求；已准入任务按快照继续，历史任务保留 ID 和前缀。 |
+| 任务/事件 | 普通用户不能删除；未来清理必须保留被 `previous_task_id` 引用的最小上下文快照。 |
 | 草稿 | 用户可删除未提交草稿；已提交草稿随任务保留。 |
 | 小助手会话 | 用户删除时级联删除消息或进入可配置保留队列。 |
 
@@ -573,28 +620,39 @@ WHERE id = :task_id
 5. 从代码中的默认目录创建系统 Fake Model，并写入种子版本。
 6. 提交后启动连接器运行时。
 
-同一新 Schema 的重复启动必须幂等：已有管理员不被环境变量覆盖密码，管理员后来停用或删除的默认 Fake Model 不因普通重启被补回。种子只在全新数据库或显式受控初始化时执行。
+同一新 Schema 的重复启动必须幂等：已有管理员不被环境变量覆盖密码，管理员后来停用或删除的默认 Fake Model 不因普通重启被补回。种子只在全新数据库或显式受控初始化时执行。后续管理员只能通过受控 CLI 创建；CLI 调用同一 UserService、记录审计并拒绝产生“零个有效管理员”。
 
 ## 13. 明确删除的旧结构
 
-M2 直接删除并不再创建：
+M2 的单个目标提交直接删除并不再创建：
 
 - `human_operators` 及用户一对一操作员关系。
 - `model_routes` 及 API Key 的 `route_id`。
 - 将真实供应商拆成全局 `llm_providers`、`llm_models` 的核心路由结构。
 - 任何为旧字段补列、旧枚举映射或旧接口双写的启动逻辑。
 
-旧开发数据库应备份后删除，由当前模型重新创建；不提供迁移脚本。
+旧开发数据库应备份后删除，由当前模型重新创建；不提供迁移脚本。M2 不允许把旧表与目标表一起提交，不允许临时双写、兼容查询、旧 API 代理或包含两套 metadata 的启动模式。
 
-## 14. Schema 验收
+## 14. 备份与恢复约束
+
+- SQLite 运行中备份使用在线 backup API 或经过验证的 `VACUUM INTO`；启用 WAL 时禁止只复制主数据库文件。
+- 备份包必须同时包含数据库、加密主密钥的独立安全备份和 Schema 版本说明，但三者不能以明文放在同一不受控位置。
+- 恢复流程先在隔离目录校验完整性和 Schema 版本，再停止写流量、替换数据库并执行 `/readyz` 检查。
+- M10 必须提供自动备份、保留期、恢复演练和失败告警说明；没有完成恢复演练不能进入 M11 发布验收。
+
+## 15. Schema 验收
 
 - 空目录首次启动能自动创建数据库、管理员和默认系统 Fake Model。
 - Schema 版本不一致时明确失败，不修改旧库。
 - 邀请码并发消费不超过 `max_uses`。
 - 同一用户多 Key 并发最多成功占用 10 个活动任务。
 - 终态和异常路径只释放一次名额。
+- 禁用用户会终止全部活动任务，恢复流程不会重复释放名额。
 - Web/IM/fallback 竞争只有一个结果获胜。
 - 其他用户无法查询或引用私有 Fake Model。
 - 模型分组和 Key 选择只能缩小有效模型集合；空 Key 选择表示全部候选模型。
 - `/v1/models` 和推理准入使用同一有效模型查询。
+- `previous_response_id` 只能引用同一 API Key 的完成响应，历史链不会因清理产生悬空引用。
+- IM DSL 与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
 - Secret、Token、完整 Key 和密码不以明文落库或进入日志。
+- M2 目标 Schema 中不存在旧表或新旧共存元数据。

@@ -9,10 +9,10 @@ Human LLM Gateway 对外表现为真实 LLM API，对内允许每个用户在 We
 项目正在按 `docs/ROADMAP.md` 分阶段重构：
 
 - M0 已完成：收口现有 FastAPI、React、连接器和三协议可运行基线。
-- M1 已完成：固化产品、架构、API、数据库、UI 和开发规范。
-- 下一阶段是 M2：直接重建目标领域模型和数据库，不兼容旧数据或旧接口。
+- M1 已完成并完成边界修订：固化产品、架构、API、数据库、UI、阶段依赖和开发规范。
+- 下一阶段是 M2：在一个完整提交中原子重建目标领域、数据库、服务、API、前端和测试。
 
-当前运行时代码仍包含 `HumanOperator`、Provider 和 `ModelRoute` 等过渡结构，只用于维持 M0 基线可运行，不代表目标产品契约，也不会在后续保留兼容层。请勿把当前版本作为生产就绪版本。
+当前运行时代码仍包含 `HumanOperator`、Provider 和 `ModelRoute` 等过渡结构，只用于维持 M0 基线可运行，不代表目标产品契约。M2 不会提交新旧结构共存、双写、迁移或兼容代理；目标结构完成后一次性替换。请勿把当前版本作为生产就绪版本。
 
 ## 目标能力
 
@@ -22,10 +22,14 @@ Human LLM Gateway 对外表现为真实 LLM API，对内允许每个用户在 We
 - 管理员维护系统 Fake Model；用户私有 Fake Model 对其他普通用户不可见。
 - API Key 决定请求所有者、Web/IM 入口、回复策略、超时和有效 Fake Model。
 - 模型分组先预筛候选模型，API Key 可继续选择具体模型；Key 不选择模型代表允许全部候选模型。
+- `/v1/models` 必须使用 API Key 鉴权，不提供匿名模型目录。
 - 每个用户固定最多 10 个活动任务，所有 Key 和策略共享；第 11 个请求返回协议兼容的 429。
 - 人工提交完整 reasoning、假 tool call 和最终文本后，系统再返回 JSON 或伪流式 SSE。
+- IM DSL 与 Web 编辑器共享同一个 ReplyDraft；提交前可预览编辑，首个有效提交后不可撤销或覆盖。
 - 假 tool call 只作为协议内容返回，不执行也不等待。
 - 同协议真实 LLM 转发保留调用方全部字段；跨协议无法等价转换的字段明确返回 400。
+- OpenAI Responses 的 `previous_response_id` 由网关在同一 API Key 范围内解析历史响应并等价展开。
+- 管理员禁用用户会立即撤销会话和 Key、终止活动任务并释放名额。
 - 所有外部响应使用调用方请求的 Fake Model 身份，不暴露人工、IM、fallback 或真实上游。
 
 完整边界见 [产品定义](docs/PRODUCT.md)。
@@ -40,6 +44,8 @@ Human LLM Gateway 对外表现为真实 LLM API，对内允许每个用户在 We
 | Anthropic Messages | `POST /v1/messages` |
 
 目标 `/v1/models` 只返回当前 API Key 的有效 Fake Model 集合。有效集合依次受用户可见范围、可选模型分组和 Key 直接模型选择限制，与真实 LLM 配置无关。
+
+调用 `/v1/models` 前必须配置 API Key；匿名请求稳定返回 401。第三方 SDK 或适配器应在模型发现前设置 `Authorization: Bearer <API_KEY>`。
 
 ## 快速启动
 
@@ -115,7 +121,7 @@ M0 已包含以下连接器基线：
 /done
 ```
 
-`/tool` 只生成响应中的 tool call。系统先持久化完整事件，再按协议输出非流式结果或伪流式事件。M6 将把相同行为重建为完整 Web/IM 任务闭环。
+`/tool` 只生成响应中的 tool call。系统先持久化完整事件，再按协议输出非流式结果或伪流式事件。M6 将让 DSL 解析器和 Web 编辑器使用同一个 ReplyDraft JSON Schema，并把 `/done` 作为不可撤销的最终提交。
 
 ## 文档索引
 
@@ -128,7 +134,7 @@ M0 已包含以下连接器基线：
 | [API 契约](docs/API_CONTRACT.md) | 管理 API、三种推理格式、流式和错误 |
 | [数据库设计](docs/DATABASE.md) | 表、字段、索引、Secret 和原子事务 |
 | [UI 规范](docs/UI_GUIDE.md) | Tailwind 浅色 RuoYi 风格、菜单和页面交互 |
-| [实施路线图](docs/ROADMAP.md) | M0-M11 进度唯一事实来源 |
+| [实施路线图](docs/ROADMAP.md) | M0-M12 进度唯一事实来源 |
 
 ## 项目结构
 
@@ -167,6 +173,8 @@ npm run build
 ```
 
 测试使用替身，不连接真实微信、企业微信、用户 LLM 或生产数据库。实际页面视觉由用户完成最终验收。
+
+生产部署、CI、SQLite 在线备份恢复、日志轮转、`/readyz` 和优雅关闭将在 M10 完成；M11 执行发布验收。隔离工具沙箱延期到 M12，不阻塞首版。
 
 ## 安全提示
 
