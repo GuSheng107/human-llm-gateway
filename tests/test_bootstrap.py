@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -70,3 +70,17 @@ def test_schema_version_mismatch_fails(engine, settings) -> None:
 
     with SessionLocal() as session, pytest.raises(SchemaVersionMismatch):
         BootstrapService().initialize(session, settings)
+
+
+def test_legacy_schema_fails_without_mutation(engine, settings) -> None:
+    with engine.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE system_settings (key VARCHAR(120) PRIMARY KEY, value TEXT NOT NULL)")
+        )
+
+    before = set(inspect(engine).get_table_names())
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session, pytest.raises(SchemaVersionMismatch, match="当前版本"):
+        BootstrapService().initialize(session, settings)
+
+    assert set(inspect(engine).get_table_names()) == before == {"system_settings"}

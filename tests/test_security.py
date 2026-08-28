@@ -33,7 +33,13 @@ class TestSecretEnvelope:
         assert parts[0] == "hlg1"
         assert parts[1] == "1"
         assert len(parts[2]) == 16  # 12 字节 nonce 的 base64url（无 padding）
+        assert "=" not in envelope
         assert decrypt_secret(envelope, app_secret, "llm-secret") == "super-secret"
+
+    def test_padded_envelope_rejected(self, app_secret: str) -> None:
+        envelope = encrypt_secret("abcd", app_secret, "llm-secret")
+        with pytest.raises(SecretCryptoError, match="无 padding"):
+            decrypt_secret(envelope + "=", app_secret, "llm-secret")
 
     def test_cross_purpose_rejected(self, app_secret: str) -> None:
         envelope = encrypt_secret("token", app_secret, "llm-secret")

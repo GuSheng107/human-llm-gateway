@@ -69,11 +69,26 @@ def _derive_key(app_secret: str) -> bytes:
     return hkdf.derive(raw)
 
 
-def _decode_app_secret(app_secret: str) -> bytes:
+def _encode_b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _decode_b64url(value: str, *, label: str) -> bytes:
+    """严格解析无 padding 的规范 RFC 4648 URL-safe Base64。"""
+    if not value or "=" in value:
+        raise SecretCryptoError(f"{label} 不是无 padding 的规范 base64url")
+    padding = "=" * (-len(value) % 4)
     try:
-        raw = base64.urlsafe_b64decode(app_secret + "==")
+        raw = base64.b64decode(value + padding, altchars=b"-_", validate=True)
     except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
-        raise SecretCryptoError("APP_SECRET 不是合法 base64url") from exc
+        raise SecretCryptoError(f"{label} 不是合法 base64url") from exc
+    if _encode_b64url(raw) != value:
+        raise SecretCryptoError(f"{label} 不是规范 base64url")
+    return raw
+
+
+def _decode_app_secret(app_secret: str) -> bytes:
+    raw = _decode_b64url(app_secret, label="APP_SECRET")
     if len(raw) != 32:
         raise SecretCryptoError("APP_SECRET 必须解码为 32 字节")
     return raw
@@ -88,8 +103,8 @@ def encrypt_secret(plaintext: str, app_secret: str, purpose: str) -> str:
     key = _derive_key(app_secret)
     nonce = os.urandom(12)
     ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode(), _aad(purpose))
-    nonce_b64 = base64.urlsafe_b64encode(nonce).decode()
-    ciphertext_b64 = base64.urlsafe_b64encode(ciphertext).decode()
+    nonce_b64 = _encode_b64url(nonce)
+    ciphertext_b64 = _encode_b64url(ciphertext)
     return f"{SECRET_ENVELOPE_PREFIX}.{SECRET_KEY_VERSION}.{nonce_b64}.{ciphertext_b64}"
 
 
@@ -100,13 +115,12 @@ def decrypt_secret(envelope: str, app_secret: str, purpose: str) -> str:
     _, key_version, nonce_b64, ciphertext_b64 = parts
     if key_version != str(SECRET_KEY_VERSION):
         raise SecretCryptoError(f"未知的 Secret key_version: {key_version}")
-    try:
-        nonce = base64.urlsafe_b64decode(nonce_b64 + "==")
-        ciphertext = base64.urlsafe_b64decode(ciphertext_b64 + "==")
-    except (ValueError, base64.binascii.Error) as exc:  # type: ignore[attr-defined]
-        raise SecretCryptoError("Secret envelope base64 非法") from exc
+    nonce = _decode_b64url(nonce_b64, label="Secret nonce")
+    ciphertext = _decode_b64url(ciphertext_b64, label="Secret ciphertext")
     if len(nonce) != 12:
         raise SecretCryptoError("Secret nonce 长度不是 12 字节")
+    if len(ciphertext) < 16:
+        raise SecretCryptoError("Secret ciphertext 缺少 AES-GCM tag")
     key = _derive_key(app_secret)
     try:
         return AESGCM(key).decrypt(nonce, ciphertext, _aad(purpose)).decode()

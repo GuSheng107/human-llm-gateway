@@ -25,6 +25,7 @@ def _terminal_values(state: TaskState) -> dict:
         "state": state,
         "slot_released_at": _now(),
         "completed_at": _now(),
+        "version": RequestTask.version + 1,
         "updated_at": _now(),
     }
 

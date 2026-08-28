@@ -78,11 +78,12 @@ class UserService:
         user = self.users.get_by_username(session, normalized)
         if user is None or not user.is_active:
             return None
-        if not verify_password(password, user.password_hash):
+        normalized_password = normalize_password(password)
+        if not verify_password(normalized_password, user.password_hash):
             return None
         # 参数低于当前策略时同流程重哈希。
         if password_needs_rehash(user.password_hash):
-            user.password_hash = hash_password(normalize_password(password))
+            user.password_hash = hash_password(normalized_password)
             session.flush()
         user.last_login_at = utc_now()
         return user

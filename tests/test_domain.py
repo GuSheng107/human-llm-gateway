@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import unicodedata
+
 import pytest
 
 from app.domain.enums import TaskState
@@ -39,6 +41,11 @@ class TestPassword:
     def test_nfc_normalization(self) -> None:
         composed = "é" * 20
         assert normalize_password(composed) == composed
+
+    def test_length_policy_uses_normalized_form(self) -> None:
+        decomposed_but_short_after_nfc = unicodedata.normalize("NFD", "é" * 8)
+        assert len(decomposed_but_short_after_nfc) >= 15
+        assert password_problems(decomposed_but_short_after_nfc) != []
 
 
 class TestTaskStateMachine:

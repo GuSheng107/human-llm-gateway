@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from ..core.config import Settings
@@ -24,23 +25,50 @@ class BootstrapService:
         self.models = FakeModelRepository()
 
     def initialize(self, session: Session, settings: Settings) -> None:
-        # 在 session 的 bind 上建表（生产为模块 engine，测试可注入内存库）。
+        # 在 session 的 bind 上检查/建表（生产为模块 engine，测试可注入内存库）。
         from .. import repositories  # noqa: F401  # 确保模型注册
 
-        Base.metadata.create_all(bind=session.get_bind())
-
-        stored_version = self.settings_repo.get_json(session, "schema_version")
-        if stored_version is not None:
-            if stored_version != SCHEMA_VERSION:
-                raise SchemaVersionMismatch(
-                    f"数据库 schema_version={stored_version} 与代码 {SCHEMA_VERSION} 不一致，"
-                    "请备份后重新初始化"
-                )
-            # 已有数据库：校验 sentinel，不重复种子。
-            self._verify_sentinel(session, settings.app_secret)
+        bind = session.get_bind()
+        inspector = inspect(bind)
+        existing_tables = set(inspector.get_table_names())
+        if not existing_tables:
+            Base.metadata.create_all(bind=bind)
+            self._seed(session, settings)
             return
 
-        self._seed(session, settings)
+        self._validate_schema_shape(inspector, existing_tables)
+
+        stored_version = self.settings_repo.get_json(session, "schema_version")
+        if stored_version != SCHEMA_VERSION:
+            displayed = "缺失" if stored_version is None else repr(stored_version)
+            raise SchemaVersionMismatch(
+                f"数据库 schema_version={displayed} 与代码 {SCHEMA_VERSION} 不一致，"
+                "请备份后重新初始化"
+            )
+        # 已有目标数据库：校验 sentinel，不重复种子。
+        self._verify_sentinel(session, settings.app_secret)
+
+    def _validate_schema_shape(self, inspector, existing_tables: set[str]) -> None:
+        """只读确认现有库就是当前目标 Schema，禁止 create_all 静默补表补列。"""
+        expected_tables = set(Base.metadata.tables)
+        if existing_tables != expected_tables:
+            missing = sorted(expected_tables - existing_tables)
+            extra = sorted(existing_tables - expected_tables)
+            raise SchemaVersionMismatch(
+                "数据库表结构与当前版本不一致，请备份后重新初始化；"
+                f"缺少表={missing}，额外表={extra}"
+            )
+
+        for table_name, table in Base.metadata.tables.items():
+            expected_columns = set(table.columns.keys())
+            actual_columns = {column["name"] for column in inspector.get_columns(table_name)}
+            if actual_columns != expected_columns:
+                missing = sorted(expected_columns - actual_columns)
+                extra = sorted(actual_columns - expected_columns)
+                raise SchemaVersionMismatch(
+                    f"数据库表 {table_name} 的列与当前版本不一致，请备份后重新初始化；"
+                    f"缺少列={missing}，额外列={extra}"
+                )
 
     def _seed(self, session: Session, settings: Settings) -> None:
         # 1. schema_version 与加密自检 sentinel。

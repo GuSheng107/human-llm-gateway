@@ -93,11 +93,17 @@ def error_body(
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):
+        from ..core.logging import reset_request_id, set_request_id
+
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex[:24]}"
         request.state.request_id = request_id
-        response = await call_next(request)
-        response.headers["X-Request-Id"] = request_id
-        return response
+        token = set_request_id(request_id)
+        try:
+            response = await call_next(request)
+            response.headers["X-Request-Id"] = request_id
+            return response
+        finally:
+            reset_request_id(token)
 
 
 def get_request_id(request: Request) -> str:

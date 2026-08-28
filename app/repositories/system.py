@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from ..core.logging import sanitize_log_value
 from ..core.time import utc_now
 from ..domain.enums import AuditAction, AuditResult
 from .models import AppLog, AuditLog, SystemSetting
@@ -98,7 +99,9 @@ class AppLogRepository:
             task_id=task_id,
             api_key_id=api_key_id,
             connection_id=connection_id,
-            context_json=json.dumps(context, ensure_ascii=False) if context else None,
+            context_json=(
+                json.dumps(sanitize_log_value(context), ensure_ascii=False) if context else None
+            ),
         )
         session.add(row)
         return row

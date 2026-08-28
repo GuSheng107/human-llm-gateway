@@ -43,12 +43,13 @@ def normalize_password(raw: str) -> str:
 def password_problems(password: str, username: str = "") -> list[str]:
     """返回密码不满足策略的原因列表；空列表表示通过。"""
     problems: list[str] = []
-    codepoints = len(password)
+    normalized = normalize_password(password)
+    codepoints = len(normalized)
     if codepoints < _MIN_PASSWORD_CODEPOINTS:
         problems.append(f"密码至少需要 {_MIN_PASSWORD_CODEPOINTS} 个字符")
     if codepoints > _MAX_PASSWORD_CODEPOINTS:
         problems.append(f"密码最多 {_MAX_PASSWORD_CODEPOINTS} 个字符")
-    lowered = password.lower()
+    lowered = normalized.lower()
     if lowered in _BLOCKED_PASSWORDS:
         problems.append("密码过于常见")
     if username and lowered == username.lower():

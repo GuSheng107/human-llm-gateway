@@ -142,6 +142,8 @@ class TestTerminalAndCancel:
         repo = TaskRepository()
 
         assert repo.release_slot_to_terminal(session, task.id, TaskState.COMPLETED) is True
+        session.refresh(task)
+        assert task.version == 2
         assert repo.release_slot_to_terminal(session, task.id, TaskState.COMPLETED) is False
         session.rollback()
 
@@ -153,7 +155,8 @@ class TestTerminalAndCancel:
         repo = TaskRepository()
 
         assert repo.cancel_caller_disconnected(session, task.id) is True
-        session.flush()
+        session.refresh(task)
+        assert task.version == 2
         # 已在终态，再次断开不再生效
         assert repo.cancel_caller_disconnected(session, task.id) is False
         session.rollback()

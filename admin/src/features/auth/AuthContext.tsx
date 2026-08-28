@@ -6,21 +6,21 @@ import {
   useState,
 } from "react";
 import { TOKEN_KEY } from "../../api/client";
-import { fetchMe } from "../../api/auth";
+import { fetchMe, revokeCurrentSession } from "../../api/auth";
 import type { CurrentUser } from "../../types/auth";
 
 interface AuthState {
   user: CurrentUser | null;
   checking: boolean;
   setUser: (user: CurrentUser | null) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthState>({
   user: null,
   checking: true,
   setUser: () => {},
-  logout: () => {},
+  logout: async () => {},
 });
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -38,9 +38,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setChecking(false));
   }, []);
 
-  const logout = () => {
-    localStorage.removeItem(TOKEN_KEY);
-    setUser(null);
+  const logout = async () => {
+    try {
+      if (localStorage.getItem(TOKEN_KEY)) await revokeCurrentSession();
+    } catch {
+      // 网络故障时仍必须清理浏览器内的会话材料。
+    } finally {
+      localStorage.removeItem(TOKEN_KEY);
+      setUser(null);
+    }
   };
 
   return (
