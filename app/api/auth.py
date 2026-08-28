@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ..core import login_throttle
 from ..core.captcha import generate_captcha, verify_captcha
 from ..core.db import get_db
 from ..domain.enums import Capability, UserRole
@@ -94,10 +95,23 @@ def captcha() -> CaptchaResponse:
 
 
 @router.post("/login", response_model=LoginResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> LoginResponse:
+    source = request.client.host if request.client is not None else "unknown"
+    if not login_throttle.allow(source):
+        raise DomainError(
+            DomainErrorCode.RATE_LIMIT_EXCEEDED,
+            "登录尝试过于频繁，请稍后再试",
+            status_code=429,
+        )
     if not verify_captcha(payload.captcha_token, payload.captcha_code):
         raise DomainError(DomainErrorCode.VALIDATION_FAILED, "验证码错误或已过期", status_code=400)
-    token, _expires_at, user = AuthService().login(db, payload.username, payload.password)
+    try:
+        token, _expires_at, user = AuthService().login(db, payload.username, payload.password)
+    except DomainError as exc:
+        if exc.code is DomainErrorCode.UNAUTHORIZED:
+            login_throttle.record_failure(source)
+        raise
+    login_throttle.reset(source)
     return LoginResponse(**_to_summary(user).model_dump(), access_token=token)
 
 
