@@ -1,7 +1,10 @@
+"""管理 API 统一错误结构、request_id 中间件与异常映射。"""
+
 from __future__ import annotations
 
 import logging
 import uuid
+from enum import StrEnum
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -10,44 +13,62 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request as StarletteRequest
 
-from ..enums import ErrorAction, ErrorCode
-
-DEFAULT_STATUS_BY_CODE: dict[str, int] = {
-    ErrorCode.AUTH_EXPIRED.value: 401,
-    ErrorCode.FORBIDDEN.value: 403,
-    ErrorCode.NOT_FOUND.value: 404,
-    ErrorCode.CONFLICT.value: 409,
-    ErrorCode.BINDING_LOCKED.value: 423,
-    ErrorCode.VALIDATION_FAILED.value: 422,
-    ErrorCode.RATE_LIMITED.value: 429,
-    ErrorCode.HUMAN_TIMEOUT.value: 504,
-    ErrorCode.LLM_ERROR.value: 502,
-    ErrorCode.UPSTREAM_UNAVAILABLE.value: 502,
-    ErrorCode.CONNECTOR_ERROR.value: 502,
-    ErrorCode.INTERNAL_ERROR.value: 500,
-}
+from ..domain.errors import DomainError, DomainErrorCode
 
 logger = logging.getLogger("app.api")
 
 
+class ApiErrorCode(StrEnum):
+    AUTH_EXPIRED = "auth_expired"
+    FORBIDDEN = "forbidden"
+    NOT_FOUND = "not_found"
+    CONFLICT = "conflict"
+    VALIDATION_FAILED = "validation_failed"
+    INTERNAL_ERROR = "internal_error"
+
+
+class ApiErrorAction(StrEnum):
+    RELOGIN = "relogin"
+    FIX_INPUT = "fix_input"
+    VIEW_LOGS = "view_logs"
+    NONE = "none"
+
+
+# 领域错误码 -> 管理 API (HTTP 状态, 错误码, action)
+_DOMAIN_MAPPING: dict[DomainErrorCode, tuple[int, ApiErrorCode, ApiErrorAction]] = {
+    DomainErrorCode.UNAUTHORIZED: (401, ApiErrorCode.AUTH_EXPIRED, ApiErrorAction.RELOGIN),
+    DomainErrorCode.FORBIDDEN: (403, ApiErrorCode.FORBIDDEN, ApiErrorAction.NONE),
+    DomainErrorCode.NOT_FOUND: (404, ApiErrorCode.NOT_FOUND, ApiErrorAction.NONE),
+    DomainErrorCode.CONFLICT: (409, ApiErrorCode.CONFLICT, ApiErrorAction.NONE),
+    DomainErrorCode.VALIDATION_FAILED: (
+        422,
+        ApiErrorCode.VALIDATION_FAILED,
+        ApiErrorAction.FIX_INPUT,
+    ),
+    DomainErrorCode.INVALID_INVITATION: (
+        400,
+        ApiErrorCode.VALIDATION_FAILED,
+        ApiErrorAction.FIX_INPUT,
+    ),
+}
+
+
 class ApiError(Exception):
-    """统一业务异常：code + message + action + details。"""
+    """统一管理 API 业务异常：code + message + action + details。"""
 
     def __init__(
         self,
-        code: ErrorCode | str,
+        code: ApiErrorCode,
         message: str,
         *,
-        status_code: int | None = None,
-        action: ErrorAction | str = ErrorAction.NONE,
+        status_code: int,
+        action: ApiErrorAction = ApiErrorAction.NONE,
         details: dict[str, Any] | None = None,
     ) -> None:
-        self.code = code.value if isinstance(code, ErrorCode) else str(code)
+        self.code = code.value
         self.message = message
-        self.status_code = (
-            status_code if status_code is not None else DEFAULT_STATUS_BY_CODE.get(self.code, 400)
-        )
-        self.action = action.value if isinstance(action, ErrorAction) else str(action)
+        self.status_code = status_code
+        self.action = action.value
         self.details = details or {}
         super().__init__(message)
 
@@ -71,8 +92,6 @@ def error_body(
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
-    """为每个请求注入 request_id，写入响应头并挂到 request.state。"""
-
     async def dispatch(self, request: StarletteRequest, call_next):
         request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex[:24]}"
         request.state.request_id = request_id
@@ -86,6 +105,16 @@ def get_request_id(request: Request) -> str:
 
 
 def install_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DomainError)
+    async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
+        status, code, action = _DOMAIN_MAPPING.get(
+            exc.code, (500, ApiErrorCode.INTERNAL_ERROR, ApiErrorAction.VIEW_LOGS)
+        )
+        return JSONResponse(
+            status_code=status,
+            content=error_body(code.value, exc.message, action.value, {}, get_request_id(request)),
+        )
+
     @app.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> JSONResponse:
         return JSONResponse(
@@ -100,9 +129,9 @@ def install_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=422,
             content=error_body(
-                ErrorCode.VALIDATION_FAILED.value,
+                ApiErrorCode.VALIDATION_FAILED.value,
                 "请求参数校验失败",
-                ErrorAction.FIX_INPUT.value,
+                ApiErrorAction.FIX_INPUT.value,
                 {"errors": exc.errors()},
                 get_request_id(request),
             ),
@@ -112,17 +141,14 @@ def install_error_handlers(app: FastAPI) -> None:
     async def handle_internal(request: Request, exc: Exception) -> JSONResponse:
         logger.exception(
             "Unhandled request error",
-            extra={
-                "request_id": get_request_id(request),
-                "path": request.url.path,
-            },
+            extra={"request_id": get_request_id(request), "path": request.url.path},
         )
         return JSONResponse(
             status_code=500,
             content=error_body(
-                ErrorCode.INTERNAL_ERROR.value,
+                ApiErrorCode.INTERNAL_ERROR.value,
                 "服务器内部错误",
-                ErrorAction.VIEW_LOGS.value,
+                ApiErrorAction.VIEW_LOGS.value,
                 {},
                 get_request_id(request),
             ),

@@ -123,41 +123,41 @@ flowchart LR
 
 ---
 
-## M2：领域模型和数据库原子重建（未开始）
+## M2：领域模型和数据库原子重建（已完成）
 
 M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的过渡版本。只有全部工作完成、旧结构完全删除且质量门禁通过后，才形成一个提交并推送 `master`。实施期间本地未提交工作区允许处于不可运行状态，但不得把中间状态提交或推送到 `master`；master 历史中只出现切换前和完整切换后两个可运行状态。
 
 ### M2-A：目标领域与 Schema
 
-- [ ] 建立 `domain`、`repositories` 和 `core` 目标目录及依赖方向。
-- [ ] 一次性定义用户、会话、邀请码、IM 连接、连接 outbox、入站回执、LLM 配置、Fake Model、模型分组、API Key、任务、事件、草稿、小助手、审计、日志和设置表。
-- [ ] `users` 包含 `must_change_password` 字段；初始化的首个管理员置 true，CLI 使用临时密码时置 true。
-- [ ] username 仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`，写入前 strip + ASCII 小写归一，使用普通 UNIQUE 索引，不依赖 SQLite `lower()` 的 Unicode 行为；Unicode 展示名由 display_name 承担。
-- [ ] Secret 加密契约落地：`APP_SECRET` 为 32 字节 CSPRNG 的 base64url（43 字符），缺失、长度不符或仍为 `.env.example` 默认值时启动失败；HKDF-SHA256 派生 + AES-256-GCM + 每次随机 96-bit nonce + 含 key_version（固定 1）的 envelope，IM/LLM Secret 与加密 sentinel 共用同一契约。
-- [ ] API Key 保存回复入口、回复策略、LLM 配置、人工超时、可选模型分组和可选 Fake Model 集合。
-- [ ] RequestTask 保存完整原始请求、规范化请求、ReplyDraft 结果、策略快照、非敏感 LLM 配置快照、`api_key_id`（ON DELETE RESTRICT）和历史响应关联；`response_public_id` 使用 `resp_` + 32 hex，在任务创建事务中生成，仅 OpenAI Responses 协议任务非空。
-- [ ] 用户保存 `active_task_count`，任务保存名额取得/释放标记和完整状态机字段。
-- [ ] 数据库不存在时自动建表、写入加密自检 sentinel、管理员（`must_change_password=true`）、系统设置和默认系统 Fake Model；初始化环境变量密码不满足策略时启动失败。
-- [ ] `schema_version` 不匹配时明确失败并要求重建，不执行迁移或自动补列。
+- [x] 建立 `domain`、`repositories` 和 `core` 目标目录及依赖方向。
+- [x] 一次性定义用户、会话、邀请码、IM 连接、连接 outbox、入站回执、LLM 配置、Fake Model、模型分组、API Key、任务、事件、草稿、小助手、审计、日志和设置表。
+- [x] `users` 包含 `must_change_password` 字段；初始化的首个管理员置 true，CLI 使用临时密码时置 true。
+- [x] username 仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`，写入前 strip + ASCII 小写归一，使用普通 UNIQUE 索引，不依赖 SQLite `lower()` 的 Unicode 行为；Unicode 展示名由 display_name 承担。
+- [x] Secret 加密契约落地：`APP_SECRET` 为 32 字节 CSPRNG 的 base64url（43 字符），缺失、长度不符或仍为 `.env.example` 默认值时启动失败；HKDF-SHA256 派生 + AES-256-GCM + 每次随机 96-bit nonce + 含 key_version（固定 1）的 envelope，IM/LLM Secret 与加密 sentinel 共用同一契约。
+- [x] API Key 保存回复入口、回复策略、LLM 配置、人工超时、可选模型分组和可选 Fake Model 集合。
+- [x] RequestTask 保存完整原始请求、规范化请求、ReplyDraft 结果、策略快照、非敏感 LLM 配置快照、`api_key_id`（ON DELETE RESTRICT）和历史响应关联；`response_public_id` 使用 `resp_` + 32 hex，在任务创建事务中生成，仅 OpenAI Responses 协议任务非空。
+- [x] 用户保存 `active_task_count`，任务保存名额取得/释放标记和完整状态机字段。
+- [x] 数据库不存在时自动建表、写入加密自检 sentinel、管理员（`must_change_password=true`）、系统设置和默认系统 Fake Model；初始化环境变量密码不满足策略时启动失败。
+- [x] `schema_version` 不匹配时明确失败并要求重建，不执行迁移或自动补列。
 
 ### M2-B：Repository、Service 与安全基础
 
-- [ ] 建立所有权查询、原子条件更新和事务边界，Router 不再直接操作 SQL。
-- [ ] 密码使用 Argon2id（`m=19456 KiB`、`t=2`、`p=1`，PHC 编码字符串），登录成功且参数低于策略时同流程重哈希；不保留 M0 的 scrypt 实现，不使用 bcrypt。邀请码和 API Key 只存哈希。
-- [ ] LLM/IM Secret 按 DATABASE §2.4 契约加密保存：`hlg1.<key_version>.<nonce>.<ciphertext||tag>` 文本 envelope、按用途绑定的 AAD、envelope key_version 与 `*_key_version` 列一致校验。
-- [ ] 在 `pyproject.toml` 引入 Argon2id 实现（如 `argon2-cffi`）并按 `uv.lock` 锁定；HKDF 与 AES-GCM 沿用 `cryptography`。
-- [ ] 建立统一 ReplyDraft、任务状态机、首个回复、fallback 声明和名额释放领域规则。
-- [ ] 建立稳定审计 action、结构化日志和敏感字段过滤。
-- [ ] 建立管理员初始化与受控管理员 CLI（`python -m app.cli admin create`，`getpass` 双次输入或 `--password-stdin --yes` / `--generate-password --yes`），禁止后台 API 提升管理员并保护最后一个有效管理员。
+- [x] 建立所有权查询、原子条件更新和事务边界，Router 不再直接操作 SQL。
+- [x] 密码使用 Argon2id（`m=19456 KiB`、`t=2`、`p=1`，PHC 编码字符串），登录成功且参数低于策略时同流程重哈希；不保留 M0 的 scrypt 实现，不使用 bcrypt。邀请码和 API Key 只存哈希。
+- [x] LLM/IM Secret 按 DATABASE §2.4 契约加密保存：`hlg1.<key_version>.<nonce>.<ciphertext||tag>` 文本 envelope、按用途绑定的 AAD、envelope key_version 与 `*_key_version` 列一致校验。
+- [x] 在 `pyproject.toml` 引入 Argon2id 实现（如 `argon2-cffi`）并按 `uv.lock` 锁定；HKDF 与 AES-GCM 沿用 `cryptography`。
+- [x] 建立统一 ReplyDraft、任务状态机、首个回复、fallback 声明和名额释放领域规则。
+- [x] 建立稳定审计 action、结构化日志和敏感字段过滤。
+- [x] 建立管理员初始化与受控管理员 CLI（`python -m app.cli admin create`，`getpass` 双次输入或 `--password-stdin --yes` / `--generate-password --yes`），禁止后台 API 提升管理员并保护最后一个有效管理员。
 
 ### M2-C：一次性切换与删除
 
-- [ ] 删除 `ModelRoute`、`HumanOperator`、全局 `LLMProvider/LLMModel` 旧链路和对应表。
-- [ ] 删除旧 Provider/Route API、`POST update/delete` 路径及所有兼容别名。
-- [ ] 前端删除 ProvidersPage、RoutesPage 和所有 `route_id`/operator 依赖；只挂载已具备目标契约的页面，不用旧页面或兼容代理冒充新功能。
-- [ ] 删除或重写依赖旧模型的全部测试，不保留旧行为兼容断言。
-- [ ] 新建空数据库启动、管理员登录、默认种子、前后端构建和完整测试通过。
-- [ ] 最终提交中不存在旧表、新旧双写、兼容查询、旧 API 代理或两套 metadata。
+- [x] 删除 `ModelRoute`、`HumanOperator`、全局 `LLMProvider/LLMModel` 旧链路和对应表。
+- [x] 删除旧 Provider/Route API、`POST update/delete` 路径及所有兼容别名。
+- [x] 前端删除 ProvidersPage、RoutesPage 和所有 `route_id`/operator 依赖；只挂载已具备目标契约的页面，不用旧页面或兼容代理冒充新功能。
+- [x] 删除或重写依赖旧模型的全部测试，不保留旧行为兼容断言。
+- [x] 新建空数据库启动、管理员登录、默认种子、前后端构建和完整测试通过。
+- [x] 最终提交中不存在旧表、新旧双写、兼容查询、旧 API 代理或两套 metadata。
 
 ---
 

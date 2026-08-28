@@ -9,52 +9,13 @@ interface MenuItem {
   icon: string;
 }
 
-const USER_NAV: { label: string; items: MenuItem[] }[] = [
+const NAV: { label: string; items: MenuItem[] }[] = [
   { label: "工作台", items: [{ to: "/", label: "控制台", icon: "dashboard" }] },
-  { label: "接入", items: [{ to: "/connections", label: "我的连接", icon: "link" }] },
-  {
-    label: "LLM 配置",
-    items: [
-      { to: "/llm/providers", label: "供应商", icon: "cpu" },
-      { to: "/llm/routes", label: "模型路由", icon: "list" },
-      { to: "/llm/api-keys", label: "API Key", icon: "key" },
-    ],
-  },
   { label: "账号", items: [{ to: "/account", label: "账号设置", icon: "settings" }] },
 ];
 
-const ADMIN_NAV: { label: string; items: MenuItem[] }[] = [
-  { label: "工作台", items: [{ to: "/admin", label: "控制台", icon: "dashboard" }] },
-  { label: "监管", items: [
-    { to: "/admin/connections", label: "连接监管", icon: "link" },
-    { to: "/admin/api-keys", label: "API Key", icon: "key" },
-    { to: "/admin/providers", label: "LLM 供应商", icon: "cpu" },
-    { to: "/admin/routes", label: "模型路由", icon: "list" },
-  ] },
-  { label: "运营", items: [
-    { to: "/admin/tasks", label: "任务与网页回复", icon: "reply" },
-    { to: "/admin/logs", label: "日志与审计", icon: "warning" },
-  ] },
-  { label: "系统", items: [
-    { to: "/admin/users", label: "用户管理", icon: "users" },
-    { to: "/admin/settings", label: "基础设置", icon: "settings" },
-  ] },
-];
-
 function pageDescription(pathname: string): string {
-  if (pathname.startsWith("/connections")) return "管理自己的 IM Bot、平台身份绑定与运行状态";
-  if (pathname.startsWith("/llm/providers")) return "配置真实 LLM 供应商并同步上游模型";
-  if (pathname.startsWith("/llm/routes")) return "对外模型名与实际上游模型的映射";
-  if (pathname.startsWith("/llm/api-keys")) return "签发并管理自己的 API Key";
   if (pathname.startsWith("/account")) return "个人资料与安全";
-  if (pathname.startsWith("/admin/connections")) return "监管所有用户的连接状态";
-  if (pathname.startsWith("/admin/api-keys")) return "监管所有用户签发的 API Key";
-  if (pathname.startsWith("/admin/providers")) return "监管所有用户的 LLM 供应商";
-  if (pathname.startsWith("/admin/routes")) return "监管模型路由与对外模型目录";
-  if (pathname.startsWith("/admin/tasks")) return "任务详情与网页回复";
-  if (pathname.startsWith("/admin/logs")) return "审计日志与运行日志";
-  if (pathname.startsWith("/admin/users")) return "账号、角色与状态";
-  if (pathname.startsWith("/admin/settings")) return "系统运行参数";
   return "运行概览与关键指标";
 }
 
@@ -64,10 +25,9 @@ export function AppShell() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   if (!user) return null;
-  const groups = user.role === "admin" ? ADMIN_NAV : USER_NAV;
   const navBody = (
     <nav className="flex-1 overflow-y-auto px-3 py-4">
-      {groups.map((group) => (
+      {NAV.map((group) => (
         <section key={group.label} className="mb-5">
           <h2 className="mb-2 px-3 text-[10px] font-medium uppercase tracking-[.16em] text-slate-500">{group.label}</h2>
           <div className="space-y-1">
@@ -75,7 +35,7 @@ export function AppShell() {
               <NavLink
                 key={item.to}
                 to={item.to}
-                end={item.to === "/" || item.to === "/admin"}
+                end={item.to === "/"}
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
                   `group flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left text-[13px] transition ${
@@ -113,7 +73,7 @@ export function AppShell() {
             </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs font-medium text-white">{user.display_name || user.username}</div>
-              <div className="mt-0.5 text-[10px] text-slate-500">{user.role === "admin" ? "系统管理员" : "Bot 操作者"}</div>
+              <div className="mt-0.5 text-[10px] text-slate-500">{user.role === "admin" ? "系统管理员" : "普通用户"}</div>
             </div>
             <button
               type="button"
@@ -155,9 +115,9 @@ export function AppShell() {
               </button>
               <span className="text-slate-400">Human Gateway</span>
               <span className="text-slate-300">/</span>
-              <span>{groups.flatMap((g) => g.items).find((item) =>
+              <span>{NAV.flatMap((g) => g.items).find((item) =>
                 item.to === location.pathname ||
-                (item.to !== "/" && item.to !== "/admin" && location.pathname.startsWith(item.to)),
+                (item.to !== "/" && location.pathname.startsWith(item.to)),
               )?.label ?? "控制台"}</span>
             </div>
             <p className="mt-0.5 hidden text-[11px] text-slate-400 sm:block">{pageDescription(location.pathname)}</p>

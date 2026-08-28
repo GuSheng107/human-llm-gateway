@@ -1,44 +1,64 @@
+"""认证 API：登录、登出、当前用户。"""
+
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..config import Settings, get_settings
-from ..db import get_db
-from ..models import AdminUser
-from ..schemas import CurrentUserSummary, LoginRequest, LoginResponse
-from ..security import issue_admin_token, verify_password
+from ..core.db import get_db
+from ..domain.enums import UserRole
+from ..repositories.models import User
+from ..services.auth_service import AuthService
 from .deps import require_current_user
-from .errors import ApiError, ErrorAction, ErrorCode
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+bearer = HTTPBearer(auto_error=False)
 
 
-@router.post("/login", response_model=LoginResponse)
-def login(
-    payload: LoginRequest, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)
-) -> LoginResponse:
-    user = db.execute(
-        select(AdminUser).where(AdminUser.username == payload.username, AdminUser.active.is_(True))
-    ).scalar_one_or_none()
-    if not user or not verify_password(payload.password, user.password_hash):
-        raise ApiError(
-            ErrorCode.AUTH_EXPIRED, "用户名或密码错误", status_code=401, action=ErrorAction.RELOGIN
-        )
-    return LoginResponse(
-        access_token=issue_admin_token(user.username, settings.app_secret),
-        username=user.username,
-        display_name=user.display_name or user.username,
-        role=user.role,
-    )
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
 
-@router.get("/me", response_model=CurrentUserSummary)
-def current_user(user: AdminUser = Depends(require_current_user)) -> CurrentUserSummary:
-    return CurrentUserSummary(
+class CurrentUser(BaseModel):
+    id: int
+    username: str
+    display_name: str
+    role: UserRole
+
+
+class LoginResponse(CurrentUser):
+    access_token: str
+    token_type: str = Field(default="bearer")
+
+
+def _to_summary(user: User) -> CurrentUser:
+    return CurrentUser(
         id=user.id,
         username=user.username,
         display_name=user.display_name or user.username,
         role=user.role,
     )
+
+
+@router.post("/login", response_model=LoginResponse)
+def login(payload: LoginRequest, db: Session = Depends(get_db)) -> LoginResponse:
+    token, _expires_at, user = AuthService().login(db, payload.username, payload.password)
+    return LoginResponse(**_to_summary(user).model_dump(), access_token=token)
+
+
+@router.post("/logout", status_code=204)
+def logout(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
+    db: Session = Depends(get_db),
+) -> Response:
+    if credentials is not None:
+        AuthService().logout(db, credentials.credentials)
+    return Response(status_code=204)
+
+
+@router.get("/me", response_model=CurrentUser)
+def current_user(user: User = Depends(require_current_user)) -> CurrentUser:
+    return _to_summary(user)

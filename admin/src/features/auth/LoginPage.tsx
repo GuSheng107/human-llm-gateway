@@ -20,7 +20,7 @@ export function LoginPage() {
       const result = await login(username.trim(), password);
       localStorage.setItem(TOKEN_KEY, result.access_token);
       setUser(result);
-      navigate(result.role === "admin" ? "/admin" : "/", { replace: true });
+      navigate("/", { replace: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "登录失败");
     } finally {
