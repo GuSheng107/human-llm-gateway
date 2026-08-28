@@ -14,7 +14,8 @@
 - 邀请码支持设置过期时间、撤销和最大使用次数；只有管理员可以签发。
 - 用户创建并绑定自己的 IM 连接，也创建自己的 API Key。
 - API Key 决定请求归属、回复入口和独立回复策略。回复入口可以是用户选择的一个 IM 连接或 Web；任务始终在 Web 可见。
-- Fake Model 是管理员维护的对外身份，与用户配置的真实 LLM 模型无关。API Key 默认可调用全部有效 Fake Model，后续可通过模型分组限制。
+- Fake Model 是对外身份，与用户配置的真实 LLM 模型无关。管理员维护全局系统模型，普通用户可以创建仅自己可见的私有模型。
+- API Key 可直接选择对外显示和允许调用的 Fake Model；不选择代表允许候选集中的全部模型。模型分组先预筛候选集，Key 的直接选择再进一步收窄。
 - `/v1/models` 按 API Key 返回可用 Fake Model；不存在或停用的模型按真实平台行为返回 `model_not_found`。
 - 每个用户最多同时存在 10 个活动任务，不能通过增加 API Key 或切换真实 LLM 模式绕过；超限直接返回协议兼容的 429。
 - 人工回复先提交完整结果，再伪流式输出。思考内容和 tool call 可以伪造，系统不执行也不等待调用方声明的工具。
@@ -52,15 +53,17 @@
 
 ---
 
-## M1：产品、架构和开发规范（未开始）
+## M1：产品、架构和开发规范（已完成）
 
-- [ ] 建立 `docs/PRODUCT.md`，固化产品边界和角色能力。
-- [ ] 建立 `docs/ARCHITECTURE.md`，描述模块依赖和请求生命周期。
-- [ ] 建立 `docs/API_CONTRACT.md`，描述管理 API 和三种推理协议。
-- [ ] 建立 `docs/DATABASE.md`，描述新表、字段、索引和事务规则。
-- [ ] 建立 `docs/UI_GUIDE.md`，固化 Tailwind + 浅色 RuoYi 后台规范。
-- [ ] 建立 `CONTRIBUTING.md`，固化开发、测试和提交流程。
-- [ ] 核对所有文档不存在 ModelRoute 决定 Fake Model 的错误描述。
+- [x] 建立 `docs/PRODUCT.md`，固化产品边界和角色能力。
+- [x] 建立 `docs/ARCHITECTURE.md`，描述模块依赖和请求生命周期。
+- [x] 建立 `docs/API_CONTRACT.md`，描述管理 API 和三种推理协议。
+- [x] 建立 `docs/DATABASE.md`，描述新表、字段、索引和事务规则。
+- [x] 建立 `docs/UI_GUIDE.md`，固化 Tailwind + 浅色 RuoYi 后台规范。
+- [x] 建立 `CONTRIBUTING.md`，固化开发、测试和提交流程。
+- [x] 核对所有文档不存在 ModelRoute 决定 Fake Model 的错误描述。
+
+完成提交：`docs: 完成 M1 产品与架构规范`。
 
 ---
 
@@ -69,7 +72,7 @@
 - [ ] 建立用户、邀请码、IM 连接、LLM 配置、Fake Model、API Key、任务、事件、草稿、小助手会话、日志和设置模型。
 - [ ] 删除 `ModelRoute` 核心链路和 `HumanOperator` 一对一模型。
 - [ ] 一个 IM 连接允许服务多个 API Key。
-- [ ] API Key 保存回复入口、回复策略、LLM 配置、人工超时和可选模型分组。
+- [ ] API Key 保存回复入口、回复策略、LLM 配置、人工超时、可选模型分组和可选 Fake Model 集合。
 - [ ] 原始 LLM 请求完整落库，规范化数据单独保存或运行时生成。
 - [ ] 密码使用安全哈希；邀请码和 API Key 只存哈希；LLM/IM Secret 加密保存。
 - [ ] 数据库不存在时自动建表并写入管理员账号和默认 Fake Model。
@@ -110,8 +113,9 @@
 - [ ] 用户创建、查看、禁用和删除自己的 API Key，明文只展示一次。
 - [ ] API Key 独立配置 `human`、`llm`、`human_fallback_llm` 策略。
 - [ ] 人工超时支持 10 秒至 30 分钟，默认 300 秒。
-- [ ] 管理员维护全局 Fake Model 目录。
-- [ ] `/v1/models` 返回当前 Key 可用的有效 Fake Model。
+- [ ] 管理员维护全局系统 Fake Model，普通用户维护仅自己可见的私有 Fake Model。
+- [ ] API Key 可从模型分组预筛后的候选集中继续选择对外模型；未选择代表允许全部候选模型。
+- [ ] `/v1/models` 返回当前 Key 按可见范围、模型分组和直接选择计算出的有效 Fake Model。
 - [ ] 不存在或停用 Fake Model 返回对应协议的 `model_not_found`。
 - [ ] 每个用户固定最多 10 个活动任务，所有 Key 和策略共用。
 - [ ] 第 11 个并发请求原子拒绝并返回协议兼容的 429。
@@ -189,10 +193,10 @@ M6 完成后达到首个可用 MVP。
 
 ### Fake Model 分组
 
-- [ ] 管理员创建和维护模型分组。
-- [ ] API Key 可绑定一个分组。
-- [ ] 绑定分组后 `/v1/models` 和推理请求只允许组内模型。
-- [ ] 未绑定分组时允许全部有效 Fake Model。
+- [ ] 用户从自己可见的 Fake Model 中创建和维护可复用模型分组，管理员可治理全部分组。
+- [ ] API Key 可绑定一个分组作为第一层候选集筛选。
+- [ ] API Key 的直接模型选择只能进一步收窄分组候选集，不能扩大权限。
+- [ ] 未绑定分组时以用户可见的全部有效 Fake Model 作为候选集。
 
 ### 隔离工具沙箱
 

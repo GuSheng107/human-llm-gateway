@@ -5,7 +5,8 @@
 ## 1. 产品边界
 
 - 本项目是“由人类或用户自选真实 LLM 生成内容，再伪装成真实 LLM API 返回”的网关。
-- API Key 决定请求归属用户、回复入口和回复策略；Fake Model 只是对外身份，不映射真实上游模型。
+- API Key 决定请求归属用户、回复入口、回复策略和对外可用 Fake Model；Fake Model 只是对外身份，不映射真实上游模型。
+- 管理员维护全局系统 Fake Model，普通用户可以创建仅自己可见的私有 Fake Model。模型分组先预筛用户可见模型，API Key 可继续选择具体模型；Key 不选择模型代表允许全部候选模型。
 - 用户可选择一个自己的 IM 连接接收任务，或直接在 Web 回复；无论选择哪种入口，任务始终在 Web 可见。
 - 每个用户最多同时存在 10 个活动任务，所有 API Key、人工模式、真实 LLM 模式和 fallback 共用该限制；超限直接返回协议兼容的 429。
 - 支持的外部推理协议仅限 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages。
@@ -65,7 +66,7 @@
 
 - 管理台接口统一使用 `/api/*`；推理接口使用 `/v1/*`；连接器入口使用 `/connectors/*`；健康检查使用 `/healthz`。
 - 新接口使用正确的 HTTP 方法和稳定的错误码。除非产品文档明确要求，不增加旧路径兼容。
-- `/v1/models` 只返回当前 API Key 可用的有效 Fake Model，不暴露真实 LLM 模型。
+- `/v1/models` 按“用户可见模型 -> 可选模型分组 -> Key 可选模型”计算并只返回当前 API Key 可用的有效 Fake Model；Key 未选择模型时返回候选集全部模型，不暴露真实 LLM 模型。
 - 请求中的 Fake Model 必须验证；不存在或已停用时返回协议兼容的 `model_not_found`。
 - 管理员可监管用户资源，但任何读取或操作能力都必须显式授权并记录审计。
 - 页面上下文交给 Web 小助手前必须过滤密码、完整 Key、Token、Secret 和连接凭据。
