@@ -261,6 +261,12 @@ sequenceDiagram
 
 数据库终态是事实来源。进程通知失败时由恢复任务补发取消，但不能重复释放名额或把任务恢复为活动态。
 
+### 5.6 外部调用方断开
+
+外部推理连接（HTTP/SSE 客户端）在任务进入终态前断开时，RequestTask 通过条件更新原子进入 `CANCELLED`，内部记录 `cancel_reason_code=caller_disconnected`，并幂等释放用户名额。人工等待、上游请求和流式输出做 best-effort 取消；已投递到 IM 的任务立即显示为已结束，晚到人工回复按晚到规则拒绝并记录审计。
+
+断开检测依赖传输层取消回调，不要求精确到毫秒；`COMPLETED` 与断开竞争时，首个合法条件状态转换获胜，禁止 `COMPLETED` 之后的任何状态转换。进程崩溃后由启动恢复任务按数据库终态补发取消信号，不重复释放名额。由于产品不提供事后 retrieve 响应的接口，调用方断开后继续保留任务只会空占并发名额，因此不作为可选行为。
+
 ## 6. 任务状态机
 
 目标状态：
@@ -275,7 +281,7 @@ sequenceDiagram
 | `COMPLETED` | 响应正常结束。 | 否 |
 | `FAILED` | 内部或上游失败，已生成对外通用错误。 | 否 |
 | `TIMED_OUT` | 人工超时且没有可用 fallback。 | 否 |
-| `CANCELLED` | 请求被明确取消、用户被禁用或服务关闭时安全终止。 | 否 |
+| `CANCELLED` | 请求被明确取消、用户被禁用、服务关闭或外部调用方断开（`caller_disconnected`）时安全终止。 | 否 |
 
 ```mermaid
 stateDiagram-v2
@@ -332,7 +338,7 @@ stateDiagram-v2
 
 ### 7.3 错误适配
 
-领域错误使用稳定错误码，例如 `invalid_request`、`invalid_api_key`、`model_not_found`、`rate_limit_exceeded`、`upstream_error`。协议层把它们映射为 OpenAI 或 Anthropic 兼容的 HTTP 状态和 JSON/SSE 错误，不把内部异常文本直接返回。
+领域错误使用稳定错误码，例如 `invalid_request`、`invalid_api_key`、`model_not_found`、`rate_limit_exceeded`、`request_timeout`（人工等待超时且无 fallback，对外 504）、`payload_too_large`（对外 413）、`upstream_error`。协议层把它们映射为 OpenAI 或 Anthropic 兼容的 HTTP 状态和 JSON/SSE 错误，不把内部异常文本直接返回。429 仅用于用户级 10 个活动任务的真实并发限制，不用于伪装内部故障。
 
 ## 8. IM 连接器架构
 
@@ -419,7 +425,7 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 
 - 用户密码：自适应密码哈希。
 - 邀请码和 API Key：仅哈希，另存不可用于认证的短前缀。
-- LLM 和 IM Secret：应用级认证加密，主密钥来自环境变量。
+- LLM 和 IM Secret：应用级认证加密，密码学契约固定为 HKDF-SHA256 派生 + AES-256-GCM + 96-bit 随机 nonce + 含 key_version 的 envelope（详见 DATABASE §2.4），主密钥来自环境变量 `APP_SECRET`（32 字节 CSPRNG 的 base64url）。
 - 登录二维码：仅短期返回给资源所有者，不持久化到普通日志。
 - 自定义 Header：整体视为 Secret。
 

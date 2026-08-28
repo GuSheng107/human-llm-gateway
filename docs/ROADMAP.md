@@ -132,6 +132,8 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 - [ ] 建立 `domain`、`repositories` 和 `core` 目标目录及依赖方向。
 - [ ] 一次性定义用户、会话、邀请码、IM 连接、连接 outbox、入站回执、LLM 配置、Fake Model、模型分组、API Key、任务、事件、草稿、小助手、审计、日志和设置表。
 - [ ] `users` 包含 `must_change_password` 字段；初始化的首个管理员置 true，CLI 使用临时密码时置 true。
+- [ ] username 仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`，写入前 strip + ASCII 小写归一，使用普通 UNIQUE 索引，不依赖 SQLite `lower()` 的 Unicode 行为；Unicode 展示名由 display_name 承担。
+- [ ] Secret 加密契约落地：`APP_SECRET` 为 32 字节 CSPRNG 的 base64url（43 字符），缺失、长度不符或仍为 `.env.example` 默认值时启动失败；HKDF-SHA256 派生 + AES-256-GCM + 每次随机 96-bit nonce + 含 key_version（固定 1）的 envelope，IM/LLM Secret 与加密 sentinel 共用同一契约。
 - [ ] API Key 保存回复入口、回复策略、LLM 配置、人工超时、可选模型分组和可选 Fake Model 集合。
 - [ ] RequestTask 保存完整原始请求、规范化请求、ReplyDraft 结果、策略快照、非敏感 LLM 配置快照、`api_key_id`（ON DELETE RESTRICT）和历史响应关联；`response_public_id` 使用 `resp_` + 32 hex，在任务创建事务中生成，仅 OpenAI Responses 协议任务非空。
 - [ ] 用户保存 `active_task_count`，任务保存名额取得/释放标记和完整状态机字段。
@@ -144,7 +146,7 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 - [ ] 密码使用安全哈希（≥15 code points、NFC、blocklist）；邀请码和 API Key 只存哈希；LLM/IM Secret 加密保存。
 - [ ] 建立统一 ReplyDraft、任务状态机、首个回复、fallback 声明和名额释放领域规则。
 - [ ] 建立稳定审计 action、结构化日志和敏感字段过滤。
-- [ ] 建立管理员初始化与受控管理员 CLI（`python -m app.cli admin create`，`getpass` 双次输入或 `--password-stdin --yes`），禁止后台 API 提升管理员并保护最后一个有效管理员。
+- [ ] 建立管理员初始化与受控管理员 CLI（`python -m app.cli admin create`，`getpass` 双次输入或 `--password-stdin --yes` / `--generate-password --yes`），禁止后台 API 提升管理员并保护最后一个有效管理员。
 
 ### M2-C：一次性切换与删除
 
@@ -229,6 +231,9 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 - [ ] 完成三协议非流式 JSON、流式事件顺序、reasoning、tool call、结束原因和错误契约测试。
 - [ ] SSE 中断语义：Responses 发 `response.failed`、Anthropic 发 `event: error`、Chat 经锁定版本 OpenAI SDK 契约测试后确定具体中断帧格式或直接断流；中断路径不得伪造正常完成，Chat 中断不得发送 `[DONE]`（正常完成的 Chat 流仍按协议发送 `[DONE]`）。
 - [ ] 使用项目锁定的 `openai` Python SDK 实际调用 Chat Completions 流，验证正常完成、中途 error frame、无 error 断流和客户端主动取消；SDK 升级时重新运行该契约测试。
+- [ ] Responses `background`、`conversation`、`store` 按字段矩阵返回 400 `unsupported_parameter`，不透传语义无法兑现的状态化字段；`service_tier` 同协议透传。
+- [ ] 外部调用方断开规则：任务终态前断开原子进入 CANCELLED（`caller_disconnected`）并幂等释放名额；COMPLETED 与断开竞争时首个合法条件转换获胜，晚到回复只记录审计。
+- [ ] 请求体大小上限：`/v1/*` 推理请求 8 MiB、管理 API 1 MiB，超限在完整 JSON 解析和任务创建之前返回协议兼容 413；chunked 传输按读取累计字节执行同一上限。
 
 ### M6-B：任务工作台与人工提交
 
@@ -309,6 +314,7 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [ ] 单个 IM 连接故障不使整个实例未就绪，连接健康继续独立展示。
 - [ ] 提供 SQLite 在线备份、保留期、恢复命令和至少一次恢复演练，不在 WAL 写入时直接复制单文件。
 - [ ] 加密主密钥备份两级实践：首选 Vault/KMS/云 Secret Manager 与数据库分系统存放；小型自托管使用 age/SOPS 加密文件，恢复私钥存放于密码管理器或离线介质；数据库备份不包含明文主密钥。
+- [ ] 利用 `encryption_key_version` 字段实现 key ring 与主密钥轮换流程；未知 key_version 解密失败按配置错误处理。
 - [ ] 应用日志输出、数据库日志保留、Docker/systemd 日志轮转和磁盘上限有明确配置。
 - [ ] `/metrics` 使用 Prometheus exposition format，只暴露低基数指标，标签只允许有限枚举，禁止 user_id/api_key_id/task_id/connection_id/model/base_url/error_message。
 - [ ] 验证优雅关闭：停止准入、结束或取消活动任务、停止连接器并确保名额不泄漏。
@@ -329,6 +335,8 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [ ] `/v1/models` 鉴权、模型分组、Key 模型选择和多 Key 10 任务上限完整冒烟通过。
 - [ ] `previous_response_id` 历史链（三重上限）、跨协议字段矩阵和 SSE 中断语义契约测试通过。
 - [ ] 锁定版本 OpenAI SDK Chat Completions 流中断行为契约测试通过并锁定 SDK 版本。
+- [ ] 外部调用方断开取消（caller_disconnected 竞争与名额释放）和请求体大小上限（8 MiB / 1 MiB → 413）契约测试通过。
+- [ ] 推理错误状态映射（429/504/500/413）与错误伪装安全检查通过。
 - [ ] 敏感信息、越权访问和错误伪装安全检查通过。
 - [ ] 在线备份恢复、`/healthz`、`/readyz`（含加密 sentinel）、`/metrics` 和优雅关闭演练通过。
 - [ ] 1440px、1024px、390px 由用户完成实际页面验收。

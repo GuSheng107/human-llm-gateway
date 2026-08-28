@@ -53,6 +53,7 @@
 - 更新：使用 `PATCH`，只修改显式提交的字段。
 - 删除：使用 `DELETE`；被其他资源引用时返回 409，不做隐式级联业务修改。
 - 幂等操作：对已启用、已停用、已撤销等状态重复调用返回当前状态，不产生重复副作用。
+- 请求体大小上限：管理 API JSON 请求体最大 1 MiB，`/v1/*` 推理请求最大 8 MiB。超限返回 413（见 §16.3），必须在完整 JSON 解析、鉴权准入和 RequestTask 创建之前拒绝；使用 chunked 传输且没有 `Content-Length` 时，读取过程中累计字节超限即中断并返回 413。该上限是网关层硬性边界，与 `previous_response_id` 历史展开的 2 MiB 规范化上下文上限相互独立。
 
 ### 2.2 列表与分页
 
@@ -132,6 +133,8 @@
 ```
 
 邀请码不存在、已过期、已撤销或已达到使用次数时都返回 400，错误码为 `invalid_invitation`；响应不区分更细原因，避免批量探测邀请码状态。成功消费和用户创建必须原子完成。
+
+`username` 是登录标识，仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`：服务端先 strip 再做 ASCII 小写归一并校验，数据库以普通唯一索引保证唯一；Unicode 名称、中文、Emoji 一律放 `display_name`。
 
 ### 3.1 密码策略
 
@@ -466,7 +469,10 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | 历史响应引用 | 无 | `previous_response_id` | 无 | 由网关消费并展开，遵循 12.5。 |
 | Prompt Cache | 供应商扩展 | 供应商扩展 | `cache_control` | 同协议原样透传；跨协议没有明确等价项时返回 400。 |
 | 托管工具和文件能力 | 供应商专有类型 | file search/computer 等 item | 供应商专有 block | 只有目标适配器明确实现同等能力才转换；默认返回 400，系统绝不执行。 |
-| `service_tier`、background、store 等平台能力 | 供应商字段 | 供应商字段 | 供应商字段 | 同协议透传；跨协议未逐项声明等价时返回 400。 |
+| `service_tier` 等计费层参数 | 供应商字段 | 供应商字段 | 供应商字段 | 同协议透传；跨协议未逐项声明等价时返回 400。 |
+| `background`（Responses 后台模式） | 无 | 供应商字段 | 无 | 网关不提供后台响应生命周期接口（无 `GET/cancel` 响应端点），透传会使 RequestTask 无法正确收尾；显式 `background=true` 返回 400 `unsupported_parameter`。 |
+| `conversation`（Responses 服务端会话引用） | 无 | 供应商字段 | 无 | 引用上游服务端持久状态，不能机械转给用户自己的真实上游；显式提交返回 400 `unsupported_parameter`。 |
+| `store`（响应持久化开关） | 供应商字段 | 供应商字段 | 无 | 网关始终完整持久化 RequestTask，`store` 不是网关数据库的存储开关；显式提交任何值（含 `false`）返回 400 `unsupported_parameter`，避免“看似兼容、语义不同”。 |
 | 未知扩展字段 | 原样保留 | 原样保留 | 原样保留 | 同协议原样透传；跨协议返回 400 `unsupported_parameter`。 |
 
 转换适配器必须为每个非透传字段记录字段名、处理类型和结果，不记录字段值。新增支持前先更新此矩阵和契约测试。
@@ -477,7 +483,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 `POST /v1/chat/completions`
 
-最低要求：`model` 为非空字符串，`messages` 为非空数组。其余字段完整保存；人工处理只读取必要的规范化投影。
+最低要求：`model` 为非空字符串，`messages` 为非空数组。其余字段完整保存；人工处理只读取必要的规范化投影。显式提交 `store` 按 12.6 矩阵返回 400 `unsupported_parameter`。
 
 ### 13.2 非流式响应
 
@@ -503,7 +509,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 最低要求：`model` 为非空字符串，`input` 为有效字符串或输入项数组。`instructions`、tools 和所有扩展字段完整保存。
 
-`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。
+`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。显式提交 `background`、`conversation` 或 `store` 按 12.6 矩阵返回 400 `unsupported_parameter`；本网关不提供后台响应 retrieve/cancel 等生命周期端点。
 
 ### 14.2 输出项
 
@@ -576,9 +582,11 @@ Chat、Responses 和 `/v1/models` 在尚未开始 SSE 时返回：
 | --- | --- | --- |
 | JSON、字段或不可转换参数错误 | 400 | `invalid_request_error` |
 | API Key 无效、停用或所属用户被禁用 | 401 | `authentication_error` |
+| 请求体超过大小上限（见 §2.1） | 413 | OpenAI `invalid_request_error`、Anthropic `request_too_large` |
 | Fake Model 不存在、停用或不在 Key 有效集合 | 404 | `model_not_found` |
 | 用户活动任务已达 10 | 429 | `rate_limit_exceeded` |
-| 人工超时、IM/上游或内部失败 | 500，或按后续降级策略统一 429 | 通用服务错误 |
+| 人工等待超时且无可用 fallback | 504 | 通用 timeout 错误，不暴露人工等待细节 |
+| IM 投递、上游真实 LLM 或内部失败 | 500 | 通用服务错误 |
 
 一旦 SSE 响应头已经发出，错误使用目标协议允许的流内错误事件并立即结束。对外消息不出现人工、IM、真实供应商、fallback、数据库或内部堆栈。
 

@@ -53,6 +53,17 @@
 
 业务代码引用枚举成员，不散落裸字符串。
 
+### 2.4 Secret 加密契约
+
+所有 `*_ciphertext` 字段（IM 连接配置、LLM Secret、自定义 Header）和加密自检 sentinel 使用同一套密码学契约，M2 不允许实现者自由发挥：
+
+1. **主密钥格式**：`APP_SECRET` 是 32 字节 CSPRNG 随机值的 base64url 表示（无填充，43 个字符）。启动时校验：缺失、解码后不是 32 字节，或仍为 `.env.example` 默认值（`replace-with-a-long-random-secret`）时直接启动失败，不降级为警告。
+2. **密钥派生**：使用 HKDF-SHA256 从 APP_SECRET 的 32 字节原始值派生当前版本加密密钥；HKDF info 固定为 `human-llm-gateway/secret-encryption/v1`，salt 为空。
+3. **加密算法**：AES-256-GCM。每次加密生成全新 CSPRNG 96-bit nonce，同一 nonce 绝不复用。
+4. **envelope 格式**：`version(1) + key_version + nonce(12B) + ciphertext||tag`，整体 base64url 编码后存入 `*_ciphertext` 字段；`version` 是 envelope 结构版本，`key_version` 对应 `encryption_key_version`/`config_key_version` 列。
+5. **key version**：当前固定为 1。M10 才利用该字段实现 key ring 与主密钥轮换；解密时遇到未知 `key_version` 按配置错误处理，不得静默跳过。
+6. **适用范围**：解密能力只属于资源所有者路径；管理员接口无法回读任何 Secret。
+
 ## 3. 身份与访问
 
 ### 3.1 `users`
@@ -60,7 +71,7 @@
 | 列 | 类型 | 约束/说明 |
 | --- | --- | --- |
 | `id` | integer | PK |
-| `username` | varchar(64) | 非空，大小写归一后唯一 |
+| `username` | varchar(64) | 非空，唯一；登录标识仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`，写入前 strip 并做 ASCII 小写归一。Unicode 展示名由 `display_name` 承担 |
 | `display_name` | varchar(100) | 非空 |
 | `password_hash` | varchar(255) | 非空，自适应密码哈希 |
 | `must_change_password` | boolean | 非空，默认 false；置 true 时会话受限 |
@@ -75,7 +86,7 @@
 
 索引：
 
-- 唯一索引 `lower(username)`。
+- 唯一索引 `username`（普通唯一索引）。不使用 `lower(username)` 表达式索引：SQLite 内建 `lower()` 只处理 ASCII、不构成 Unicode casefold，语义在这里不可靠，换数据库也不可移植；由于写入前已强制 ASCII 小写，普通唯一索引即等价。
 - `(role, is_active)` 管理筛选索引。
 
 `active_task_count` 是并发准入的事务计数器，不通过扫描任务表决定第 11 个请求。后台可提供只读一致性检查，将计数与活动任务实际数量对比，但不能在普通请求中静默修正。禁用用户必须通过 UserService 的事务编排执行，不允许只翻转 `is_active`。
@@ -642,7 +653,25 @@ Fake Model 与真实上游模型解耦，领域层不存在通用 tokenizer，�
 
 ### 10.9 加密自检 sentinel
 
-初始化阶段在数据库写入一个固定明文的认证加密 ciphertext（位置和键名由 `system_settings` 提供，例如 `key=encryption_sentinel`），并在每次启动的 `/readyz` 流程中解密验证。这样能发现“数据库恢复了但 `APP_SECRET` 错误”这一类灾难性配置漂移；哨兵本身不携带业务数据。
+初始化阶段在数据库写入一个固定明文的认证加密 ciphertext（位置和键名由 `system_settings` 提供，例如 `key=encryption_sentinel`），并在每次启动的 `/readyz` 流程中解密验证。sentinel 使用 §2.4 的统一加密契约，能同时发现“密钥派生/算法实现漂移”和“数据库恢复了但 `APP_SECRET` 用错”两类灾难性配置错误；哨兵本身不携带业务数据。
+
+### 10.10 调用方断开取消
+
+外部调用方连接在任务终态前断开时，按“首个合法转换获胜”规则条件更新任务：
+
+```sql
+UPDATE request_tasks
+SET state = 'cancelled',
+    cancel_reason_code = 'caller_disconnected',
+    slot_released_at = :now,
+    completed_at = :now,
+    version = version + 1
+WHERE id = :task_id
+  AND state NOT IN ('completed', 'failed', 'timed_out', 'cancelled')
+  AND slot_released_at IS NULL;
+```
+
+影响 1 行才扣减 `users.active_task_count`；影响 0 行说明任务已进入终态（例如 COMPLETED 与断开的竞争），保持原结果不变。断开检测来自传输层取消回调；进程崩溃后由启动恢复任务按数据库终态补发取消，不重复释放名额。
 
 ## 11. 删除与引用规则
 
@@ -665,7 +694,7 @@ Fake Model 与真实上游模型解耦，领域层不存在通用 tokenizer，�
 
 1. 创建全部表和索引。
 2. 写入当前 `schema_version` 和加密自检 sentinel。
-3. 按 §3.1 密码策略校验 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD`，不满足时启动失败；创建管理员时 `must_change_password=true`，只保存密码哈希。
+3. 按 §3.1 规则校验 `ADMIN_USERNAME`（ASCII 模式与小写归一）并按 §3.1 密码策略校验 `ADMIN_PASSWORD`，不满足时启动失败；创建管理员时 `must_change_password=true`，只保存密码哈希。
 4. 写入默认系统设置。
 5. 从代码中的默认目录创建系统 Fake Model，并写入种子版本。
 6. 提交后启动连接器运行时。
