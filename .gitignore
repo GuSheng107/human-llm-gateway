@@ -1,6 +1,7 @@
 .env
 .demo_api_key.txt
 .trae/
+.workbuddy/
 .venv/
 __pycache__/
 *.py[cod]

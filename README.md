@@ -8,7 +8,7 @@ Human LLM Gateway 对外表现为真实 LLM API，对内允许每个用户在 We
 
 本项目采用 **GNU Affero General Public License v3.0（AGPL-3.0-only）**，完整文本见仓库根目录 `LICENSE`。
 
-AGPL-3.0 在 GPL-3.0 的 copyleft 基础上增加了 section 13“Remote Network Interaction”条款：任何对程序进行修改并通过计算机网络向用户远程提供功能（如 SaaS 部署）者，必须向所有远程交互用户提供获取对应源码（Corresponding Source）的机会。本项目选择 AGPL-3.0 的目的是借助该条款对网络部署施加 copyleft 约束——任何基于本项目构建并通过网络对外提供服务的衍生版本都必须按相同条款公开完整对应源码，从而限制闭源商业化分发和二次封装销售。
+AGPL-3.0 在 GPL-3.0 的 copyleft 基础上增加了 section 13“Remote Network Interaction”条款：任何对程序进行修改并通过计算机网络让用户与其修改版远程交互者，必须向这些远程交互用户提供获取对应源码（Corresponding Source）的机会。本项目选择 AGPL-3.0 的目的是确保修改版在通过网络向用户提供功能时，远程交互用户仍有机会取得相应的 Corresponding Source，从而降低修改版被作为闭源网络服务长期封闭运行的可能性。AGPL 不禁止商业使用或销售；copyleft 约束的是源码开放义务，而不是经营行为。
 
 ## 项目状态
 

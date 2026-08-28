@@ -23,7 +23,7 @@
 固定为 5 项，全部满足才返回 200：
 
 1. 应用 startup 已完成。
-2. 数据库可访问，`schema_version` 匹配，且最近一次写能力自测正常。
+2. 数据库可访问，`schema_version` 匹配，且最近一次写能力自测正常。写自测在 startup 和后台低频周期任务（如每 60 秒）中执行并缓存最后成功时间；`/readyz` 本身只读取缓存状态并检查新鲜度窗口，超过窗口才返回未就绪，不得为探测执行数据库写事务。
 3. 主加密密钥加载成功，并能成功解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）。
 4. 三个协议 adapter/renderer registry 初始化成功。
 5. 任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。
@@ -180,7 +180,7 @@
 uv run python -m app.cli admin create --username alice --display-name "Alice"
 ```
 
-CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `--password` 明文参数（避免 shell history 与进程列表泄密）；自动化部署使用 `--password-stdin --yes` 从 stdin 读取密码。CLI 复用 UserService、密码策略、审计与应用配置；使用系统生成临时密码时新管理员 `must_change_password=true`。
+CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `--password` 明文参数（避免 shell history 与进程列表泄密）；自动化部署使用 `--password-stdin --yes` 从 stdin 读取密码，或使用 `--generate-password --yes` 由系统生成临时密码（两者互斥；CSPRNG 生成、满足密码策略、明文只在 stdout 显示一次、不写入日志或审计）。CLI 复用 UserService、密码策略、审计与应用配置；使用系统生成临时密码时新管理员 `must_change_password=true`。
 
 管理员把 `is_active` 更新为 false 时，服务端立即撤销目标用户会话、停用其全部 API Key、终止全部活动任务并幂等释放任务名额。新登录和新推理请求返回 401；已准入请求只收到通用协议错误。禁止禁用最后一个有效管理员。
 
@@ -429,14 +429,14 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机械发送给用户配置的真实 LLM：
 
-1. 每个 Responses 成功结果生成稳定的网关 response ID（格式为 `resp_` + 32 位小写 hex），并关联当前任务和 API Key。
-2. 新请求携带 `previous_response_id` 时，只允许引用同一 API Key 的历史响应；不存在、属于其他 Key、尚未完成或形成非法链时返回 400 `invalid_previous_response_id`。
+1. 所有通过准入并创建任务的 OpenAI Responses 请求，在任务创建事务中生成并持久化稳定的网关 response ID（格式为 `resp_` + 32 位小写 hex），并关联当前任务和 API Key；发送第一个 Responses 响应事件之前该 ID 必须已经存在，`response.failed` 等失败终态事件沿用同一 ID。
+2. 新请求携带 `previous_response_id` 时，只允许引用同一 API Key 的历史响应；只有状态为 COMPLETED 的 response ID 可被引用——不存在、属于其他 Key、尚未完成、已失败或取消、或形成非法链时返回 400 `invalid_previous_response_id`。
 3. 网关完整保存本次原始 payload 和原始 ID，加载历史规范化请求与响应，并按时间顺序等价展开成本次上下文。展开具有唯一语义：链 A→B→C 时 A 不会被重复展开。
 4. 人工流程向用户展示展开后的上下文；真实 LLM 转发使用展开后的消息，不把无法识别的网关 ID 发送给上游。
 5. 展开结果受三重网关硬性保护，任一超限整请求返回协议兼容 400 `context_length_exceeded`，不静默截断：
-   - `max_chain_depth = 20`（递归追 `previous_task_id` 的最大层数）；
-   - `max_expanded_items = 512`（展开后消息、工具、reasoning 项等累计条目上限）；
-   - `max_expanded_context_bytes = 2 MiB`（规范化展开 JSON 的 UTF-8 字节上限）。
+   - `max_chain_depth = 20`（沿 `previous_task_id` 可追溯的历史祖先节点数上限，当前请求不计入）；
+   - `max_expanded_items = 512`（展开后规范化顶级上下文条目累计上限：一条 message、一个 tool call、一个 reasoning 项等各计 1 条，message 内多个 content block 合并计 1 条；三种协议共用同一预算函数）；
+   - `max_expanded_context_bytes = 2 MiB`（规范化展开 JSON 的 compact UTF-8 字节上限，`ensure_ascii=false`、无缩进，序列化参数固定）。
 6. Fake Model 与真实模型解耦，网关不在准入阶段估算 token；M7 由协议 adapter 处理真实模型 token 限制（本地 tokenizer 预检或映射上游超限错误），不强制每次推理调用远程 `count_tokens`。
 7. 历史清理不得破坏仍被引用的链；可以保留最小非敏感上下文快照代替完整任务，但不能留下悬空 ID。
 
@@ -592,7 +592,7 @@ Chat、Responses 和 `/v1/models` 在尚未开始 SSE 时返回：
 | Anthropic Messages | 发送 `event: error`，内容使用 generic `api_error`；随后结束流。不得再发送 `message_stop`。Anthropic 官方明确允许 HTTP 200 后在 SSE 内出现 `event: error`。 |
 | OpenAI Chat Completions | 不得伪造正常完成或发送 `[DONE]`。网关应使用经项目锁定版本 OpenAI SDK 契约测试验证的流内错误表示；若目标 SDK 无可靠的流内错误表示，则直接终止流。具体错误帧格式由 M6-A 兼容测试固化。 |
 
-如果传输层已经不可写，则直接断流即可。数据库内部仍记录 `CANCELLED` + 内部 `cancel_reason_code`（如 `user_disabled`）；公开 SSE 只显示通用错误。
+如果传输层已经不可写，则直接断流即可。数据库按真实内部原因进入对应终态：明确取消、用户被禁用和服务关闭进入 `CANCELLED` 并记录内部 `cancel_reason_code`（如 `user_disabled`）；上游失败、协议转换失败和内部处理错误进入 `FAILED` 并记录内部错误码。两者对外均只返回目标协议允许的通用错误，不泄露内部原因。不得把全部失败统一记为 `CANCELLED`，否则错误率指标、故障排查、重试判断和审计都会失真。
 
 M6-A 必须使用项目锁定的 `openai` Python SDK 实际调用 Chat Completions 流，验证以下场景的 SDK 行为，并以真实结果决定 Chat 最终采用 `error frame + EOF` 还是单纯 `EOF`：
 

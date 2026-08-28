@@ -353,7 +353,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 | --- | --- | --- |
 | `id` | integer | PK |
 | `public_id` | varchar(64) | 非空，唯一，供 UI/IM/协议日志使用 |
-| `response_public_id` | varchar(64) nullable | OpenAI Responses 对外响应 ID，唯一；格式为 `resp_` + 32 位小写 hex（CSPRNG 生成） |
+| `response_public_id` | varchar(64) nullable | OpenAI Responses 对外响应 ID，唯一；在任务创建事务中生成（仅 `protocol = openai_responses` 非空，条件约束保证），格式为 `resp_` + 32 位小写 hex（CSPRNG 生成） |
 | `previous_task_id` | integer nullable | FK request_tasks，同一 API Key 的历史响应链 |
 | `owner_user_id` | integer | FK users，非空 |
 | `api_key_id` | integer | FK api_keys，非空，ON DELETE RESTRICT |
@@ -396,7 +396,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 
 `api_key_id` 物理清理依赖 `ON DELETE RESTRICT` 保护；API Key 的“删除”采用软删除，历史任务的 FK 始终指向存在的 Key 行。`api_key_prefix_snapshot` 仅作为历史展示快照，不替代 FK。物理清理必须由未来的 retention job 按完整依赖关系执行，平时不把历史任务的 `api_key_id` 设为 NULL。
 
-`response_public_id` 使用 `resp_` + 32 位小写 hex（CSPRNG，例如 `resp_a10c46f728e24da0970ba9e7189f429d`）。这是网关在自己命名空间内签发的协议兼容 ID，不是冒充真实 OpenAI response ID；任务内部仍以 integer PK 为主键。
+`response_public_id` 使用 `resp_` + 32 位小写 hex（CSPRNG，例如 `resp_a10c46f728e24da0970ba9e7189f429d`）。这是网关在自己命名空间内签发的协议兼容 ID，不是冒充真实 OpenAI response ID；任务内部仍以 integer PK 为主键。生成时机是任务创建事务，而不是响应成功之后：发送第一个 Responses 响应事件（包括 `response.created` 和失败终态 `response.failed`）之前该 ID 必须已经持久化，全程沿用同一 ID。数据库条件约束保证 `protocol = openai_responses` 的任务 `response_public_id` 非空，Chat 和 Anthropic 任务保持为空。只有 COMPLETED 状态的响应可被后续 `previous_response_id` 引用；失败或取消的响应保留 ID，但不能成为历史链父节点。
 
 `response_payload_json` 是 IM DSL、Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构：
 
@@ -478,6 +478,8 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `created_at` | datetime | 非空 |
 
 索引 `(session_id, id)`。Secret 过滤前的页面上下文不得落库。每条消息只保存发送时当前浏览器标签页的上下文快照；页面切换不修改历史消息，也不把旧页面上下文自动合并进新消息。
+
+组合约束（CHECK 或 Service 不变量，写入前校验）：`page_context_json IS NOT NULL` 时 `page_feature` 与 `context_version` 必须非空；`page_context_json IS NULL` 时二者必须为空。保证有上下文快照的消息一定能按 `page_feature` + `context_version` 解释，不出现无法归档的坏数据。
 
 `page_feature` 是 feature 在 `PageContextRegistry` 中注册的稳定标识（如 `api_keys`），`context_version` 是该 feature 自己递增的整数。feature 的 context serializer 是版本 owner，序列化结构或字段语义变化必须 bump 版本号；多个 feature 各自维护版本，互相独立。历史消息不迁移、不回写，新消息使用新版本。读取时按 `page_feature` + `context_version` 解释上下文；不再支持时按历史 opaque JSON 展示即可，不得为了旧版本重新构造字段。
 
@@ -630,9 +632,9 @@ WHERE id = :task_id
 
 | 限制 | 默认值 | 含义 |
 | --- | --- | --- |
-| `max_chain_depth` | 20 | 递归追 `previous_task_id` 的最大层数。 |
-| `max_expanded_items` | 512 | 展开后消息、工具、reasoning 项等累计条目上限。 |
-| `max_expanded_context_bytes` | 2 MiB | 规范化展开 JSON 的 UTF-8 字节上限。 |
+| `max_chain_depth` | 20 | 沿 `previous_task_id` 可追溯的历史祖先节点数量上限；当前请求不计入。 |
+| `max_expanded_items` | 512 | 展开后规范化顶级上下文条目累计上限：一条 message、一个 tool call、一个 reasoning 项等各计 1 条；message 内的多个 content block 合并计 1 条。三种协议使用同一个预算函数，不做协议各自计数。 |
+| `max_expanded_context_bytes` | 2 MiB | 规范化展开 JSON 的 compact UTF-8 字节上限：`ensure_ascii=false`、无缩进，序列化参数固定，避免不同实现对同一上下文得出不同字节数。 |
 
 Fake Model 与真实上游模型解耦，领域层不存在通用 tokenizer，因此网关不在准入阶段估算 token。M7 在协议 adapter 中处理真实模型的 token 限制：有可靠本地 tokenizer 就预检；没有就正常转发并把上游明确的上下文超限错误映射为 400 `context_length_exceeded`。每次推理不强制调用额外远程 `count_tokens`。
 
@@ -668,7 +670,7 @@ Fake Model 与真实上游模型解耦，领域层不存在通用 tokenizer，�
 5. 从代码中的默认目录创建系统 Fake Model，并写入种子版本。
 6. 提交后启动连接器运行时。
 
-同一新 Schema 的重复启动必须幂等：已有管理员不被环境变量覆盖密码，管理员后来停用或删除的默认 Fake Model 不因普通重启被补回。种子只在全新数据库或显式受控初始化时执行。后续管理员只能通过受控 CLI 创建：`uv run python -m app.cli admin create --username <name> --display-name <name>`。CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `--password` 明文参数；自动化场景使用 `--password-stdin --yes` 从 stdin 读取。CLI 复用同一 UserService、密码策略、审计机制和应用配置（数据库路径、主密钥），不允许另搞一套；使用系统生成临时密码时 `must_change_password=true`。操作系统级数据库与部署访问权即该 CLI 的授权边界。CLI 记录审计并拒绝产生“零个有效管理员”。
+同一新 Schema 的重复启动必须幂等：已有管理员不被环境变量覆盖密码，管理员后来停用或删除的默认 Fake Model 不因普通重启被补回。种子只在全新数据库或显式受控初始化时执行。后续管理员只能通过受控 CLI 创建：`uv run python -m app.cli admin create --username <name> --display-name <name>`。CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `--password` 明文参数；自动化场景使用 `--password-stdin --yes` 从 stdin 读取，或使用 `--generate-password --yes` 由系统生成临时密码。`--generate-password` 与 `--password-stdin` 互斥；生成密码使用 CSPRNG 且满足密码策略，明文只在 stdout 显示一次，不写入日志或审计。CLI 复用同一 UserService、密码策略、审计机制和应用配置（数据库路径、主密钥），不允许另搞一套；使用系统生成临时密码时 `must_change_password=true`。操作系统级数据库与部署访问权即该 CLI 的授权边界。CLI 记录审计并拒绝产生“零个有效管理员”。
 
 ## 13. 明确删除的旧结构
 

@@ -133,7 +133,7 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 - [ ] 一次性定义用户、会话、邀请码、IM 连接、连接 outbox、入站回执、LLM 配置、Fake Model、模型分组、API Key、任务、事件、草稿、小助手、审计、日志和设置表。
 - [ ] `users` 包含 `must_change_password` 字段；初始化的首个管理员置 true，CLI 使用临时密码时置 true。
 - [ ] API Key 保存回复入口、回复策略、LLM 配置、人工超时、可选模型分组和可选 Fake Model 集合。
-- [ ] RequestTask 保存完整原始请求、规范化请求、ReplyDraft 结果、策略快照、非敏感 LLM 配置快照、`api_key_id`（ON DELETE RESTRICT）和历史响应关联；`response_public_id` 使用 `resp_` + 32 hex。
+- [ ] RequestTask 保存完整原始请求、规范化请求、ReplyDraft 结果、策略快照、非敏感 LLM 配置快照、`api_key_id`（ON DELETE RESTRICT）和历史响应关联；`response_public_id` 使用 `resp_` + 32 hex，在任务创建事务中生成，仅 OpenAI Responses 协议任务非空。
 - [ ] 用户保存 `active_task_count`，任务保存名额取得/释放标记和完整状态机字段。
 - [ ] 数据库不存在时自动建表、写入加密自检 sentinel、管理员（`must_change_password=true`）、系统设置和默认系统 Fake Model；初始化环境变量密码不满足策略时启动失败。
 - [ ] `schema_version` 不匹配时明确失败并要求重建，不执行迁移或自动补列。
@@ -227,7 +227,7 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 - [ ] 建立 IM DSL、Web 编辑器、LLM 草稿和协议渲染器共享的 ReplyDraft JSON Schema。
 - [ ] `previous_response_id` 只能引用同一 API Key 的完成响应，并由网关等价展开历史上下文；展开遵守链深 20、条目 512、字节 2 MiB 三重上限，超限整请求 400 不截断；展开唯一语义防止历史重复拼接。
 - [ ] 完成三协议非流式 JSON、流式事件顺序、reasoning、tool call、结束原因和错误契约测试。
-- [ ] SSE 中断语义：Responses 发 `response.failed`、Anthropic 发 `event: error`、Chat 经锁定版本 OpenAI SDK 契约测试后确定具体中断帧格式或直接断流；任何协议不得伪造正常完成或发送 [DONE]。
+- [ ] SSE 中断语义：Responses 发 `response.failed`、Anthropic 发 `event: error`、Chat 经锁定版本 OpenAI SDK 契约测试后确定具体中断帧格式或直接断流；中断路径不得伪造正常完成，Chat 中断不得发送 `[DONE]`（正常完成的 Chat 流仍按协议发送 `[DONE]`）。
 - [ ] 使用项目锁定的 `openai` Python SDK 实际调用 Chat Completions 流，验证正常完成、中途 error frame、无 error 断流和客户端主动取消；SDK 升级时重新运行该契约测试。
 
 ### M6-B：任务工作台与人工提交
@@ -286,7 +286,7 @@ M6 完成后达到首个可用 MVP。
 
 ## M9：管理后台、日志和完整体验（未开始）
 
-M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻辑。它对已有页面按 `UI_GUIDE` 做完整体验、导航、筛选、分页、响应式、权限和一致性复核，并实现此前阶段未要求的的新页面。
+M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻辑。它对已有页面按 `UI_GUIDE` 做完整体验、导航、筛选、分页、响应式、权限和一致性复核，并实现此前阶段未要求的新页面。
 
 - [ ] 导航顺序固定为：控制台、连接 IM、API 管理、LLM 管理、用户网页回复端、系统设置。
 - [ ] 系统设置分组包含基础设置、邀请码管理、用户管理和账号设置。

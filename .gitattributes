@@ -15,6 +15,8 @@
 *.example text eol=lf
 *.gitignore text eol=lf
 LICENSE text eol=lf
+# uv.lock 是文本，依赖变更必须可审查
+uv.lock text eol=lf
 
 # 二进制/不可重写格式不做行尾转换
 *.png binary
@@ -24,9 +26,8 @@ LICENSE text eol=lf
 *.ico binary
 *.webp binary
 *.pdf binary
-*.lock binary
 
-# 忽略构建和运行时产物
+# GitHub Linguist 语言统计标记（这些目录本身已被 .gitignore 忽略）
 .venv/** linguist-generated=true
 node_modules/** linguist-generated=true
 dist/** linguist-generated=true
