@@ -10,6 +10,7 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type { UserDetail, UserSummary } from "../../types/governance";
+import { useAuth } from "../auth/AuthContext";
 import { PasswordResetModal } from "./PasswordResetModal";
 import { UserCreateModal } from "./UserCreateModal";
 import { UserDetailDrawer } from "./UserDetailDrawer";
@@ -17,6 +18,7 @@ import { UserDetailDrawer } from "./UserDetailDrawer";
 const PAGE_SIZE = 20;
 
 export function UsersPage() {
+  const { user: currentUser } = useAuth();
   const [items, setItems] = useState<UserSummary[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -151,7 +153,15 @@ export function UsersPage() {
                     )}
                     <button
                       onClick={() => void toggle(user)}
-                      className={user.is_active ? "text-red-500" : "text-emerald-600"}
+                      disabled={user.id === currentUser?.id}
+                      title={user.id === currentUser?.id ? "不能禁用自己的账号" : undefined}
+                      className={
+                        user.id === currentUser?.id
+                          ? "cursor-not-allowed text-slate-300"
+                          : user.is_active
+                            ? "text-red-500"
+                            : "text-emerald-600"
+                      }
                     >
                       {user.is_active ? "禁用" : "启用"}
                     </button>

@@ -1,15 +1,53 @@
 import { type FormEvent, useState } from "react";
 import { changePassword, updateProfile } from "../../api/auth";
 import { Card } from "../../components/data-display/Card";
+import { FormField } from "../../components/form/FormField";
+import { PasswordStrength } from "../../components/form/PasswordStrength";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
+import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
+
+const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
+const MAX_AVATAR_BYTES = 256 * 1024;
+
+function resizeToPng(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const size = 160;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("无法处理图片"));
+          return;
+        }
+        const min = Math.min(img.width, img.height);
+        const sx = (img.width - min) / 2;
+        const sy = (img.height - min) / 2;
+        ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.onerror = () => reject(new Error("图片加载失败"));
+      img.src = reader.result as string;
+    };
+    reader.onerror = () => reject(new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
 
 export function AccountPage() {
   const { user, setUser } = useAuth();
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");
+  const [email, setEmail] = useState(user?.email ?? "");
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(user?.avatar_base64 ?? null);
+  const [avatarChanged, setAvatarChanged] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -17,14 +55,42 @@ export function AccountPage() {
   const [savingPassword, setSavingPassword] = useState(false);
   const [error, setError] = useState("");
 
+  const emailInvalid = email.trim() !== "" && !EMAIL_PATTERN.test(email.trim());
+  const mismatch = confirm !== "" && confirm !== newPassword;
+
+  const onAvatarChange = async (file: File | null) => {
+    if (!file) return;
+    if (file.size > MAX_AVATAR_BYTES) {
+      setError("头像原图需小于 256KB");
+      return;
+    }
+    try {
+      const dataUrl = await resizeToPng(file);
+      setAvatarPreview(dataUrl);
+      setAvatarChanged(true);
+      setError("");
+    } catch {
+      setError("头像处理失败");
+    }
+  };
+
   const saveProfile = async (event: FormEvent) => {
     event.preventDefault();
+    if (emailInvalid) {
+      setError("邮箱格式不正确");
+      return;
+    }
     setSavingProfile(true);
     setError("");
     try {
-      const updated = await updateProfile(displayName.trim());
+      const updated = await updateProfile({
+        display_name: displayName.trim(),
+        email: email.trim() || null,
+        avatar_base64: avatarChanged ? avatarPreview : undefined,
+      });
       setUser(updated);
-      notify("显示名已更新");
+      setAvatarChanged(false);
+      notify("资料已更新");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "保存失败");
     } finally {
@@ -54,6 +120,12 @@ export function AccountPage() {
     }
   };
 
+  const avatarSrc = avatarPreview
+    ? avatarPreview.startsWith("data:")
+      ? avatarPreview
+      : `data:image/png;base64,${avatarPreview}`
+    : null;
+
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <PageHeader title="账号设置" />
@@ -64,29 +136,67 @@ export function AccountPage() {
           <h2 className="text-sm font-medium text-slate-700">个人资料</h2>
         </div>
         <form onSubmit={saveProfile} className="space-y-4 p-5">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">登录账号</span>
-              <input disabled value={user?.username ?? ""} className="field-input" />
+          <div className="flex items-center gap-4">
+            <div className="grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-full bg-primary-soft text-lg font-semibold text-primary">
+              {avatarSrc ? (
+                <img src={avatarSrc} alt="头像" className="h-full w-full object-cover" />
+              ) : (
+                (user?.display_name || user?.username || "?").slice(0, 1).toUpperCase()
+              )}
+            </div>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs text-slate-600 transition hover:border-primary hover:text-primary">
+              <Icon name="upload" className="h-4 w-4" />
+              更换头像
+              <input
+                type="file"
+                accept="image/png,image/jpeg"
+                className="hidden"
+                onChange={(event) => void onAvatarChange(event.target.files?.[0] ?? null)}
+              />
             </label>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">角色</span>
+            {avatarPreview && (
+              <button
+                type="button"
+                onClick={() => {
+                  setAvatarPreview(null);
+                  setAvatarChanged(true);
+                }}
+                className="text-xs text-slate-400 hover:text-red-500"
+              >
+                移除
+              </button>
+            )}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FormField label="登录账号">
+              <input disabled value={user?.username ?? ""} className="field-input" />
+            </FormField>
+            <FormField label="角色">
               <input
                 disabled
                 value={user?.role === "admin" ? "系统管理员" : "普通用户"}
                 className="field-input"
               />
-            </label>
+            </FormField>
           </div>
-          <label className="block max-w-md">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">显示名</span>
+          <FormField label="显示名" required>
             <input
               required
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
-              className="field-input"
+              className="field-input max-w-md"
             />
-          </label>
+          </FormField>
+          <FormField label="电子邮箱" error={emailInvalid ? "邮箱格式不正确" : undefined}>
+            <input
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              className="field-input max-w-md"
+              placeholder="选填，用于找回与通知"
+            />
+          </FormField>
           <Button type="submit" loading={savingProfile}>
             {savingProfile ? "正在保存…" : "保存资料"}
           </Button>
@@ -98,20 +208,18 @@ export function AccountPage() {
           <h2 className="text-sm font-medium text-slate-700">修改密码</h2>
         </div>
         <form onSubmit={savePassword} className="space-y-4 p-5">
-          <label className="block max-w-md">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">当前密码</span>
+          <FormField label="当前密码" required>
             <input
               required
               type="password"
               autoComplete="current-password"
               value={currentPassword}
               onChange={(event) => setCurrentPassword(event.target.value)}
-              className="field-input"
+              className="field-input max-w-md"
             />
-          </label>
+          </FormField>
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">新密码</span>
+            <FormField label="新密码" required>
               <input
                 required
                 type="password"
@@ -120,9 +228,8 @@ export function AccountPage() {
                 onChange={(event) => setNewPassword(event.target.value)}
                 className="field-input"
               />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">确认新密码</span>
+            </FormField>
+            <FormField label="确认新密码" required error={mismatch ? "两次输入的新密码不一致" : undefined}>
               <input
                 required
                 type="password"
@@ -131,9 +238,9 @@ export function AccountPage() {
                 onChange={(event) => setConfirm(event.target.value)}
                 className="field-input"
               />
-            </label>
+            </FormField>
           </div>
-          <p className="text-caption text-slate-400">至少 10 位，须含英文字母、数字和符号。</p>
+          <PasswordStrength password={newPassword} />
           <Button type="submit" variant="ghost" loading={savingPassword}>
             {savingPassword ? "正在修改…" : "修改密码"}
           </Button>

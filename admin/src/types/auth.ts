@@ -12,6 +12,8 @@ export interface CurrentUser {
   role: UserRole;
   must_change_password: boolean;
   capabilities: Capability[];
+  email: string | null;
+  avatar_base64: string | null;
 }
 
 export interface LoginResponse extends CurrentUser {

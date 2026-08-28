@@ -71,10 +71,20 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T;
 }
 
-export async function login(username: string, password: string): Promise<LoginResponse> {
+export async function login(
+  username: string,
+  password: string,
+  captchaToken: string,
+  captchaCode: string,
+): Promise<LoginResponse> {
   const result = await api<LoginResponse>("/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({
+      username,
+      password,
+      captcha_token: captchaToken,
+      captcha_code: captchaCode,
+    }),
   });
   localStorage.setItem(TOKEN_KEY, result.access_token);
   return result;

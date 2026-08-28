@@ -1,9 +1,13 @@
 import { type FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { registerAccount } from "../../api/auth";
+import { FormField } from "../../components/form/FormField";
+import { PasswordStrength } from "../../components/form/PasswordStrength";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { notify } from "../../components/feedback/Toast";
 import { Button } from "../../components/ui/Button";
+
+const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 export function RegisterPage() {
   const navigate = useNavigate();
@@ -11,16 +15,27 @@ export function RegisterPage() {
     invitation_code: "",
     username: "",
     display_name: "",
+    email: "",
     password: "",
     confirm: "",
   });
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const field = (name: keyof typeof form, value: string) =>
+    setForm((current) => ({ ...current, [name]: value }));
+
+  const mismatch = form.confirm !== "" && form.confirm !== form.password;
+  const emailInvalid = form.email.trim() !== "" && !EMAIL_PATTERN.test(form.email.trim());
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (form.password !== form.confirm) {
       setError("两次输入的密码不一致");
+      return;
+    }
+    if (emailInvalid) {
+      setError("邮箱格式不正确");
       return;
     }
     setSubmitting(true);
@@ -31,6 +46,7 @@ export function RegisterPage() {
         username: form.username.trim(),
         display_name: form.display_name.trim(),
         password: form.password,
+        email: form.email.trim() || null,
       });
       notify("注册成功，请登录");
       navigate("/login", { replace: true });
@@ -40,9 +56,6 @@ export function RegisterPage() {
       setSubmitting(false);
     }
   };
-
-  const field = (name: keyof typeof form, value: string) =>
-    setForm((current) => ({ ...current, [name]: value }));
 
   return (
     <main className="relative grid min-h-screen place-items-center overflow-hidden bg-gradient-to-br from-primary-faint via-page to-white px-5 py-10">
@@ -63,18 +76,16 @@ export function RegisterPage() {
           <h1 className="text-xl font-semibold text-slate-800">使用邀请码注册</h1>
         </div>
         <form onSubmit={submit} className="space-y-4">
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">邀请码</span>
+          <FormField label="邀请码" required>
             <input
               required
               value={form.invitation_code}
               onChange={(event) => field("invitation_code", event.target.value)}
               className="field-input font-mono"
             />
-          </label>
+          </FormField>
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">登录账号</span>
+            <FormField label="登录账号" required>
               <input
                 autoComplete="username"
                 required
@@ -83,20 +94,27 @@ export function RegisterPage() {
                 className="field-input"
                 placeholder="仅 ASCII 字母数字及 . _ -"
               />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">显示名</span>
+            </FormField>
+            <FormField label="显示名" required>
               <input
                 required
                 value={form.display_name}
                 onChange={(event) => field("display_name", event.target.value)}
                 className="field-input"
               />
-            </label>
+            </FormField>
           </div>
+          <FormField label="电子邮箱" error={emailInvalid ? "邮箱格式不正确" : undefined}>
+            <input
+              type="email"
+              value={form.email}
+              onChange={(event) => field("email", event.target.value)}
+              className="field-input"
+              placeholder="选填，用于找回与通知"
+            />
+          </FormField>
           <div className="grid gap-4 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">密码</span>
+            <FormField label="密码" required>
               <input
                 autoComplete="new-password"
                 required
@@ -105,9 +123,12 @@ export function RegisterPage() {
                 onChange={(event) => field("password", event.target.value)}
                 className="field-input"
               />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">确认密码</span>
+            </FormField>
+            <FormField
+              label="确认密码"
+              required
+              error={mismatch ? "两次输入的密码不一致" : undefined}
+            >
               <input
                 autoComplete="new-password"
                 required
@@ -116,11 +137,9 @@ export function RegisterPage() {
                 onChange={(event) => field("confirm", event.target.value)}
                 className="field-input"
               />
-            </label>
+            </FormField>
           </div>
-          <p className="text-caption leading-5 text-slate-400">
-            至少 10 位，须含英文字母、数字和符号。
-          </p>
+          <PasswordStrength password={form.password} />
           {error && <ErrorBanner message={error} />}
           <Button
             type="submit"
