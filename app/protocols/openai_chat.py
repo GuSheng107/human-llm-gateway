@@ -58,7 +58,10 @@ async def openai_chat_stream(
         "model": task.model,
     }
     yield f": task_id={task.id}\n\n"
-    first = {**base, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
+    first = {
+        **base,
+        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+    }
     yield f"data: {json.dumps(first, ensure_ascii=False)}\n\n"
     tool_index = 0
     streamer = pseudo_streamer(settings)
@@ -80,9 +83,7 @@ async def openai_chat_stream(
             }
             chunk = {
                 **base,
-                "choices": [
-                    {"index": 0, "delta": start_delta, "finish_reason": None}
-                ],
+                "choices": [{"index": 0, "delta": start_delta, "finish_reason": None}],
             }
             yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
             async for part in streamer.text_chunks(event.tool_args_json or "{}"):

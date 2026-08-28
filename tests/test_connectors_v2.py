@@ -28,17 +28,28 @@ def create_bot(client, headers, *, platform="webhook", name="My Bot", config=Non
     return response.json()
 
 
-def create_key(client, admin_headers, connection_id, *, name="bot-key"):
+def ensure_catalog(client, admin_headers, model_id):
+    listed = client.get("/api/model-catalog", headers=admin_headers).json()
+    for item in listed:
+        if item["model_id"] == model_id:
+            return item
+    response = client.post("/api/model-catalog", headers=admin_headers, json={"model_id": model_id})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def create_key(client, user_headers, admin_headers, connection_id, *, name="bot-key"):
+    ensure_catalog(client, admin_headers, "human-default")
+    route = client.post(
+        "/api/model-routes",
+        headers=user_headers,
+        json={"name": f"{name}-route", "model_name": "human-default", "mode": "human"},
+    )
+    assert route.status_code == 200, route.text
     response = client.post(
-        "/admin/api-keys",
-        headers=admin_headers,
-        json={
-            "name": name,
-            "operator_name": "Operator",
-            "im_connection_id": connection_id,
-            "route_name": f"{name}-route",
-            "model_name": "human-default",
-        },
+        "/api/api-keys",
+        headers=user_headers,
+        json={"name": name, "route_id": route.json()["id"], "im_connection_id": connection_id},
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -57,9 +68,10 @@ def bind_webhook(client, user_headers, bot):
         json={"external_message_id": "bind-missing-sender", "text": command},
     )
     assert missing_sender.status_code == 200
-    assert client.get("/api/im-connections", headers=user_headers).json()[0][
-        "binding_status"
-    ] == "binding"
+    assert (
+        client.get("/api/im-connections", headers=user_headers).json()[0]["binding_status"]
+        == "waiting"
+    )
     inbound = client.post(
         f"/connectors/webhook/{bot['id']}/inbound",
         headers={"X-Connector-Token": bot["setup"]["inbound_token"]},
@@ -224,7 +236,7 @@ def test_user_owns_bot_admin_only_manages_it(client, admin_headers, user_headers
     assert start.json()["platform"] == "webhook"
     stop = client.post(f"/api/im-connections/{bot['id']}/stop", headers=admin_headers)
     assert stop.json() == {"stopped": True}
-    deleted = client.delete(f"/api/im-connections/{bot['id']}", headers=admin_headers)
+    deleted = client.post(f"/api/im-connections/{bot['id']}/delete", headers=admin_headers)
     assert deleted.json() == {"deleted": True}
     assert client.get("/api/im-connections", headers=user_headers).json() == []
 
@@ -265,7 +277,7 @@ def test_webhook_binding_and_exact_task_reply(client, admin_headers, user_header
     assert listed["binding_status"] == "bound"
     assert listed["bound_user_id"] == "operator-im-user"
 
-    key = create_key(client, admin_headers, bot["id"])
+    key = create_key(client, user_headers, admin_headers, bot["id"])
     task_id = add_waiting_task(key["id"])
     rejected = client.post(
         f"/connectors/webhook/{bot['id']}/inbound",
@@ -288,7 +300,7 @@ def test_webhook_binding_and_exact_task_reply(client, admin_headers, user_header
             "conversation_id": "operator-chat",
             "external_message_id": "reply-1",
             "reply_to_task_id": task_id,
-            "text": "/think\ncheck\n/tool lookup {\"id\":1}\n/reply\nok\n/done",
+            "text": '/think\ncheck\n/tool lookup {"id":1}\n/reply\nok\n/done',
         },
     )
     assert accepted.status_code == 200, accepted.text
@@ -301,13 +313,12 @@ def test_webhook_binding_and_exact_task_reply(client, admin_headers, user_header
     )
     assert bad_token.status_code == 403
 
-    deleted = client.delete(
-        f"/api/im-connections/{bot['id']}", headers=user_headers
-    )
+    deleted = client.post(f"/api/im-connections/{bot['id']}/delete", headers=user_headers)
     assert deleted.status_code == 200
-    assert client.get(
-        "/v1/models", headers={"Authorization": f"Bearer {key['secret']}"}
-    ).status_code == 401
+    assert (
+        client.get("/v1/models", headers={"Authorization": f"Bearer {key['secret']}"}).status_code
+        == 401
+    )
     with database.SessionLocal() as db:
         connection = db.get(IMConnection, bot["id"])
         assert connection is not None
@@ -320,7 +331,7 @@ def test_multiple_waiting_tasks_require_id_and_receipts_are_global(
 ):
     bot = create_bot(client, user_headers)
     bind_webhook(client, user_headers, bot)
-    key = create_key(client, admin_headers, bot["id"])
+    key = create_key(client, user_headers, admin_headers, bot["id"])
     first = add_waiting_task(key["id"])
     second = add_waiting_task(key["id"])
     token_headers = {"X-Connector-Token": bot["setup"]["inbound_token"]}
@@ -367,9 +378,7 @@ def test_multiple_waiting_tasks_require_id_and_receipts_are_global(
 
 def test_websocket_user_binding_reply_and_auth(client, admin_headers, user_headers):
     bot = create_bot(client, user_headers, platform="websocket", name="My WS")
-    binding = client.post(
-        f"/api/im-connections/{bot['id']}/binding", headers=user_headers
-    ).json()
+    binding = client.post(f"/api/im-connections/{bot['id']}/binding", headers=user_headers).json()
     ws_url = f"/connectors/ws/{bot['id']}?token={bot['setup']['auth_token']}"
     with client.websocket_connect(ws_url) as websocket:
         websocket.send_text(
@@ -383,7 +392,7 @@ def test_websocket_user_binding_reply_and_auth(client, admin_headers, user_heade
             )
         )
 
-    key = create_key(client, admin_headers, bot["id"], name="ws-key")
+    key = create_key(client, user_headers, admin_headers, bot["id"], name="ws-key")
     task_id = add_waiting_task(key["id"])
     with client.websocket_connect(ws_url) as websocket:
         websocket.send_text(
@@ -398,31 +407,28 @@ def test_websocket_user_binding_reply_and_auth(client, admin_headers, user_heade
         )
     assert task_status(task_id) is TaskStatus.PSEUDO_STREAMING
 
-    with pytest.raises(WebSocketDisconnect) as exc_info, client.websocket_connect(
-        f"/connectors/ws/{bot['id']}?token=wrong"
+    with (
+        pytest.raises(WebSocketDisconnect) as exc_info,
+        client.websocket_connect(f"/connectors/ws/{bot['id']}?token=wrong"),
     ):
         pass
     assert exc_info.value.code == 4401
 
 
-def test_login_actions_are_owner_only_and_platform_specific(
-    client, admin_headers, user_headers
-):
+def test_login_actions_are_owner_only_and_platform_specific(client, admin_headers, user_headers):
     bot = create_bot(client, user_headers)
-    ordinary = client.post(
-        f"/api/im-connections/{bot['id']}/login", headers=user_headers
-    )
+    ordinary = client.post(f"/api/im-connections/{bot['id']}/login", headers=user_headers)
     assert ordinary.status_code == 400
-    admin = client.post(
-        f"/api/im-connections/{bot['id']}/login", headers=admin_headers
-    )
+    admin = client.post(f"/api/im-connections/{bot['id']}/login", headers=admin_headers)
     assert admin.status_code == 403
 
 
 def test_old_connector_and_login_routes_do_not_exist(client, admin_headers):
-    assert client.get("/admin/connectors", headers=admin_headers).status_code == 404
+    # 旧后端路径 /admin/connectors 与 /admin/login 在重构后已不再存在
+    # /api/admin/... 是后端 API 空间，必须返回 404
+    assert client.get("/api/admin/connectors", headers=admin_headers).status_code == 404
     assert client.post(
-        "/admin/login", json={"username": "admin", "password": "change-me-now"}
+        "/api/admin/login", json={"username": "admin", "password": "change-me-now"}
     ).status_code in {404, 405}
 
 

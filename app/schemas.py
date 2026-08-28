@@ -41,19 +41,30 @@ class UserCreate(BaseModel):
 
 class ApiKeyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    operator_name: str = Field(min_length=1, max_length=120)
-    route_name: str = "human-default"
-    model_name: str = "human-default"
-    route_mode: RouteMode = RouteMode.HUMAN
-    human_timeout_seconds: int = Field(default=300, ge=1, le=86_400)
-    provider_id: int | None = None
-    human_operator_id: int | None = None
-    im_connection_id: int
-    route_id: int | None = None
+    route_id: int
+    im_connection_id: int | None = None
+    operator_name: str = Field(default="", max_length=120)
 
 
 class ApiKeySummary(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    prefix: str
+    active: bool
+    operator_name: str
+    im_name: str
+    im_connection_id: int | None = None
+    binding_type: str = "web"
+    platform: ConnectorPlatform | None = None
+    route_id: int
+    route_mode: RouteMode
+    model_name: str
+    owner_id: int
+    created_at: str = ""
+
+
+class ApiKeyCreated(BaseModel):
+    model_config = ConfigDict(extra="ignore")
 
     id: int
     name: str
@@ -61,12 +72,14 @@ class ApiKeySummary(BaseModel):
     active: bool
     operator_name: str
     im_name: str
-    platform: ConnectorPlatform
+    im_connection_id: int | None = None
+    binding_type: str = "web"
+    platform: ConnectorPlatform | None = None
+    route_id: int
     route_mode: RouteMode
     model_name: str
-
-
-class ApiKeyCreated(ApiKeySummary):
+    owner_id: int
+    created_at: str = ""
     secret: str
 
 
@@ -165,6 +178,13 @@ class ConnectionSummary(BaseModel):
     bound_conversation_id: str = ""
     last_seen_at: str | None = None
     last_error: str = ""
+    error_code: str = ""
+    restart_required: bool = False
+    config_version: int = 1
+    applied_version: int = 1
+    consecutive_failures: int = 0
+    allowed_actions: list[str] = Field(default_factory=list)
+    updated_at: str = ""
     created_at: str = ""
 
 

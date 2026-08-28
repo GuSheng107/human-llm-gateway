@@ -24,10 +24,7 @@ def approximate_tokens(text: str) -> int:
 
 
 def output_tokens(events: list[ParsedEvent]) -> int:
-    payload = "".join(
-        event.content or event.tool_args_json or ""
-        for event in events
-    )
+    payload = "".join(event.content or event.tool_args_json or "" for event in events)
     return approximate_tokens(payload)
 
 

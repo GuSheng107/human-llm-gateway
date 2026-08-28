@@ -58,7 +58,9 @@ class IMConnection(Base):
     name: Mapped[str] = mapped_column(String(120))
     platform: Mapped[ConnectorPlatform] = mapped_column(Enum(ConnectorPlatform), index=True)
     config_json: Mapped[str] = mapped_column(Text)
-    status: Mapped[ConnectorStatus] = mapped_column(Enum(ConnectorStatus), default=ConnectorStatus.OFFLINE)
+    status: Mapped[ConnectorStatus] = mapped_column(
+        Enum(ConnectorStatus), default=ConnectorStatus.OFFLINE
+    )
     binding_status: Mapped[BindingStatus] = mapped_column(
         Enum(BindingStatus), default=BindingStatus.UNBOUND, index=True
     )
@@ -70,6 +72,18 @@ class IMConnection(Base):
     )
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
+    config_version: Mapped[int] = mapped_column(Integer, default=1)
+    applied_version: Mapped[int] = mapped_column(Integer, default=1)
+    restart_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    circuit_opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_code: Mapped[str] = mapped_column(String(80), default="")
+    binding_failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    binding_locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, onupdate=utc_now
@@ -82,16 +96,19 @@ class IMConnection(Base):
 class LLMProvider(Base):
     __tablename__ = "llm_providers"
     id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[str] = mapped_column(String(120), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
     protocol: Mapped[str] = mapped_column(String(32), default="openai_compatible")
     base_url: Mapped[str] = mapped_column(String(500))
     api_key_encrypted: Mapped[str] = mapped_column(Text, default="")
     options_json: Mapped[str] = mapped_column(Text, default="{}")
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("admin_users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    owner: Mapped["AdminUser"] = relationship()
     routes: Mapped[list["ModelRoute"]] = relationship(back_populates="provider")
-    models: Mapped[list["LLMModel"]] = relationship(back_populates="provider",
-                                                     cascade="all, delete-orphan")
+    models: Mapped[list["LLMModel"]] = relationship(
+        back_populates="provider", cascade="all, delete-orphan"
+    )
 
 
 class LLMModel(Base):
@@ -117,24 +134,29 @@ class ModelRoute(Base):
     mode: Mapped[RouteMode] = mapped_column(Enum(RouteMode), index=True)
     human_timeout_seconds: Mapped[int] = mapped_column(Integer, default=300)
     provider_id: Mapped[int | None] = mapped_column(ForeignKey("llm_providers.id"), nullable=True)
+    owner_id: Mapped[int] = mapped_column(ForeignKey("admin_users.id"), index=True)
+    owner: Mapped["AdminUser"] = relationship()
     provider: Mapped["LLMProvider | None"] = relationship(back_populates="routes")
     api_key: Mapped["ApiKey | None"] = relationship(back_populates="route")
 
 
 class ApiKey(Base):
     __tablename__ = "api_keys"
-    __table_args__ = (UniqueConstraint("human_operator_id"), UniqueConstraint("im_connection_id"))
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(120))
     prefix: Mapped[str] = mapped_column(String(32), index=True)
     secret_hash: Mapped[str] = mapped_column(String(255))
     active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     human_operator_id: Mapped[int] = mapped_column(ForeignKey("human_operators.id"), unique=True)
-    im_connection_id: Mapped[int] = mapped_column(ForeignKey("im_connections.id"), unique=True)
+    im_connection_id: Mapped[int | None] = mapped_column(
+        ForeignKey("im_connections.id"), nullable=True, index=True
+    )
     route_id: Mapped[int] = mapped_column(ForeignKey("model_routes.id"))
+    owner_id: Mapped[int] = mapped_column(ForeignKey("admin_users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     human_operator: Mapped[HumanOperator] = relationship(back_populates="api_key")
-    im_connection: Mapped[IMConnection] = relationship(back_populates="api_key")
+    owner: Mapped["AdminUser"] = relationship()
+    im_connection: Mapped["IMConnection | None"] = relationship(back_populates="api_key")
     route: Mapped[ModelRoute] = relationship(back_populates="api_key")
     tasks: Mapped[list["RequestTask"]] = relationship(back_populates="api_key")
 
@@ -148,10 +170,16 @@ class RequestTask(Base):
     request_json: Mapped[str] = mapped_column(Text)
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), index=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
+    )
     api_key: Mapped[ApiKey] = relationship(back_populates="tasks")
-    events: Mapped[list["RequestEvent"]] = relationship(back_populates="task", order_by="RequestEvent.sequence")
+    events: Mapped[list["RequestEvent"]] = relationship(
+        back_populates="task", order_by="RequestEvent.sequence"
+    )
 
 
 class RequestEvent(Base):
@@ -212,7 +240,9 @@ class AuditLog(Base):
     subject_id: Mapped[str] = mapped_column(String(80))
     actor: Mapped[str] = mapped_column(String(120), default="system")
     detail_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )
 
 
 class SystemSetting(Base):
@@ -234,4 +264,6 @@ class AppLog(Base):
     logger: Mapped[str] = mapped_column(String(80), index=True, default="app")
     message: Mapped[str] = mapped_column(Text)
     detail_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, index=True
+    )

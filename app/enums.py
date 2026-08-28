@@ -10,18 +10,49 @@ class ConnectorPlatform(StrEnum):
 
 
 class ConnectorStatus(StrEnum):
-    DISABLED = "disabled"
     OFFLINE = "offline"
     CONNECTING = "connecting"
     ONLINE = "online"
     ERROR = "error"
+    STOPPED = "stopped"
+    PENDING_RESTART = "pending_restart"
 
 
 class BindingStatus(StrEnum):
     UNBOUND = "unbound"
-    BINDING = "binding"
+    WAITING = "waiting"
     BOUND = "bound"
     EXPIRED = "expired"
+    LOCKED = "locked"
+
+
+class ErrorCode(StrEnum):
+    AUTH_EXPIRED = "auth_expired"
+    FORBIDDEN = "forbidden"
+    NOT_FOUND = "not_found"
+    VALIDATION_FAILED = "validation_failed"
+    CONFLICT = "conflict"
+    BINDING_LOCKED = "binding_locked"
+    BINDING_EXPIRED = "binding_expired"
+    CONNECTOR_ERROR = "connector_error"
+    LLM_ERROR = "llm_error"
+    HUMAN_TIMEOUT = "human_timeout"
+    UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+    RATE_LIMITED = "rate_limited"
+    INTERNAL_ERROR = "internal_error"
+
+
+class ErrorAction(StrEnum):
+    RELOGIN = "relogin"
+    RESCAN = "rescan"
+    REGENERATE_BINDING = "regenerate_binding"
+    RETRY_START = "retry_start"
+    APPLY_CONFIG = "apply_config"
+    WAIT_AND_RETRY = "wait_and_retry"
+    VIEW_LOGS = "view_logs"
+    CONTACT_ADMIN = "contact_admin"
+    FIX_INPUT = "fix_input"
+    NONE = "none"
 
 
 class UserRole(StrEnum):

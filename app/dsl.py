@@ -78,7 +78,9 @@ def parse_human_reply(text: str, allow_plain: bool = True) -> list[ParsedEvent]:
                 json.loads(parts[2])
             except json.JSONDecodeError as exc:
                 raise DSLParseError(f"tool 参数不是合法 JSON: {exc.msg}") from exc
-            events.append(ParsedEvent(EventKind.TOOL_CALL, tool_name=parts[1], tool_args_json=parts[2]))
+            events.append(
+                ParsedEvent(EventKind.TOOL_CALL, tool_name=parts[1], tool_args_json=parts[2])
+            )
             saw_tool = True
             current = None
             continue

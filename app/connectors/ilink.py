@@ -113,8 +113,12 @@ class WeChatILinkConnector:
             self._login_state = "error"
             self._error = str(exc) or "登录失败"
             self._status = ConnectorStatus.ERROR
-            log_event("error", "connector.ilink", f"iLink 登录失败: {exc}",
-                      {"connector_id": self.connector_id})
+            log_event(
+                "error",
+                "connector.ilink",
+                f"iLink 登录失败: {exc}",
+                {"connector_id": self.connector_id},
+            )
             self._persist()
             return
         if result.connected:
@@ -188,15 +192,20 @@ class WeChatILinkConnector:
     def _note_expired(self) -> None:
         self._status = ConnectorStatus.ERROR
         self._error = "iLink 会话已过期,请重新扫码登录"
-        log_event("warning", "connector.ilink", "iLink 会话已过期",
-                  {"connector_id": self.connector_id})
+        log_event(
+            "warning", "connector.ilink", "iLink 会话已过期", {"connector_id": self.connector_id}
+        )
         self._persist()
 
     def _note_error(self, message: str) -> None:
         self._status = ConnectorStatus.ERROR
         self._error = message
-        log_event("warning", "connector.ilink", f"iLink monitor 错误: {message}",
-                  {"connector_id": self.connector_id})
+        log_event(
+            "warning",
+            "connector.ilink",
+            f"iLink monitor 错误: {message}",
+            {"connector_id": self.connector_id},
+        )
         self._persist()
 
     def _persist(self) -> None:

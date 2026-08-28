@@ -49,7 +49,7 @@ class InboundProcessor:
             self._audit(db, connection, "connector.inbound_rejected", {"reason": "missing_sender"})
             return InboundResult(False, "missing_sender")
 
-        if connection.binding_status is BindingStatus.BINDING and BIND_COMMAND.fullmatch(
+        if connection.binding_status is BindingStatus.WAITING and BIND_COMMAND.fullmatch(
             message.text
         ):
             if try_complete_binding(
@@ -59,13 +59,13 @@ class InboundProcessor:
                 sender_id=message.sender_id,
                 conversation_id=message.conversation_id,
             ):
-                await self.manager.send_notice(
+                await self._notify(
                     connection.id,
                     message.conversation_id or message.sender_id,
                     "绑定成功。此后该 Bot 收到的任务只会接受你的回复。",
                 )
                 return InboundResult(True, "bound")
-            await self.manager.send_notice(
+            await self._notify(
                 connection.id,
                 message.conversation_id or message.sender_id,
                 "绑定码无效或已过期，请回到网页重新开始绑定。",
@@ -99,7 +99,7 @@ class InboundProcessor:
                 "connector.inbound_ignored",
                 {"reason": "ambiguous_task", "count": len(waiting)},
             )
-            await self.manager.send_notice(
+            await self._notify(
                 connection.id,
                 message.conversation_id or message.sender_id,
                 "当前有多个待回复任务，请在回复第一行添加 /task <任务ID>。",
@@ -129,6 +129,11 @@ class InboundProcessor:
             )
             return InboundResult(False, "task_rejected", task.id)
         return InboundResult(True, "reply_accepted", task.id)
+
+    async def _notify(self, connection_id: int, target: str, text: str) -> None:
+        if self.manager is None:
+            return
+        await self.manager.send_notice(connection_id, target, text)
 
     @staticmethod
     def _claim_receipt(db: Session, message: InboundMessage) -> InboundReceipt | None:
@@ -175,9 +180,7 @@ class InboundProcessor:
             .join(ApiKey)
             .where(
                 ApiKey.im_connection_id == connection_id,
-                RequestTask.status.in_(
-                    [TaskStatus.HUMAN_WAITING, TaskStatus.TOOL_PENDING]
-                ),
+                RequestTask.status.in_([TaskStatus.HUMAN_WAITING, TaskStatus.TOOL_PENDING]),
             )
             .order_by(RequestTask.created_at.desc())
         )

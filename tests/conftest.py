@@ -11,8 +11,9 @@ from app.models import Base
 
 @pytest.fixture()
 def client():
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False},
-                           poolclass=StaticPool)
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
     database.engine = engine
     database.SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
     Base.metadata.create_all(bind=engine)
@@ -25,7 +26,9 @@ def client():
 
 @pytest.fixture()
 def admin_headers(client):
-    response = client.post("/auth/login", json={"username": "admin", "password": "change-me-now"})
+    response = client.post(
+        "/api/auth/login", json={"username": "admin", "password": "change-me-now"}
+    )
     assert response.status_code == 200
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 
@@ -33,7 +36,7 @@ def admin_headers(client):
 @pytest.fixture()
 def user_headers(client, admin_headers):
     created = client.post(
-        "/admin/users",
+        "/api/users",
         headers=admin_headers,
         json={
             "username": "operator",
@@ -43,7 +46,7 @@ def user_headers(client, admin_headers):
     )
     assert created.status_code == 200, created.text
     login = client.post(
-        "/auth/login",
+        "/api/auth/login",
         json={"username": "operator", "password": "operator-password"},
     )
     assert login.status_code == 200, login.text

@@ -78,10 +78,13 @@ def extract_wecom_message(connector_id: int, frame: dict[str, Any]) -> InboundMe
     )
     if not sender_id:
         return None
-    conversation_id = _find_string(
-        body,
-        {"chatid", "chat_id", "conversation_id", "roomid", "room_id"},
-    ) or sender_id
+    conversation_id = (
+        _find_string(
+            body,
+            {"chatid", "chat_id", "conversation_id", "roomid", "room_id"},
+        )
+        or sender_id
+    )
     headers = frame.get("headers") if isinstance(frame.get("headers"), dict) else {}
     external_message_id = _find_string(
         body,

@@ -6,8 +6,14 @@ from .dsl import ParsedEvent
 
 
 class PseudoStreamer:
-    def __init__(self, chunk_size: int = 24, delay_min_ms: int = 20, delay_max_ms: int = 90,
-                 rng: random.Random | None = None, sleep: Callable[[float], object] | None = None):
+    def __init__(
+        self,
+        chunk_size: int = 24,
+        delay_min_ms: int = 20,
+        delay_max_ms: int = 90,
+        rng: random.Random | None = None,
+        sleep: Callable[[float], object] | None = None,
+    ):
         self.chunk_size = max(1, chunk_size)
         self.delay_min_ms = max(0, delay_min_ms)
         self.delay_max_ms = max(self.delay_min_ms, delay_max_ms)

@@ -6,13 +6,19 @@ from app.enums import EventKind
 
 def test_dsl_preserves_reasoning_tool_and_final_order():
     events = parse_human_reply(
-        "/think\n分析请求\n/tool get_weather {\"city\":\"北京\"}\n/reply\n天气不错\n/done",
+        '/think\n分析请求\n/tool get_weather {"city":"北京"}\n/reply\n天气不错\n/done',
     )
-    assert [event.kind for event in events] == [EventKind.REASONING, EventKind.TOOL_CALL, EventKind.FINAL]
+    assert [event.kind for event in events] == [
+        EventKind.REASONING,
+        EventKind.TOOL_CALL,
+        EventKind.FINAL,
+    ]
     assert events[1].tool_name == "get_weather"
 
 
-@pytest.mark.parametrize("text", ["/reply\n先回复\n/tool x {}\n/done", "/reply x", "/think\n缺 done"])
+@pytest.mark.parametrize(
+    "text", ["/reply\n先回复\n/tool x {}\n/done", "/reply x", "/think\n缺 done"]
+)
 def test_dsl_rejects_invalid_sequence(text):
     with pytest.raises(DSLParseError):
         parse_human_reply(text)
