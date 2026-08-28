@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/users", tags=["users"])
 
 
 class UserCreate(StrictModel):
-    username: str = Field(min_length=1, max_length=128)
+    username: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1, max_length=100)
     password: str | None = Field(default=None, max_length=512)
 

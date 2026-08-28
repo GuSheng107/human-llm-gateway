@@ -48,6 +48,10 @@ _SENSITIVE_EXACT_KEYS = frozenset(
         "config_ciphertext",
         "headers_ciphertext",
         "secret_ciphertext",
+        "invitation_code",
+        "binding_code",
+        "temporary_password",
+        "code",
     }
 )
 _SENSITIVE_SUFFIXES = (

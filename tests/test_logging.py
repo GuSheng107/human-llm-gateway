@@ -29,3 +29,23 @@ def test_sensitive_fields_are_redacted_recursively() -> None:
             "api_key_prefix": "hlg_safe",
         },
     }
+
+
+def test_plaintext_credential_codes_are_redacted() -> None:
+    sanitized = sanitize_log_fields(
+        {
+            "invitation_code": "ABCDEFGHJKLMNPQR",
+            "binding_code": "ABCDEFGH",
+            "code": "ABCDEFGHJKLMNPQR",
+            "temporary_password": "plain-temp-password",
+            "code_hash": "sha256$deadbeef",
+        }
+    )
+
+    assert sanitized == {
+        "invitation_code": "[REDACTED]",
+        "binding_code": "[REDACTED]",
+        "code": "[REDACTED]",
+        "temporary_password": "[REDACTED]",
+        "code_hash": "[REDACTED]",
+    }

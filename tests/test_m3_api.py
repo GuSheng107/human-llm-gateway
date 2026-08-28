@@ -290,3 +290,15 @@ def test_admin_constraints_reset_and_audit_redaction(client, admin_headers) -> N
         encoded = "\n".join(row.metadata_json or "" for row in session.query(AuditLog).all())
         assert generated not in encoded
         assert "initial-reset-user-password" not in encoded
+
+
+def test_username_length_is_bounded_at_schema_boundary(client, admin_headers) -> None:
+    # 模式上限 64，超过应在边界返回 422 而非落入服务层。
+    too_long = "a" * 65
+    response = client.post(
+        "/api/users",
+        headers=admin_headers,
+        json={"username": too_long, "display_name": "Too Long", "password": None},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "schema_error"

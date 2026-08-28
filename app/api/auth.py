@@ -25,7 +25,7 @@ class LoginRequest(StrictModel):
 
 class RegisterRequest(StrictModel):
     invitation_code: str = Field(min_length=1, max_length=64)
-    username: str = Field(min_length=1, max_length=128)
+    username: str = Field(min_length=1, max_length=64)
     display_name: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=512)
 
