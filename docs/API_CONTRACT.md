@@ -114,23 +114,42 @@
 
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
-| POST | `/api/auth/login` | 公开 | 用户名和密码登录。 |
+| GET | `/api/auth/captcha` | 公开 | 获取图形验证码（token + PNG data URL），5 分钟有效、一次性消费。 |
+| POST | `/api/auth/login` | 公开 | 用户名、密码加图形验证码登录。 |
 | POST | `/api/auth/register` | 公开 | 使用邀请码注册普通用户。 |
-| GET | `/api/auth/me` | 登录用户 | 返回当前用户、角色和能力，含 `must_change_password` 状态。 |
+| GET | `/api/auth/me` | 登录用户 | 返回当前用户、角色、能力、邮箱和头像，含 `must_change_password` 状态。 |
 | POST | `/api/auth/logout` | 登录用户 | 使当前登录 Token 失效。 |
-| PATCH | `/api/account/profile` | 完整会话 | 修改自己的显示名。 |
+| PATCH | `/api/account/profile` | 完整会话 | 修改自己的显示名、邮箱和头像。 |
 | POST | `/api/account/password` | 登录用户 | 校验旧密码后修改自己的密码。 |
 
-注册请求：
+登录请求（验证码先经 `/api/auth/captcha` 获取）：
+
+```json
+{
+  "username": "admin",
+  "password": "user-password",
+  "captcha_token": "captcha-token",
+  "captcha_code": "AB3X"
+}
+```
+
+验证码错误或已过期返回 400 `validation_failed`，token 一次性消费，每次登录需重新获取。
+
+注册请求（与登录一样需先经 `/api/auth/captcha` 获取验证码）：
 
 ```json
 {
   "invitation_code": "invite-plain-text",
   "username": "alice",
   "display_name": "Alice",
-  "password": "user-password"
+  "password": "user-password",
+  "email": "alice@example.com",
+  "captcha_token": "captcha-token",
+  "captcha_code": "AB3X"
 }
 ```
+
+验证码错误或已过期返回 400 `validation_failed`；`email` 选填、唯一，格式 `^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$`，非法返回 400、占用返回 409 `conflict`。头像经 `PATCH /api/account/profile` 的 `avatar_base64`（PNG/JPEG data URL，原图 ≤ 256KB）上传。
 
 邀请码不存在、已过期、已撤销或已达到使用次数时都返回 400，错误码为 `invalid_invitation`；响应不区分更细原因，避免批量探测邀请码状态。成功消费和用户创建必须原子完成。
 

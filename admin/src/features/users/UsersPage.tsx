@@ -10,6 +10,7 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type { UserDetail, UserSummary } from "../../types/governance";
+import { useAuth } from "../auth/AuthContext";
 import { PasswordResetModal } from "./PasswordResetModal";
 import { UserCreateModal } from "./UserCreateModal";
 import { UserDetailDrawer } from "./UserDetailDrawer";
@@ -17,11 +18,13 @@ import { UserDetailDrawer } from "./UserDetailDrawer";
 const PAGE_SIZE = 20;
 
 export function UsersPage() {
+  const { user: currentUser } = useAuth();
   const [items, setItems] = useState<UserSummary[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
   const [resetting, setResetting] = useState<UserSummary | null>(null);
@@ -29,6 +32,7 @@ export function UsersPage() {
   const [oneTime, setOneTime] = useState<{ title: string; password: string } | null>(null);
 
   const load = useCallback(async () => {
+    setLoading(true);
     setError("");
     try {
       const result = await listUsers(page, search);
@@ -36,6 +40,8 @@ export function UsersPage() {
       setTotal(result.total);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "加载失败");
+    } finally {
+      setLoading(false);
     }
   }, [page, search]);
 
@@ -52,7 +58,7 @@ export function UsersPage() {
     setCreating(false);
     if (result.temporary_password)
       setOneTime({ title: `用户 ${result.username} 已创建`, password: result.temporary_password });
-    else notify("用户已创建，临时密码请妥善交付");
+    else notify("用户已创建");
     await load();
   };
 
@@ -151,14 +157,22 @@ export function UsersPage() {
                     )}
                     <button
                       onClick={() => void toggle(user)}
-                      className={user.is_active ? "text-red-500" : "text-emerald-600"}
+                      disabled={user.id === currentUser?.id}
+                      title={user.id === currentUser?.id ? "不能禁用自己的账号" : undefined}
+                      className={
+                        user.id === currentUser?.id
+                          ? "cursor-not-allowed text-slate-300"
+                          : user.is_active
+                            ? "text-red-500"
+                            : "text-emerald-600"
+                      }
                     >
                       {user.is_active ? "禁用" : "启用"}
                     </button>
                   </td>
                 </tr>
               ))}
-              {items.length === 0 && (
+              {!loading && items.length === 0 && (
                 <tr>
                   <td colSpan={7} className="px-4 py-12 text-center text-slate-400">
                     暂无用户

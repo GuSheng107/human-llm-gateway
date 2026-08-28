@@ -1,6 +1,9 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { changePassword } from "../../api/auth";
+import { FormField } from "../../components/form/FormField";
+import { PasswordInput } from "../../components/form/PasswordInput";
+import { PasswordStrength, passwordValid } from "../../components/form/PasswordStrength";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Button } from "../../components/ui/Button";
 import { useAuth } from "./AuthContext";
@@ -14,10 +17,17 @@ export function ForcePasswordPage() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  const mismatch = confirm !== "" && confirm !== newPassword;
+  const passwordInvalid = newPassword !== "" && !passwordValid(newPassword);
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (newPassword !== confirm) {
       setError("两次输入的新密码不一致");
+      return;
+    }
+    if (passwordInvalid) {
+      setError("新密码需 10-128 位，并包含英文字母、数字和符号");
       return;
     }
     setSubmitting(true);
@@ -48,42 +58,39 @@ export function ForcePasswordPage() {
           <p className="mt-2 text-xs leading-5 text-slate-400">当前会话仅允许修改密码。</p>
         </div>
         <form onSubmit={submit} className="space-y-4">
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">当前临时密码</span>
-            <input
+          <FormField label="当前临时密码" required>
+            <PasswordInput
               autoComplete="current-password"
               required
-              type="password"
               value={currentPassword}
               onChange={(event) => setCurrentPassword(event.target.value)}
-              className="field-input"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">新密码</span>
-            <input
+          </FormField>
+          <FormField
+            label="新密码"
+            required
+            error={passwordInvalid ? "10-128 位，且包含英文字母、数字和符号" : undefined}
+          >
+            <PasswordInput
               autoComplete="new-password"
               required
-              type="password"
               value={newPassword}
               onChange={(event) => setNewPassword(event.target.value)}
-              className="field-input"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">确认新密码</span>
-            <input
+          </FormField>
+          <FormField
+            label="确认新密码"
+            required
+            error={mismatch ? "两次输入的新密码不一致" : undefined}
+          >
+            <PasswordInput
               autoComplete="new-password"
               required
-              type="password"
               value={confirm}
               onChange={(event) => setConfirm(event.target.value)}
-              className="field-input"
             />
-          </label>
-          <p className="text-caption leading-5 text-slate-400">
-            至少 10 位，须含英文字母、数字和符号。
-          </p>
+          </FormField>
+          <PasswordStrength password={newPassword} />
           {error && <ErrorBanner message={error} />}
           <Button type="submit" size="lg" loading={submitting} className="h-11 w-full">
             {submitting ? "正在保存…" : "修改密码并继续"}

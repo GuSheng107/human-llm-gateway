@@ -1,6 +1,15 @@
 import { api } from "./client";
 import type { CurrentUser } from "../types/auth";
 
+export interface CaptchaResult {
+  captcha_token: string;
+  captcha_image: string;
+}
+
+export async function fetchCaptcha(): Promise<CaptchaResult> {
+  return api<CaptchaResult>("/api/auth/captcha");
+}
+
 export async function fetchMe(): Promise<CurrentUser> {
   return api<CurrentUser>("/api/auth/me");
 }
@@ -14,6 +23,9 @@ export async function registerAccount(payload: {
   username: string;
   display_name: string;
   password: string;
+  email?: string | null;
+  captcha_token: string;
+  captcha_code: string;
 }): Promise<CurrentUser> {
   return api<CurrentUser>("/api/auth/register", {
     method: "POST",
@@ -21,10 +33,14 @@ export async function registerAccount(payload: {
   });
 }
 
-export async function updateProfile(display_name: string): Promise<CurrentUser> {
+export async function updateProfile(payload: {
+  display_name: string;
+  email?: string | null;
+  avatar_base64?: string | null;
+}): Promise<CurrentUser> {
   return api<CurrentUser>("/api/account/profile", {
     method: "PATCH",
-    body: JSON.stringify({ display_name }),
+    body: JSON.stringify(payload),
   });
 }
 

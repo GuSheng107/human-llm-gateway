@@ -1,4 +1,5 @@
 import { type FormEvent, useState } from "react";
+import { FormField } from "../../components/form/FormField";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
 import { Button } from "../../components/ui/Button";
@@ -37,27 +38,24 @@ export function UserCreateModal({
     <Modal title="创建普通用户" description="新用户首次登录必须修改临时密码。" onClose={onClose}>
       <form onSubmit={submit} className="space-y-4 p-6">
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">登录账号</span>
+          <FormField label="登录账号" required>
             <input
               required
               value={username}
               onChange={(event) => setUsername(event.target.value)}
               className="field-input"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">显示名</span>
+          </FormField>
+          <FormField label="显示名" required>
             <input
               required
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
               className="field-input"
             />
-          </label>
+          </FormField>
         </div>
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-600">临时密码（可选）</span>
+        <FormField label="临时密码" hint="留空则由系统生成，仅显示一次。">
           <input
             type="password"
             autoComplete="new-password"
@@ -66,8 +64,7 @@ export function UserCreateModal({
             className="field-input"
             placeholder="留空则由系统生成"
           />
-        </label>
-        <p className="text-caption leading-5 text-slate-400">留空则由系统生成，仅显示一次。</p>
+        </FormField>
         {error && <ErrorBanner message={error} />}
         <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">
           <Button variant="ghost" onClick={onClose}>

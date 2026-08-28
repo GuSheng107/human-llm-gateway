@@ -13,7 +13,9 @@ from ..core.time import utc_now
 from ..domain.enums import AuditAction, AuditResult, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import (
+    normalize_avatar_base64,
     normalize_display_name,
+    normalize_email,
     normalize_password,
     normalize_username,
     password_problems,
@@ -72,6 +74,7 @@ class UserService:
         must_change_password: bool,
         actor_user_id: int | None = None,
         registered_via_invitation_id: int | None = None,
+        email: str | None = None,
     ) -> User:
         return self._create_user(
             session,
@@ -83,6 +86,7 @@ class UserService:
             actor_user_id=actor_user_id,
             action=AuditAction.USER_CREATED,
             registered_via_invitation_id=registered_via_invitation_id,
+            email=email,
         )
 
     def _create_user(
@@ -97,6 +101,7 @@ class UserService:
         actor_user_id: int | None,
         action: AuditAction,
         registered_via_invitation_id: int | None = None,
+        email: str | None = None,
     ) -> User:
         normalized = normalize_username(username)
         if normalized is None:
@@ -117,6 +122,7 @@ class UserService:
                 "显示名不能为空且最多 100 个字符",
                 status_code=400,
             )
+        normalized_email = self._validate_email(session, email)
         user = self.users.create(
             session,
             username=normalized,
@@ -125,6 +131,7 @@ class UserService:
             role=role,
             must_change_password=must_change_password,
             registered_via_invitation_id=registered_via_invitation_id,
+            email=normalized_email,
         )
         session.flush()
         self.audit.add(
@@ -137,6 +144,18 @@ class UserService:
             metadata={"fields": ["username", "display_name", "role"]},
         )
         return user
+
+    @staticmethod
+    def _validate_email(session: Session, email: str | None) -> str | None:
+        normalized = normalize_email(email)
+        if email is not None and normalized is None:
+            raise DomainError(DomainErrorCode.VALIDATION_FAILED, "邮箱格式不合法", status_code=400)
+        if (
+            normalized is not None
+            and UserRepository().get_by_email(session, normalized) is not None
+        ):
+            raise DomainError(DomainErrorCode.CONFLICT, "邮箱已被使用", status_code=409)
+        return normalized
 
     def authenticate(self, session: Session, username: str, password: str) -> User | None:
         normalized = normalize_username(username)
@@ -155,9 +174,17 @@ class UserService:
         user.last_login_at = utc_now()
         return user
 
-    def update_display_name(
-        self, session: Session, user: User, display_name: str, *, actor_user_id: int
+    def update_profile(
+        self,
+        session: Session,
+        user: User,
+        *,
+        display_name: str,
+        email: str | None,
+        avatar_base64: str | None,
+        actor_user_id: int,
     ) -> User:
+        """更新显示名、邮箱与头像；未提交字段由调用方以 None 表示，空串用于清空。"""
         normalized = normalize_display_name(display_name)
         if normalized is None:
             raise DomainError(
@@ -165,7 +192,32 @@ class UserService:
                 "显示名不能为空且最多 100 个字符",
                 status_code=400,
             )
+        changed: list[str] = []
         user.display_name = normalized
+        changed.append("display_name")
+        if email is not None:
+            normalized_email = normalize_email(email)
+            if email.strip() and normalized_email is None:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED, "邮箱格式不合法", status_code=400
+                )
+            existing = (
+                self.users.get_by_email(session, normalized_email) if normalized_email else None
+            )
+            if existing is not None and existing.id != user.id:
+                raise DomainError(DomainErrorCode.CONFLICT, "邮箱已被使用", status_code=409)
+            user.email = normalized_email or None
+            changed.append("email")
+        if avatar_base64 is not None:
+            normalized_avatar = normalize_avatar_base64(avatar_base64)
+            if normalized_avatar is None:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    "头像需为 PNG/JPEG 且不超过 256KB",
+                    status_code=400,
+                )
+            user.avatar_base64 = normalized_avatar or None
+            changed.append("avatar_base64")
         self.audit.add(
             session,
             action=AuditAction.USER_UPDATED,
@@ -173,10 +225,22 @@ class UserService:
             resource_id=str(user.id),
             actor_user_id=actor_user_id,
             owner_user_id=user.id,
-            metadata={"fields": ["display_name"]},
+            metadata={"fields": changed},
         )
         session.flush()
         return user
+
+    def update_display_name(
+        self, session: Session, user: User, display_name: str, *, actor_user_id: int
+    ) -> User:
+        return self.update_profile(
+            session,
+            user,
+            display_name=display_name,
+            email=None,
+            avatar_base64=None,
+            actor_user_id=actor_user_id,
+        )
 
     def change_password(
         self,
@@ -243,6 +307,8 @@ class UserService:
         """同一事务停用用户、撤销会话/Key、取消任务并清零名额。"""
         if not user.is_active:
             return self.impact_counts(session, user.id)
+        if user.id == actor_user_id:
+            raise DomainError(DomainErrorCode.FORBIDDEN, "不能禁用自己的账号", status_code=403)
         if user.role is UserRole.ADMIN:
             active_admin_ids = self.users.lock_active_admin_ids(session)
             if len(active_admin_ids) <= 1:

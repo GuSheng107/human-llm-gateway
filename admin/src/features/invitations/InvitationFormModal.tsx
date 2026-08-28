@@ -1,9 +1,12 @@
 import { type FormEvent, useState } from "react";
 import type { InvitationPayload } from "../../api/invitations";
+import { FormField } from "../../components/form/FormField";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
 import { Button } from "../../components/ui/Button";
 import type { Invitation } from "../../types/governance";
+
+const MAX_USES = 1000;
 
 function localInput(iso: string | null): string {
   if (!iso) return "";
@@ -27,8 +30,24 @@ export function InvitationFormModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
+  const originalExpiresAt = invitation?.expires_at ?? null;
+  const maxUsesInvalid = maxUses < 1 || maxUses > MAX_USES;
+  // 过期时间选填：留空表示永久有效；仅当填写了新时间且早于当前时才报错。
+  const expiresInvalid =
+    expiresAt !== "" &&
+    expiresAt !== localInput(originalExpiresAt) &&
+    new Date(expiresAt).getTime() <= Date.now();
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
+    if (maxUsesInvalid) {
+      setError(`最大使用次数需在 1 到 ${MAX_USES} 之间`);
+      return;
+    }
+    if (expiresInvalid) {
+      setError("过期时间需晚于当前时间，或留空表示永久有效");
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
@@ -51,8 +70,7 @@ export function InvitationFormModal({
       onClose={onClose}
     >
       <form onSubmit={submit} className="space-y-4 p-6">
-        <label className="block">
-          <span className="mb-1.5 block text-xs font-medium text-slate-600">备注</span>
+        <FormField label="备注">
           <input
             value={note}
             maxLength={255}
@@ -60,28 +78,35 @@ export function InvitationFormModal({
             className="field-input"
             placeholder="例如：测试团队"
           />
-        </label>
+        </FormField>
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">最大使用次数</span>
+          <FormField
+            label="最大使用次数"
+            required
+            error={maxUsesInvalid ? `需在 1 到 ${MAX_USES} 之间` : undefined}
+          >
             <input
               required
               min={1}
+              max={MAX_USES}
               type="number"
               value={maxUses}
               onChange={(event) => setMaxUses(Number(event.target.value))}
               className="field-input"
             />
-          </label>
-          <label className="block">
-            <span className="mb-1.5 block text-xs font-medium text-slate-600">过期时间</span>
+          </FormField>
+          <FormField
+            label="过期时间"
+            hint="留空表示永久有效"
+            error={expiresInvalid ? "需晚于当前时间，或留空" : undefined}
+          >
             <input
               type="datetime-local"
               value={expiresAt}
               onChange={(event) => setExpiresAt(event.target.value)}
               className="field-input"
             />
-          </label>
+          </FormField>
         </div>
         {error && <ErrorBanner message={error} />}
         <div className="flex justify-end gap-2 border-t border-slate-100 pt-4">

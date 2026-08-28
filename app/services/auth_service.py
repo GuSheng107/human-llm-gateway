@@ -33,6 +33,7 @@ class AuthService:
         username: str,
         display_name: str,
         password: str,
+        email: str | None = None,
     ) -> User:
         begin_immediate_if_sqlite(session)
         invitation = self.invitations.match_plaintext(session, invitation_code)
@@ -46,6 +47,7 @@ class AuthService:
                 password=password,
                 must_change_password=False,
                 registered_via_invitation_id=invitation.id,
+                email=email,
             )
             session.commit()
             return user

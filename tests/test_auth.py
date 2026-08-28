@@ -11,7 +11,13 @@ from tests.conftest import ADMIN_PASSWORD
 
 def test_login_and_me(client) -> None:
     response = client.post(
-        "/api/auth/login", json={"username": "admin", "password": ADMIN_PASSWORD}
+        "/api/auth/login",
+        json={
+            "username": "admin",
+            "password": ADMIN_PASSWORD,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
     )
     assert response.status_code == 200
     body = response.json()
@@ -30,9 +36,65 @@ def test_login_and_me(client) -> None:
 
 def test_login_wrong_password(client) -> None:
     response = client.post(
-        "/api/auth/login", json={"username": "admin", "password": "nope-nope-nope"}
+        "/api/auth/login",
+        json={
+            "username": "admin",
+            "password": "nope-nope-nope",
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
     )
     assert response.status_code == 401
+
+
+def test_login_throttle_maps_to_rate_limit_exceeded(client, monkeypatch) -> None:
+    """触发限流时必须返回契约约定的 rate_limit_exceeded，而不是 internal_error。"""
+    monkeypatch.setattr("app.api.auth.login_throttle.allow", lambda source: False)
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "username": "admin",
+            "password": ADMIN_PASSWORD,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    assert response.status_code == 429
+    body = response.json()["error"]
+    assert body["code"] == "rate_limit_exceeded"
+    assert body["action"] == "retry"
+
+
+def test_captcha_generation_is_rate_limited(client, monkeypatch) -> None:
+    monkeypatch.setattr("app.api.auth.allow_captcha_request", lambda source: False)
+    response = client.get("/api/auth/captcha")
+    assert response.status_code == 429
+    body = response.json()["error"]
+    assert body["code"] == "rate_limit_exceeded"
+    assert body["action"] == "retry"
+
+
+def test_register_rejects_bad_captcha(client, admin_headers, monkeypatch) -> None:
+    monkeypatch.setattr("app.api.auth.verify_captcha", lambda token, code: False)
+    created = client.post(
+        "/api/invitations",
+        headers=admin_headers,
+        json={"note": "验证码测试", "max_uses": 1},
+    )
+    assert created.status_code == 201
+    response = client.post(
+        "/api/auth/register",
+        json={
+            "invitation_code": created.json()["code"],
+            "username": "captcha-user",
+            "display_name": "Captcha User",
+            "password": "Captcha-Pass5!",
+            "captcha_token": "t",
+            "captcha_code": "bad",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_failed"
 
 
 def test_me_without_token(client) -> None:
@@ -58,7 +120,12 @@ def test_unicode_password_uses_same_nfc_form_for_create_and_login(client) -> Non
 
     response = client.post(
         "/api/auth/login",
-        json={"username": "unicode-admin", "password": decomposed},
+        json={
+            "username": "unicode-admin",
+            "password": decomposed,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
     )
     assert response.status_code == 200
 

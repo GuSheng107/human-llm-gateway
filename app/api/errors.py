@@ -26,12 +26,14 @@ class ApiErrorCode(StrEnum):
     VALIDATION_FAILED = "validation_failed"
     SCHEMA_ERROR = "schema_error"
     INVALID_INVITATION = "invalid_invitation"
+    RATE_LIMIT_EXCEEDED = "rate_limit_exceeded"
     INTERNAL_ERROR = "internal_error"
 
 
 class ApiErrorAction(StrEnum):
     RELOGIN = "relogin"
     FIX_INPUT = "fix_input"
+    RETRY = "retry"
     VIEW_LOGS = "view_logs"
     NONE = "none"
 
@@ -51,6 +53,11 @@ _DOMAIN_MAPPING: dict[DomainErrorCode, tuple[int, ApiErrorCode, ApiErrorAction]]
         400,
         ApiErrorCode.INVALID_INVITATION,
         ApiErrorAction.FIX_INPUT,
+    ),
+    DomainErrorCode.RATE_LIMIT_EXCEEDED: (
+        429,
+        ApiErrorCode.RATE_LIMIT_EXCEEDED,
+        ApiErrorAction.RETRY,
     ),
 }
 

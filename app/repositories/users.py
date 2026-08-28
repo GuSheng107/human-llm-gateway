@@ -32,6 +32,9 @@ class UserRepository:
     def get_by_username(self, session: Session, username: str) -> User | None:
         return session.execute(select(User).where(User.username == username)).scalar_one_or_none()
 
+    def get_by_email(self, session: Session, email: str) -> User | None:
+        return session.execute(select(User).where(User.email == email)).scalar_one_or_none()
+
     def list_page(
         self,
         session: Session,
@@ -71,6 +74,7 @@ class UserRepository:
         role: UserRole = UserRole.USER,
         must_change_password: bool = False,
         registered_via_invitation_id: int | None = None,
+        email: str | None = None,
     ) -> User:
         user = User(
             username=username,
@@ -79,6 +83,7 @@ class UserRepository:
             role=role,
             must_change_password=must_change_password,
             registered_via_invitation_id=registered_via_invitation_id,
+            email=email,
         )
         session.add(user)
         return user
