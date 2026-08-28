@@ -1,6 +1,7 @@
 """应用工厂：装配路由、异常处理、request_id 中间件、lifespan 与静态挂载。
 
-M2 只装配认证与健康检查；连接器运行时（M4）、推理协议（M6）等后续里程碑接入。
+M4 接入连接器运行时；M5 接入 Fake Model 目录、模型分组、API Key 与
+/v1/models；推理协议端点在 M6 接入。
 """
 
 from __future__ import annotations
@@ -14,24 +15,43 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from .account import router as account_router
+from .api_keys import router as api_keys_router
 from .auth import router as auth_router
+from .connections import platforms_router
+from .connections import router as connections_router
+from .connectors import router as connectors_router
 from .errors import RequestIdMiddleware, install_error_handlers
+from .fake_models import groups_router
+from .fake_models import router as fake_models_router
 from .invitations import router as invitations_router
 from .users import router as users_router
+from .v1_models import router as v1_models_router
 
 
 def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        from ..connectors import connection_manager as manager
         from ..core.config import get_settings
         from ..core.db import SessionLocal
         from ..services.bootstrap import BootstrapService
+        from ..services.connection_service import ConnectionService
 
         with SessionLocal() as db:
             BootstrapService().initialize(db, get_settings())
+        # 连接器运行时装配与启动恢复（desired_running 的连接重新拉起）。
+        service = ConnectionService()
+        manager.set_state_recorder(service.runtime_state_recorder())
+        with SessionLocal() as db:
+            rows = service.repo.list_desired_running(db)
+            snapshot = [(row, service.decrypt_config(row)) for row in rows]
+        for row, config in snapshot:
+            await manager.start(row, config, service.inbound_handler())
         yield
+        # 优雅关闭：停止全部连接器实例。
+        await manager.stop_all()
 
-    app = FastAPI(title="Human LLM Gateway", version="0.3.0", lifespan=lifespan)
+    app = FastAPI(title="Human LLM Gateway", version="0.4.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)
     install_error_handlers(app)
 
@@ -39,6 +59,13 @@ def create_app() -> FastAPI:
     app.include_router(account_router)
     app.include_router(invitations_router)
     app.include_router(users_router)
+    app.include_router(platforms_router)
+    app.include_router(connections_router)
+    app.include_router(connectors_router)
+    app.include_router(fake_models_router)
+    app.include_router(groups_router)
+    app.include_router(api_keys_router)
+    app.include_router(v1_models_router)
 
     @app.get("/healthz")
     def health() -> dict[str, Any]:

@@ -471,7 +471,8 @@ ROADMAP 的阶段编号是产品交付顺序，不代表所有前端开发严格
 | API Key 关联 route/operator | API Key 关联用户、入口、策略、LLM 配置、模型分组和可选模型集合 | M2 重建 |
 | 部分管理写操作使用 `POST /update`、`POST /delete` | 目标管理 API 使用 `PATCH`、`DELETE` | M2-M9 直接替换 |
 | `app/models.py`、部分 service 仍较集中 | 按领域拆分 domain/service/repository | M2 一次性切换 |
-| 当前连接页已可操作 | 按新所有权、Secret 和 API Key 投递关系重新接入 | M4 |
+| 当前连接页已可操作 | 已按新所有权、Secret 和 API Key 投递关系重新接入 | M4 已完成 |
+| Fake Model 目录与并发准入尚未落地 | `effective_models` 单点计算 + `admission` 原子占用名额 | M5 已完成 |
 
 这些当前端点和表仅用于保持 M0 基线可运行，不构成兼容承诺。M2 提交必须同时删除旧路径、旧数据模型、旧前端引用和旧测试，不允许以中间提交形式让它们与目标结构共存。
 

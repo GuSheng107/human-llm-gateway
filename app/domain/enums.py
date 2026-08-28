@@ -17,6 +17,9 @@ class Capability(StrEnum):
     ACCOUNT_PROFILE_UPDATE = "account.profile.update"
     INVITATION_MANAGE = "invitation.manage"
     USER_MANAGE = "user.manage"
+    CONNECTION_MANAGE = "connection.manage"
+    MODEL_MANAGE = "model.manage"
+    API_KEY_MANAGE = "api_key.manage"
 
 
 class ConnectionState(StrEnum):
@@ -90,6 +93,17 @@ class OutboxDeliveryState(StrEnum):
     FAILED = "failed"
 
 
+class InboundResult(StrEnum):
+    """进站消息处理结果（写入 inbound_receipts.result_code）。"""
+
+    ACCEPTED = "accepted"
+    DUPLICATE = "duplicate"
+    LATE = "late"
+    UNBOUND = "unbound"
+    UNHANDLED = "unhandled"
+    BOUND = "bound"
+
+
 class TaskEventType(StrEnum):
     CREATED = "created"
     DELIVERED = "delivered"
@@ -135,7 +149,10 @@ class AuditAction(StrEnum):
     CONNECTION_UPDATED = "connection.updated"
     CONNECTION_STARTED = "connection.started"
     CONNECTION_STOPPED = "connection.stopped"
+    CONNECTION_APPLIED = "connection.applied"
     CONNECTION_DELETED = "connection.deleted"
+    CONNECTION_BOUND = "connection.bound"
+    CONNECTION_LOGIN_STARTED = "connection.login_started"
     LLM_CONFIG_CREATED = "llm_config.created"
     LLM_CONFIG_UPDATED = "llm_config.updated"
     LLM_CONFIG_DELETED = "llm_config.deleted"

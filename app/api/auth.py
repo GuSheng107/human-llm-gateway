@@ -48,6 +48,13 @@ def _to_summary(user: User) -> CurrentUser:
     capabilities = [Capability.ACCOUNT_PASSWORD_CHANGE]
     if not user.must_change_password:
         capabilities.append(Capability.ACCOUNT_PROFILE_UPDATE)
+        capabilities.extend(
+            [
+                Capability.CONNECTION_MANAGE,
+                Capability.MODEL_MANAGE,
+                Capability.API_KEY_MANAGE,
+            ]
+        )
         if user.role is UserRole.ADMIN:
             capabilities.extend([Capability.INVITATION_MANAGE, Capability.USER_MANAGE])
     return CurrentUser(
