@@ -13,12 +13,14 @@ from app.core.security import (
     encrypt_secret,
     generate_api_key,
     generate_session_token,
+    generate_temporary_password,
     hash_password,
     hash_session_token,
     password_needs_rehash,
     verify_api_key,
     verify_password,
 )
+from app.domain.values import password_problems
 
 
 @pytest.fixture()
@@ -79,3 +81,9 @@ class TestCredentialHash:
     def test_session_token_hash_is_deterministic(self) -> None:
         token, _prefix, encoded = generate_session_token()
         assert encoded == hash_session_token(token)
+
+
+class TestTemporaryPassword:
+    def test_generated_password_satisfies_policy(self) -> None:
+        for _ in range(50):
+            assert password_problems(generate_temporary_password()) == []

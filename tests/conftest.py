@@ -8,7 +8,7 @@ if not os.environ.get("APP_SECRET"):
         base64.urlsafe_b64encode(secrets.token_bytes(32)).decode().rstrip("=")
     )
 os.environ.setdefault("ADMIN_USERNAME", "admin")
-os.environ.setdefault("ADMIN_PASSWORD", "correct-horse-battery-staple")
+os.environ.setdefault("ADMIN_PASSWORD", "Admin-Pass1!")
 
 import pytest
 from fastapi.testclient import TestClient
@@ -20,7 +20,7 @@ import app.core.db as database
 from app.api import create_app
 
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
-FULL_ADMIN_PASSWORD = "updated-admin-password-for-tests"
+FULL_ADMIN_PASSWORD = "Updated-Admin-Pass2!"
 
 
 @pytest.fixture()

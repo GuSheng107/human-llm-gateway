@@ -45,7 +45,7 @@ def test_restricted_session_only_allows_me_logout_and_password(client) -> None:
         headers=headers,
         json={
             "current_password": ADMIN_PASSWORD,
-            "new_password": "new-secure-admin-password",
+            "new_password": "New-Secure-Admin5!",
         },
     )
     assert changed.status_code == 200
@@ -85,13 +85,13 @@ def test_invitation_lifecycle_and_atomic_registration(client, admin_headers) -> 
             "invitation_code": invitation["code"].lower(),
             "username": "alice",
             "display_name": "Alice 用户",
-            "password": "alice-registration-password",
+            "password": "Alice-Pass1!",
         },
     )
     assert registered.status_code == 201, registered.text
     assert registered.json()["role"] == "user"
     assert registered.json()["must_change_password"] is False
-    login, _headers = _login(client, "alice", "alice-registration-password")
+    login, _headers = _login(client, "alice", "Alice-Pass1!")
     assert login["username"] == "alice"
 
     exhausted = client.post(
@@ -100,7 +100,7 @@ def test_invitation_lifecycle_and_atomic_registration(client, admin_headers) -> 
             "invitation_code": invitation["code"],
             "username": "bob",
             "display_name": "Bob",
-            "password": "bob-registration-password",
+            "password": "Bob-Pass2!",
         },
     )
     assert exhausted.status_code == 400
@@ -127,7 +127,7 @@ def test_failed_registration_does_not_consume_invitation(client, admin_headers) 
             "invitation_code": invitation["code"],
             "username": "无效用户名",
             "display_name": "Invalid",
-            "password": "valid-registration-password",
+            "password": "Valid-Pass3!",
         },
     )
     assert invalid.status_code == 400
@@ -139,7 +139,7 @@ def test_failed_registration_does_not_consume_invitation(client, admin_headers) 
             "invitation_code": invitation["code"],
             "username": "after-failure",
             "display_name": "After Failure",
-            "password": "valid-registration-password",
+            "password": "Valid-Pass3!",
         },
     )
     assert valid.status_code == 201, valid.text
@@ -165,7 +165,7 @@ def test_user_account_and_disable_transaction(client, admin_headers) -> None:
         headers=user_headers,
         json={
             "current_password": temporary_password,
-            "new_password": "managed-user-own-password",
+            "new_password": "Managed-User-Pass4!",
         },
     )
     assert changed.status_code == 200
@@ -273,7 +273,7 @@ def test_admin_constraints_reset_and_audit_redaction(client, admin_headers) -> N
         json={
             "username": "reset-user",
             "display_name": "Reset User",
-            "password": "initial-reset-user-password",
+            "password": "Initial-Reset-User6!",
         },
     ).json()
     assert created["temporary_password"] is None
@@ -289,7 +289,7 @@ def test_admin_constraints_reset_and_audit_redaction(client, admin_headers) -> N
     with database.SessionLocal() as session:
         encoded = "\n".join(row.metadata_json or "" for row in session.query(AuditLog).all())
         assert generated not in encoded
-        assert "initial-reset-user-password" not in encoded
+        assert "Initial-Reset-User6!" not in encoded
 
 
 def test_username_length_is_bounded_at_schema_boundary(client, admin_headers) -> None:

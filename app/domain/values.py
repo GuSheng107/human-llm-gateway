@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import string
 import unicodedata
 
 from pydantic import BaseModel, Field
@@ -10,8 +11,14 @@ from pydantic import BaseModel, Field
 # username：登录标识仅允许 ASCII（Unicode 展示名由 display_name 承担）。
 USERNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 
-_MIN_PASSWORD_CODEPOINTS = 15
+_MIN_PASSWORD_CODEPOINTS = 10
 _MAX_PASSWORD_CODEPOINTS = 128
+
+# 密码复杂度：必须同时包含英文字母、数字、符号（ASCII 可打印标点）三类。
+# 空格与 Unicode 字符不参与三类判定，仅计入长度。
+_ASCII_LETTERS = frozenset(string.ascii_letters)
+_ASCII_DIGITS = frozenset(string.digits)
+_ASCII_SYMBOLS = frozenset(string.punctuation)
 
 # 明显弱密码 / 部署默认词（非穷尽，先挡最明显的）。
 _BLOCKED_PASSWORDS = frozenset(
@@ -56,6 +63,12 @@ def password_problems(password: str, username: str = "") -> list[str]:
         problems.append(f"密码至少需要 {_MIN_PASSWORD_CODEPOINTS} 个字符")
     if codepoints > _MAX_PASSWORD_CODEPOINTS:
         problems.append(f"密码最多 {_MAX_PASSWORD_CODEPOINTS} 个字符")
+    if not any(ch in _ASCII_LETTERS for ch in normalized):
+        problems.append("密码需包含至少一个英文字母")
+    if not any(ch in _ASCII_DIGITS for ch in normalized):
+        problems.append("密码需包含至少一个数字")
+    if not any(ch in _ASCII_SYMBOLS for ch in normalized):
+        problems.append("密码需包含至少一个符号")
     lowered = normalized.lower()
     if lowered in _BLOCKED_PASSWORDS:
         problems.append("密码过于常见")

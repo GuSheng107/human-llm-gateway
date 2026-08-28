@@ -28,7 +28,7 @@ def test_invitation_concurrency_respects_max_uses() -> None:
             database_url=url,
             app_secret=secrets.token_urlsafe(32),
             admin_username="admin",
-            admin_password="concurrency-admin-password",
+            admin_password="Concurrency-Admin1!",
         )
         with sessions() as session:
             BootstrapService().initialize(session, settings)
@@ -51,7 +51,7 @@ def test_invitation_concurrency_respects_max_uses() -> None:
                         invitation_code=plaintext,
                         username=f"user-{index}",
                         display_name=f"User {index}",
-                        password=f"concurrent-user-password-{index}",
+                        password=f"Concurrent-User-{index}!",
                     )
                     return "created"
                 except DomainError as exc:

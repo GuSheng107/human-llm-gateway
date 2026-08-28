@@ -31,7 +31,7 @@ def settings():
     return Settings(
         app_secret=os.environ["APP_SECRET"],
         admin_username="admin",
-        admin_password="correct-horse-battery-staple",
+        admin_password="Admin-Pass1!",
     )
 
 

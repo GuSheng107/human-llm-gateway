@@ -30,21 +30,36 @@ class TestUsername:
 
 class TestPassword:
     def test_ok(self) -> None:
-        assert password_problems("correct-horse-battery-staple") == []
+        assert password_problems("Correct-Horse1!") == []
+
+    @pytest.mark.parametrize(
+        "password",
+        [
+            "CorrectHorse",  # 缺数字、缺符号
+            "123456789012",  # 缺字母、缺符号
+            "!@#$%^&*()_+",  # 缺字母、缺数字
+            "CorrectHorse1",  # 缺符号
+            "CorrectHorse!",  # 缺数字
+            "1234567890!",  # 缺字母
+        ],
+    )
+    def test_missing_required_character_class(self, password: str) -> None:
+        assert password_problems(password) != []
 
     def test_too_short(self) -> None:
         assert password_problems("short") != []
 
     def test_equals_username(self) -> None:
-        assert password_problems("alicealicealice", "alicealicealice") != []
+        problems = password_problems("alicealicealice", "alicealicealice")
+        assert "密码不能与用户名相同" in problems
 
     def test_nfc_normalization(self) -> None:
         composed = "é" * 20
         assert normalize_password(composed) == composed
 
     def test_length_policy_uses_normalized_form(self) -> None:
-        decomposed_but_short_after_nfc = unicodedata.normalize("NFD", "é" * 8)
-        assert len(decomposed_but_short_after_nfc) >= 15
+        decomposed_but_short_after_nfc = unicodedata.normalize("NFD", "é" * 6)
+        assert len(decomposed_but_short_after_nfc) >= 10
         assert password_problems(decomposed_but_short_after_nfc) != []
 
 

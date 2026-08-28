@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import string
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError
@@ -196,5 +197,14 @@ def verify_binding_code(code: str, encoded: str) -> bool:
 
 
 def generate_temporary_password() -> str:
-    """生成满足当前长度与 blocklist 策略的一次性临时密码。"""
-    return secrets.token_urlsafe(18)
+    """生成满足密码策略（长度 + 字母/数字/符号三类）的一次性临时密码。
+
+    token_urlsafe 字符集仅 A-Za-z0-9-_，可能随机缺类；生成后强制补齐
+    三类并用加密安全随机源重排，保证结果必含英文字母、数字与符号。
+    """
+    chars = list(secrets.token_urlsafe(18))
+    chars.append(secrets.choice(string.ascii_letters))
+    chars.append(secrets.choice(string.digits))
+    chars.append(secrets.choice("!@#$%^&*()-_=+[]{}"))
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)

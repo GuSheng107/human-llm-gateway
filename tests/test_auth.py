@@ -46,7 +46,7 @@ def test_logout(client, admin_headers) -> None:
 
 
 def test_unicode_password_uses_same_nfc_form_for_create_and_login(client) -> None:
-    decomposed = unicodedata.normalize("NFD", "é" * 15)
+    decomposed = unicodedata.normalize("NFD", "Passw0rd!é")
     with database.SessionLocal() as session:
         UserService().create_admin(
             session,
