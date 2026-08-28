@@ -117,6 +117,52 @@ export function LoginPage() {
             <h1 className="mt-12 text-3xl font-semibold leading-tight text-slate-900">
               真人驱动的模型兼容网关
             </h1>
+            <p className="mt-4 max-w-md text-sm leading-6 text-slate-500">
+              把每一次 API 请求交给可信的人类与私有模型处理，同时保持熟悉的协议与调用体验。
+            </p>
+
+            <div className="mt-10 grid grid-cols-3 gap-3">
+              {[
+                ["01", "协议兼容", "OpenAI · Anthropic"],
+                ["02", "人工兜底", "Web 与 IM 接力"],
+                ["03", "安全可控", "Key 与审计隔离"],
+              ].map(([index, title, detail]) => (
+                <div
+                  key={title}
+                  className="rounded-xl border border-white/80 bg-white/65 p-3 shadow-sm backdrop-blur"
+                >
+                  <div className="font-mono text-[10px] font-semibold tracking-widest text-primary/70">
+                    {index}
+                  </div>
+                  <div className="mt-2 text-xs font-semibold text-slate-700">{title}</div>
+                  <div className="mt-1 text-[10px] leading-4 text-slate-400">{detail}</div>
+                </div>
+              ))}
+            </div>
+
+            <div className="relative mt-8 overflow-hidden rounded-xl border border-primary/10 bg-white/55 p-4">
+              <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-widest text-slate-400">
+                <span>request flow</span>
+                <span className="flex items-center gap-1.5 text-emerald-600">
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                  online
+                </span>
+              </div>
+              <div className="mt-4 flex items-center gap-2">
+                <span className="rounded-lg bg-slate-800 px-2.5 py-2 font-mono text-[10px] text-white">
+                  API
+                </span>
+                <span className="h-px flex-1 bg-gradient-to-r from-primary/50 to-sky-200" />
+                <span className="grid h-8 w-8 place-items-center rounded-full border border-primary/20 bg-primary-faint text-xs font-bold text-primary">
+                  H
+                </span>
+                <span className="h-px flex-1 bg-gradient-to-r from-sky-200 to-primary/50" />
+                <span className="rounded-lg bg-primary px-2.5 py-2 font-mono text-[10px] text-white">
+                  LLM
+                </span>
+              </div>
+              <div className="mt-3 text-[11px] text-slate-500">请求身份、回复策略与模型权限全程可追踪</div>
+            </div>
           </div>
 
           <div className="relative text-caption tracking-wide text-slate-400">

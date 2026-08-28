@@ -38,8 +38,11 @@ def update_profile(
         db,
         user,
         display_name=payload.display_name,
-        email=payload.email if "email" in fields else None,
-        avatar_base64=payload.avatar_base64 if "avatar_base64" in fields else None,
+        # 显式 null 代表清空；字段缺失才代表保持不变。
+        email=("" if payload.email is None else payload.email) if "email" in fields else None,
+        avatar_base64=("" if payload.avatar_base64 is None else payload.avatar_base64)
+        if "avatar_base64" in fields
+        else None,
         actor_user_id=user.id,
     )
     db.commit()

@@ -184,7 +184,7 @@ class UserService:
         avatar_base64: str | None,
         actor_user_id: int,
     ) -> User:
-        """更新显示名、邮箱与头像；email/avatar 为 None 表示不修改（空串清空）。"""
+        """更新显示名、邮箱与头像；未提交字段由调用方以 None 表示，空串用于清空。"""
         normalized = normalize_display_name(display_name)
         if normalized is None:
             raise DomainError(
@@ -197,11 +197,13 @@ class UserService:
         changed.append("display_name")
         if email is not None:
             normalized_email = normalize_email(email)
-            if normalized_email is None:
+            if email.strip() and normalized_email is None:
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED, "邮箱格式不合法", status_code=400
                 )
-            existing = self.users.get_by_email(session, normalized_email)
+            existing = (
+                self.users.get_by_email(session, normalized_email) if normalized_email else None
+            )
             if existing is not None and existing.id != user.id:
                 raise DomainError(DomainErrorCode.CONFLICT, "邮箱已被使用", status_code=409)
             user.email = normalized_email or None

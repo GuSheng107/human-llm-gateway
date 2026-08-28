@@ -19,9 +19,14 @@ _store: dict[str, tuple[str, float]] = {}
 
 def generate_captcha() -> tuple[str, str]:
     """生成验证码，返回 (token, data_url)。"""
+    # 惰性清理过期条目，避免长期运行时内存字典持续增长。
+    now = time.time()
+    for stale_token, (_code, created) in tuple(_store.items()):
+        if now - created > _CAPTCHA_TTL:
+            _store.pop(stale_token, None)
     code = "".join(secrets.choice(_CAPTCHA_CHARS) for _ in range(4))
     token = secrets.token_urlsafe(24)
-    _store[token] = (code, time.time())
+    _store[token] = (code, now)
 
     width, height = 150, 50
     image = Image.new("RGB", (width, height), (246, 249, 255))

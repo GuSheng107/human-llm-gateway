@@ -2,7 +2,7 @@ import { type FormEvent, useState } from "react";
 import { changePassword, updateProfile } from "../../api/auth";
 import { Card } from "../../components/data-display/Card";
 import { FormField } from "../../components/form/FormField";
-import { PasswordStrength } from "../../components/form/PasswordStrength";
+import { PasswordStrength, passwordValid } from "../../components/form/PasswordStrength";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
@@ -57,6 +57,7 @@ export function AccountPage() {
 
   const emailInvalid = email.trim() !== "" && !EMAIL_PATTERN.test(email.trim());
   const mismatch = confirm !== "" && confirm !== newPassword;
+  const passwordInvalid = newPassword !== "" && !passwordValid(newPassword);
 
   const onAvatarChange = async (file: File | null) => {
     if (!file) return;
@@ -102,6 +103,10 @@ export function AccountPage() {
     event.preventDefault();
     if (newPassword !== confirm) {
       setError("两次输入的新密码不一致");
+      return;
+    }
+    if (passwordInvalid) {
+      setError("新密码需至少 10 位，并包含英文字母、数字和符号");
       return;
     }
     setSavingPassword(true);
@@ -219,7 +224,11 @@ export function AccountPage() {
             />
           </FormField>
           <div className="grid gap-4 sm:grid-cols-2">
-            <FormField label="新密码" required>
+            <FormField
+              label="新密码"
+              required
+              error={passwordInvalid ? "至少 10 位，且包含英文字母、数字和符号" : undefined}
+            >
               <input
                 required
                 type="password"

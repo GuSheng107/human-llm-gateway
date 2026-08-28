@@ -2,7 +2,7 @@ import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { changePassword } from "../../api/auth";
 import { FormField } from "../../components/form/FormField";
-import { PasswordStrength } from "../../components/form/PasswordStrength";
+import { PasswordStrength, passwordValid } from "../../components/form/PasswordStrength";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Button } from "../../components/ui/Button";
 import { useAuth } from "./AuthContext";
@@ -17,11 +17,16 @@ export function ForcePasswordPage() {
   const [submitting, setSubmitting] = useState(false);
 
   const mismatch = confirm !== "" && confirm !== newPassword;
+  const passwordInvalid = newPassword !== "" && !passwordValid(newPassword);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (newPassword !== confirm) {
       setError("两次输入的新密码不一致");
+      return;
+    }
+    if (passwordInvalid) {
+      setError("新密码需至少 10 位，并包含英文字母、数字和符号");
       return;
     }
     setSubmitting(true);
@@ -62,7 +67,11 @@ export function ForcePasswordPage() {
               className="field-input"
             />
           </FormField>
-          <FormField label="新密码" required>
+          <FormField
+            label="新密码"
+            required
+            error={passwordInvalid ? "至少 10 位，且包含英文字母、数字和符号" : undefined}
+          >
             <input
               autoComplete="new-password"
               required
