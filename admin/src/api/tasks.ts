@@ -39,6 +39,16 @@ export function saveDraft(taskId: string, draft: ReplyDraft): Promise<TaskDraft>
   });
 }
 
+export function generateDraft(
+  taskId: string,
+  llmConfigId: number,
+): Promise<TaskDraft> {
+  return api<TaskDraft>(`/api/tasks/${taskId}/drafts/generate`, {
+    method: "POST",
+    body: JSON.stringify({ llm_config_id: llmConfigId }),
+  });
+}
+
 export function updateDraft(
   taskId: string,
   draftId: string,

@@ -55,6 +55,10 @@ class ReplySubmitInput(StrictModel):
     source_draft_id: int | None = None
 
 
+class DraftGenerateInput(StrictModel):
+    llm_config_id: int = Field(ge=1)
+
+
 # ------------------------------------------------------------------
 # 视图模型
 # ------------------------------------------------------------------
@@ -425,6 +429,28 @@ def delete_draft(
     _service.delete_draft(db, task=task, owner=user, draft_id=draft_id)
     db.commit()
     return Response(status_code=204)
+
+
+@router.post("/{task_id}/drafts/generate", response_model=DraftView, status_code=201)
+async def generate_draft(
+    task_id: int,
+    payload: DraftGenerateInput,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> DraftView:
+    """调用用户选定 LLM 配置生成持久化草稿（M7-B）。
+
+    仅同协议：Chat/Responses 任务必须选 openai_compatible；Anthropic 任务
+    必须选 anthropic。跨协议生成在后续阶段（字段矩阵）开放。
+    """
+    from ..services.llm_draft_service import LlmDraftService
+
+    task = _get_task(db, task_id, user)
+    generator = LlmDraftService()
+    row = await generator.generate(db, task=task, owner=user, llm_config_id=payload.llm_config_id)
+    db.commit()
+    db.refresh(row)
+    return _draft_view(row)
 
 
 @router.post("/{task_id}/reply", response_model=ReplyResultView, status_code=201)

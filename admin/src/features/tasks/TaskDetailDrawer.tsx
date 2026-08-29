@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
-import { getTask } from "../../api/tasks";
+import { generateDraft, getTask } from "../../api/tasks";
+import { listLlmConfigs } from "../../api/llmConfigs";
 import { Card } from "../../components/data-display/Card";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { Drawer } from "../../components/feedback/Drawer";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { Modal } from "../../components/feedback/Modal";
+import { notify } from "../../components/feedback/Toast";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
-import type { TaskDetail, TaskEvent } from "../../types/gateway";
+import type { LlmConfig, TaskDetail, TaskEvent } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 import {
   ACTOR_TYPE_LABELS,
@@ -71,6 +74,11 @@ export function TaskDetailDrawer({
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState(false);
+  const [llmConfigs, setLlmConfigs] = useState<LlmConfig[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState("");
+  const [showGenerateModal, setShowGenerateModal] = useState(false);
+  const [generatedDraftId, setGeneratedDraftId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError("");
@@ -81,7 +89,38 @@ export function TaskDetailDrawer({
     }
   }, [taskId]);
 
+  const loadLlmConfigs = useCallback(async () => {
+    try {
+      const result = await listLlmConfigs(1);
+      setLlmConfigs(result.items.filter((cfg) => cfg.is_enabled));
+    } catch {
+      // LLM 配置拉取失败不阻塞任务详情
+      setLlmConfigs([]);
+    }
+  }, []);
+
   useEffect(() => void load(), [load]);
+  useEffect(() => {
+    if (isAdmin) return;
+    void loadLlmConfigs();
+  }, [isAdmin, loadLlmConfigs]);
+
+  const handleGenerate = async (llmConfigId: number) => {
+    setGenerating(true);
+    setGenerateError("");
+    try {
+      const draft = await generateDraft(taskId, llmConfigId);
+      notify("已生成草稿，请继续编辑");
+      setGeneratedDraftId(draft.id);
+      setShowGenerateModal(false);
+      await load();
+      onChanged();
+    } catch (caught) {
+      setGenerateError(caught instanceof Error ? caught.message : "生成失败");
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   if (error && !detail) {
     return (
@@ -129,7 +168,16 @@ export function TaskDetailDrawer({
               </span>
             )}
             {detail.can_edit && (
-              <div className="ml-auto">
+              <div className="ml-auto flex items-center gap-2">
+                {llmConfigs.length > 0 && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => setShowGenerateModal(true)}
+                  >
+                    <Icon name="gateway" className="h-4 w-4" />
+                    生成草稿
+                  </Button>
+                )}
                 <Button onClick={() => setEditing(true)}>
                   <Icon name="reply" className="h-4 w-4" />
                   撰写回复
@@ -282,6 +330,70 @@ export function TaskDetailDrawer({
           </section>
         </div>
       </Drawer>
+
+      {showGenerateModal && detail && (
+        <Modal
+          title="调用 LLM 生成草稿"
+          description="选择一个同协议的 LLM 配置；生成结果进入可编辑草稿，不会自动提交。"
+          onClose={() => setShowGenerateModal(false)}
+        >
+          <div className="space-y-4 p-6">
+            {generateError && <ErrorBanner message={generateError} />}
+            {llmConfigs.length === 0 ? (
+              <p className="text-slate-400">暂无启用的 LLM 配置</p>
+            ) : (
+              <div className="space-y-2">
+                {llmConfigs.map((cfg) => (
+                  <button
+                    key={cfg.id}
+                    disabled={generating}
+                    onClick={() => void handleGenerate(Number(cfg.id))}
+                    className="flex w-full items-center justify-between rounded-lg border border-slate-200 px-4 py-3 text-left hover:border-primary disabled:opacity-50"
+                  >
+                    <span>
+                      <span className="block font-medium text-slate-700">{cfg.name}</span>
+                      <span className="text-xs text-slate-400">
+                        {cfg.protocol === "anthropic" ? "Anthropic" : "OpenAI 兼容"}
+                        {" · "}
+                        {cfg.real_model}
+                      </span>
+                    </span>
+                    <span className="text-xs text-primary">
+                      {generating ? "生成中…" : "生成"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+            <p className="text-xs text-slate-400">
+              跨协议生成（如 Chat 任务选 Anthropic 配置）暂未开放。
+            </p>
+          </div>
+        </Modal>
+      )}
+
+      {generatedDraftId && detail && (
+        <Modal
+          title="草稿已生成"
+          description="上游结果已保存为可编辑草稿，进入编辑器调整后提交。"
+          onClose={() => setGeneratedDraftId(null)}
+        >
+          <div className="flex justify-end gap-2 p-6">
+            <Button variant="ghost" onClick={() => setGeneratedDraftId(null)}>
+              稍后编辑
+            </Button>
+            <Button
+              onClick={() => {
+                setGeneratedDraftId(null);
+                setEditing(true);
+              }}
+            >
+              <Icon name="reply" className="h-4 w-4" />
+              立即编辑
+            </Button>
+          </div>
+        </Modal>
+      )}
 
       {editing && detail && (
         <ReplyEditor

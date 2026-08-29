@@ -264,7 +264,7 @@ M6 完成后达到首个可用 MVP。
 
 ---
 
-## M7：LLM 配置、草稿和自动转发（M7-A 已完成）
+## M7：LLM 配置、草稿和自动转发（M7-A 和 M7-B 已完成）
 
 ### M7-A：用户级 LLM 配置管理
 
@@ -274,10 +274,13 @@ M6 完成后达到首个可用 MVP。
 - [x] 被有效 API Key 或活动任务引用的配置删除返回 409；历史任务保存非敏感配置快照。
 - [x] 管理 API `/api/llm-configs` CRUD + `POST /test`；前端 LLM 管理页（列表 + 编辑 + 测试 + 引用头列表）。
 
-### M7-B：手动调用 LLM 生成草稿（未开始）
+### M7-B：手动调用 LLM 生成草稿（已完成）
 
-- [ ] 用户选择 LLM 配置在任务详情页调用上游生成持久化草稿。
-- [ ] 草稿支持 LLM 来源标记并由用户预览编辑后手动提交。
+- [x] 用户选择 LLM 配置在任务详情页调用上游生成持久化草稿（`POST /api/tasks/{id}/drafts/generate`）。
+- [x] 仅同协议生成（Chat/Responses -> openai_compatible；Anthropic -> anthropic），跨协议在 M7-C 字段矩阵后开放。
+- [x] 草稿支持 LLM 来源标记（source=llm + source_llm_config_id）并由用户预览编辑后手动提交，不自动完成任务。
+- [x] 上游响应解析为统一 ReplyDraft（reasoning / tool_calls / final_text），失败返回 502/504 不泄露 Secret。
+- [x] 前端任务详情抽屉提供"生成草稿"入口：选择 LLM 配置 -> 生成 -> 进入编辑器。
 
 ### M7-C：自动转发与字段矩阵（未开始）
 
