@@ -21,6 +21,7 @@ from ..domain.enums import (
     ActorType,
     DeliveryMode,
     InferenceProtocol,
+    ReplyStrategy,
     TaskEventType,
     TaskState,
 )
@@ -190,6 +191,11 @@ class InferenceService:
     # ------------------------------------------------------------------
 
     def _deliver(self, session: Session, task: RequestTask) -> None:
+        # llm 策略全程自动转发，无需人工介入：跳过 IM 投递避免无意义
+        # 打扰（任务在 Web 仍始终可见）；human / human_fallback_llm 的
+        # 人工等待阶段照常投递。
+        if task.reply_strategy_snapshot is ReplyStrategy.LLM:
+            return
         if task.delivery_mode_snapshot is not DeliveryMode.IM:
             return
         if not task.im_connection_id_snapshot:

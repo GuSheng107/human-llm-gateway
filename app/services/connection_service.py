@@ -582,6 +582,7 @@ class ConnectionService:
                 task_id=task.id,
                 event_type=TaskEventType.REPLY_SUBMITTED,
                 actor_type=ActorType.IM,
+                actor_user_id=row.owner_user_id,
                 payload={"source": "im", "connection_id": row.id},
             )
             receipt.task_id = task.id
@@ -592,6 +593,7 @@ class ConnectionService:
             task_id=task.id,
             event_type=TaskEventType.REPLY_REJECTED_LATE,
             actor_type=ActorType.IM,
+            actor_user_id=row.owner_user_id,
             payload={"source": "im", "connection_id": row.id, "payload_hash": receipt.payload_hash},
         )
         receipt.task_id = task.id
@@ -634,6 +636,7 @@ class ConnectionService:
         task_id: int,
         event_type: TaskEventType,
         actor_type: ActorType,
+        actor_user_id: int | None = None,
         payload: dict[str, Any] | None = None,
     ) -> None:
         from ..repositories.models import TaskEvent
@@ -643,6 +646,7 @@ class ConnectionService:
                 task_id=task_id,
                 event_type=event_type,
                 actor_type=actor_type,
+                actor_user_id=actor_user_id,
                 payload_json=json.dumps(payload, ensure_ascii=False) if payload else None,
                 request_id=get_request_id(),
             )

@@ -140,6 +140,9 @@ export function TaskDetailDrawer({
     );
   }
 
+  // 草稿列表仅呈现可编辑项；SUBMITTED 已由「已接受回复」区域展示，去重。
+  const editingDrafts = detail.drafts.filter((draft) => draft.state === "editing");
+
   return (
     <>
       <Drawer
@@ -258,15 +261,17 @@ export function TaskDetailDrawer({
             </section>
           )}
 
-          {detail.is_owner && detail.drafts.length > 0 && (
+          {detail.is_owner && editingDrafts.length > 0 && (
             <section>
-              <h3 className="mb-2 text-sm font-medium text-slate-700">草稿（{detail.drafts.length}）</h3>
+              <h3 className="mb-2 text-sm font-medium text-slate-700">
+                草稿（{editingDrafts.length}）
+              </h3>
               <div className="space-y-2">
-                {detail.drafts.map((draft) => (
+                {editingDrafts.map((draft) => (
                   <Card key={draft.id}>
                     <div className="flex items-center justify-between p-3">
                       <div className="flex items-center gap-2">
-                        <StatusBadge status={draft.state === "editing" ? "active" : draft.state === "submitted" ? "completed" : "inactive"} fallback={DRAFT_STATE_LABELS[draft.state] ?? draft.state} />
+                        <StatusBadge status="active" fallback={DRAFT_STATE_LABELS[draft.state] ?? draft.state} />
                         <span className="text-slate-400">
                           {DRAFT_SOURCE_LABELS[draft.source] ?? draft.source}
                         </span>
@@ -279,6 +284,7 @@ export function TaskDetailDrawer({
                   </Card>
                 ))}
               </div>
+              {/* 已提交草稿由下方「已接受回复」区域呈现，不在此重复列出 */}
             </section>
           )}
 
