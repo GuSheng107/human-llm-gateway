@@ -264,17 +264,26 @@ M6 完成后达到首个可用 MVP。
 
 ---
 
-## M7：LLM 配置、草稿和自动转发（未开始）
+## M7：LLM 配置、草稿和自动转发（M7-A 已完成）
 
-- [ ] 用户维护 OpenAI-compatible 或 Anthropic LLM 配置。
-- [ ] 配置包含名称、协议、Base URL、API Key、真实模型、超时和自定义 Header。
-- [ ] 支持连通性测试且不回显 Secret。
-- [ ] 被有效 API Key 或活动任务引用的配置删除返回 409；历史任务保存非敏感配置快照。
-- [ ] 手动调用 LLM 时完整转发当前任务并生成持久化草稿。
-- [ ] 用户预览编辑草稿后手动提交，不自动完成任务。
+### M7-A：用户级 LLM 配置管理
+
+- [x] 用户维护 OpenAI-compatible 或 Anthropic LLM 配置。
+- [x] 配置包含名称、协议、Base URL、API Key、真实模型、超时和自定义 Header。
+- [x] 支持连通性测试且不回显 Secret；OpenAI 协议 GET /models、Anthropic POST /v1/messages 最小请求，硬上限 10 秒。
+- [x] 被有效 API Key 或活动任务引用的配置删除返回 409；历史任务保存非敏感配置快照。
+- [x] 管理 API `/api/llm-configs` CRUD + `POST /test`；前端 LLM 管理页（列表 + 编辑 + 测试 + 引用头列表）。
+
+### M7-B：手动调用 LLM 生成草稿（未开始）
+
+- [ ] 用户选择 LLM 配置在任务详情页调用上游生成持久化草稿。
+- [ ] 草稿支持 LLM 来源标记并由用户预览编辑后手动提交。
+
+### M7-C：自动转发与字段矩阵（未开始）
+
 - [ ] `llm` 策略直接转发真实 LLM。
 - [ ] `human_fallback_llm` 在人工超时后只转发一次。
-- [ ] 转发请求追加基于 Fake Model 的身份 system 指令。
+- [ ] 转发请求追加基于 Fake Model description 派生的身份 system 指令。
 - [ ] 同协议默认保留全部原始字段和未知扩展字段；声明为网关控制的字段按契约等价消费或重写。
 - [ ] 按 API_CONTRACT 字段矩阵实现透传、等价转换、网关消费和明确拒绝四种行为。
 - [ ] tools、tool choice、并行工具、tool result、采样、stop、结构化输出、reasoning 控制和 metadata 转换有逐项测试。

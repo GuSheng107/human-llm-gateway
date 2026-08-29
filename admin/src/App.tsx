@@ -10,6 +10,7 @@ import { RegisterPage } from "./features/auth/RegisterPage";
 import { ConnectionsPage } from "./features/connections/ConnectionsPage";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { ModelsPage } from "./features/models/ModelsPage";
+import { LlmConfigsPage } from "./features/llm/LlmConfigsPage";
 import { InvitationsPage } from "./features/invitations/InvitationsPage";
 import { AccountPage } from "./features/settings/AccountPage";
 import { TasksPage } from "./features/tasks/TasksPage";
@@ -85,6 +86,7 @@ export default function App() {
     connections: <ConnectionsPage />,
     apiKeys: <ApiKeysPage />,
     models: <ModelsPage />,
+    llmConfigs: <LlmConfigsPage />,
     invitations: <InvitationsPage />,
     users: <UsersPage />,
     account: <AccountPage />,

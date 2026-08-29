@@ -6,6 +6,7 @@ export type AppRouteId =
   | "connections"
   | "apiKeys"
   | "models"
+  | "llmConfigs"
   | "invitations"
   | "users"
   | "account";
@@ -69,6 +70,14 @@ export const NAVIGATION: NavigationGroup[] = [
         label: "模型目录",
         description: "Fake Model 与模型分组",
         icon: "cpu",
+        capability: "model.manage",
+      },
+      {
+        id: "llmConfigs",
+        path: "/llm-configs",
+        label: "LLM 管理",
+        description: "真实 LLM 配置与连通性测试",
+        icon: "gateway",
         capability: "model.manage",
       },
     ],

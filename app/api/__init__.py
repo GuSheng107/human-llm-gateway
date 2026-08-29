@@ -26,6 +26,7 @@ from .fake_models import router as fake_models_router
 from .inference import router as inference_router
 from .invitations import router as invitations_router
 from .limits import BodySizeLimitMiddleware
+from .llm_configs import router as llm_configs_router
 from .tasks import router as tasks_router
 from .users import router as users_router
 from .v1_models import router as v1_models_router
@@ -72,6 +73,7 @@ def create_app() -> FastAPI:
     app.include_router(api_keys_router)
     app.include_router(tasks_router)
     app.include_router(v1_models_router)
+    app.include_router(llm_configs_router)
     app.include_router(inference_router)
 
     @app.get("/healthz")

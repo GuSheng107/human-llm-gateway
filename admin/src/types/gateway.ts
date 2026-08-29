@@ -218,3 +218,39 @@ export interface ReplyResult {
   task_id: string;
   state: TaskState;
 }
+
+// ---------------------------------------------------------------------------
+// LLM 配置（docs/API_CONTRACT.md §6）
+// ---------------------------------------------------------------------------
+
+export interface LlmConfigHeader {
+  name: string;
+  value_set: boolean;
+}
+
+export interface LlmConfig {
+  id: string;
+  name: string;
+  protocol: "openai_compatible" | "anthropic";
+  base_url: string;
+  base_url_host: string;
+  real_model: string;
+  timeout_seconds: number;
+  is_enabled: boolean;
+  api_key_set: boolean;
+  headers: LlmConfigHeader[];
+  last_tested_at: string | null;
+  last_test_result: string | null;
+  created_at: string;
+  updated_at: string;
+  owner_user_id: string | null;
+  owner_username: string | null;
+}
+
+export interface LlmConfigTestResult {
+  success: boolean;
+  reason_code: string;
+  detail: string;
+  http_status: number | null;
+  last_tested_at: string;
+}
