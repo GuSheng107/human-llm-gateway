@@ -399,16 +399,31 @@ def _stop_to_anthropic(normalized: dict[str, Any]) -> list[str] | None:
     return None
 
 
+_LIMIT_KEYS = ("max_completion_tokens", "max_tokens", "max_output_tokens")
+
+
 def _output_limit(normalized: dict[str, Any]) -> int | None:
-    """提取输出上限：max_tokens / max_completion_tokens / max_output_tokens。"""
+    """提取输出上限：max_completion_tokens / max_tokens / max_output_tokens。
+
+    §12.6 输出上限行：同一请求同时给出多个上限键时返回 400——即使数值
+    相同也不静默择一（调用方无法确认语义）。
+    """
     options = _extract_options(normalized)
-    for key in ("max_completion_tokens", "max_tokens", "max_output_tokens"):
-        if key in options and options[key] is not None:
-            value = options[key]
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-                raise _unsupported(key, "must be a positive integer")
-            return value
-    if normalized.get("max_tokens") is not None:
+    present = [key for key in _LIMIT_KEYS if key in options and options[key] is not None]
+    # normalized["max_tokens"]（Anthropic 顶级字段）与 options 中的键
+    # 同属输出上限语义，纳入冲突检测。
+    top_level_present = normalized.get("max_tokens") is not None
+    if len(present) + (1 if top_level_present and "max_tokens" not in present else 0) > 1:
+        raise _unsupported(
+            "output limit fields " + ", ".join(present),
+            "conflicting output limit fields in one request",
+        )
+    if present:
+        value = options[present[0]]
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise _unsupported(present[0], "must be a positive integer")
+        return value
+    if top_level_present:
         return int(normalized["max_tokens"])
     return None
 

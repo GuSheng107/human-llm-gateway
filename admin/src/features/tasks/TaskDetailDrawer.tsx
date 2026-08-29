@@ -366,7 +366,7 @@ export function TaskDetailDrawer({
               </div>
             )}
             <p className="text-xs text-slate-400">
-              跨协议生成（如 Chat 任务选 Anthropic 配置）暂未开放。
+              跨协议生成按字段矩阵自动转换；不可等价的专有字段将被拒绝。
             </p>
           </div>
         </Modal>

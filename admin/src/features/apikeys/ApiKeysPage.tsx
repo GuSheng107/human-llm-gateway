@@ -337,7 +337,7 @@ export function ApiKeysPage() {
               {form.reply_strategy !== "human" && (
                 <label className="block">
                   <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                    LLM 配置（同协议）
+                    LLM 配置（支持跨协议）
                   </span>
                   <select
                     value={form.llm_config_id}

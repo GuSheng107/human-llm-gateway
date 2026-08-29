@@ -322,6 +322,7 @@ def _log_bad_sse_line(payload: str) -> None:
 
 
 def _parse_chat_delta(payload: dict[str, Any]) -> UpstreamChunk:
+    """解析 Chat delta；tool_call 增量携带上游 index（并行多调用不串位）。"""
     choices = payload.get("choices") or []
     if not choices:
         return UpstreamChunk()
@@ -334,15 +335,17 @@ def _parse_chat_delta(payload: dict[str, Any]) -> UpstreamChunk:
         first = calls[0]
         if isinstance(first, dict):
             fn = first.get("function") or {}
+            index = first.get("index", 0)
             if first.get("id") and fn.get("name"):
-                # 新调用开始：携带完整 id/name（arguments 后续以 index 增量）
+                # 新调用开始：携带 index/id/name（arguments 后续按 index 增量）
                 tool_call = {
+                    "index": index,
                     "id": first.get("id", ""),
                     "name": fn.get("name", ""),
                     "arguments_delta": fn.get("arguments") or "",
                 }
             elif fn.get("arguments"):
-                tool_call = {"arguments_delta": fn.get("arguments") or ""}
+                tool_call = {"index": index, "arguments_delta": fn.get("arguments") or ""}
     return UpstreamChunk(text=text, reasoning=reasoning, tool_call=tool_call)
 
 
@@ -391,8 +394,10 @@ def _parse_anthropic_event(
 def collect_chunk(target: dict[str, Any], chunk: UpstreamChunk) -> None:
     """把增量 chunk 累积到 target（text/reasoning/tool_calls）。
 
-    Chat 形态：首个 tool_call chunk 带 id/name，后续仅 arguments 增量。
+    Chat 形态：首个 tool_call chunk 带 index/id/name，后续按 index 增量
+    （上游并行发起多个调用时 arguments 不串位）。
     Anthropic 形态：content_block_stop 一次性给出完整 arguments。
+    无 index 的增量（理论上不存在；防御）回退到最近一个调用。
     """
     if chunk.text:
         target["text"] = target.get("text", "") + chunk.text
@@ -401,6 +406,7 @@ def collect_chunk(target: dict[str, Any], chunk: UpstreamChunk) -> None:
     if chunk.tool_call:
         call = chunk.tool_call
         calls = target.setdefault("tool_calls", [])
+        index_by_position: dict[int, int] = target.setdefault("_tc_index", {})
         if "arguments" in call:
             # 完整调用（Anthropic content_block_stop / 已聚合形态）
             calls.append(
@@ -410,8 +416,10 @@ def collect_chunk(target: dict[str, Any], chunk: UpstreamChunk) -> None:
                     "arguments": call["arguments"],
                 }
             )
-        elif "id" in call:
-            # Chat 新调用开始：记录 id/name 并开始累积 arguments
+            return
+        if "id" in call:
+            # Chat 新调用开始：记录 index 映射并开始累积 arguments
+            index_by_position[call.get("index", 0)] = len(calls)
             calls.append(
                 {
                     "id": call.get("id", ""),
@@ -419,16 +427,22 @@ def collect_chunk(target: dict[str, Any], chunk: UpstreamChunk) -> None:
                     "arguments_raw": call.get("arguments_delta", ""),
                 }
             )
-        elif "arguments_delta" in call:
+            return
+        if "arguments_delta" in call:
             delta = call["arguments_delta"]
-            if calls and "arguments_raw" in calls[-1]:
-                calls[-1]["arguments_raw"] += delta
-            else:
-                target["arguments_raw_head"] = target.get("arguments_raw_head", "") + delta
+            position = index_by_position.get(call.get("index"))
+            if position is None:
+                # 无 index 且无映射：回退到最后一个进行中的调用。
+                if calls and "arguments_raw" in calls[-1]:
+                    position = len(calls) - 1
+                else:
+                    target["arguments_raw_head"] = target.get("arguments_raw_head", "") + delta
+                    return
+            calls[position]["arguments_raw"] = calls[position].get("arguments_raw", "") + delta
 
 
 def finalize_collected(target: dict[str, Any]) -> dict[str, Any]:
-    """累积结果 -> 协议无关摘要（与 ReplyDraft 字段对齐）。"""
+    """累积结果 -> 协议无关摘要（与 ReplyDraft 字段对齐；丢弃内部索引）。"""
     tool_calls: list[dict[str, Any]] = []
     for call in target.get("tool_calls", []):
         raw = call.get("arguments_raw") or "{}"

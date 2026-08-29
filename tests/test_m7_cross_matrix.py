@@ -106,14 +106,23 @@ def test_output_limit_from_max_output_tokens_to_anthropic() -> None:
 
 
 def test_output_limit_conflict_rejected() -> None:
+    """§12.6：同请求多个输出上限键 -> 400，即使数值相同也不静默择一。"""
     normalized = _norm(
         options={"max_completion_tokens": 512, "max_tokens": 256},
     )
-    # 同请求冲突字段：先取到 max_completion_tokens（矩阵语义：冲突应拒绝）
-    # 当前实现按优先级取第一个；显式声明冲突拒绝需上层协议解析（M6 已有
-    # 同协议校验），cross 层保持确定性优先级。
-    body = cross.to_chat_request(normalized, "gpt")
-    assert body["max_tokens"] == 512
+    with pytest.raises(DomainError) as exc:
+        cross.to_chat_request(normalized, "gpt")
+    assert _unsupported(exc)
+
+    # 数值相同同样拒绝：调用方无法确认语义一致性。
+    with pytest.raises(DomainError):
+        cross.to_chat_request(
+            _norm(options={"max_completion_tokens": 512, "max_tokens": 512}), "gpt"
+        )
+
+    # 单键存在时正常转换。
+    body = cross.to_chat_request(_norm(options={"max_tokens": 256}), "gpt")
+    assert body["max_tokens"] == 256
 
 
 def test_sample_params_convert() -> None:
@@ -362,6 +371,37 @@ def test_collect_chat_tool_call_deltas() -> None:
     assert result["tool_calls"][0]["id"] == "c1"
     assert result["tool_calls"][0]["name"] == "search"
     assert result["tool_calls"][0]["arguments"] == {"q": "x"}
+
+
+def test_collect_parallel_tool_calls_by_index() -> None:
+    """并行多 tool_call：arguments 增量按 index 归位，不串位到末调用。"""
+    target: dict[str, Any] = {}
+    # index 0 开始：c1/search
+    collect_chunk(
+        target,
+        UpstreamChunk(
+            tool_call={"index": 0, "id": "c1", "name": "search", "arguments_delta": '{"a"'}
+        ),
+    )
+    # index 1 开始：c2/calc（并行插入）
+    collect_chunk(
+        target,
+        UpstreamChunk(
+            tool_call={"index": 1, "id": "c2", "name": "calc", "arguments_delta": '{"b"'}
+        ),
+    )
+    # 交错增量：先 0 后 1 再 0
+    collect_chunk(target, UpstreamChunk(tool_call={"index": 0, "arguments_delta": ": 1}"}))
+    collect_chunk(target, UpstreamChunk(tool_call={"index": 1, "arguments_delta": ": 2}"}))
+    result = finalize_collected(target)
+    assert len(result["tool_calls"]) == 2
+    first, second = result["tool_calls"]
+    assert first["id"] == "c1"
+    assert first["name"] == "search"
+    assert first["arguments"] == {"a": 1}
+    assert second["id"] == "c2"
+    assert second["name"] == "calc"
+    assert second["arguments"] == {"b": 2}
 
 
 def test_parse_chat_delta_content_and_reasoning() -> None:
