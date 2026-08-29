@@ -3,16 +3,29 @@
 统一 httpx 调用：OpenAI Chat Completions 与 Anthropic Messages，非流式与
 SSE 流式两种。错误统一映射为 DomainError（超时 504 / 网络 502 / 非 2xx 502），
 不透传上游响应正文（可能包含敏感信息）。
+
+资源与 SSRF 防护：
+- 每次请求前重解 base_url 并做 SSRF 分档校验（防 DNS rebinding；经
+  run_in_threadpool 调用链执行同步 getaddrinfo）；
+- 非流式响应体上限 LLM_MAX_RESPONSE_BYTES；
+- 流式累计字节 / 总时长 / 单行长度上限（httpx timeout 只约束单次读写）。
 """
 
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 
+from ..core.constants import (
+    LLM_MAX_RESPONSE_BYTES,
+    LLM_MAX_SSE_LINE_BYTES,
+    LLM_MAX_STREAM_BYTES,
+    LLM_MAX_STREAM_SECONDS,
+)
 from ..domain.errors import DomainError, DomainErrorCode
 
 
@@ -45,7 +58,7 @@ def _raise_timeout() -> DomainError:
     return DomainError(DomainErrorCode.REQUEST_TIMEOUT, "上游 LLM 请求超时", status_code=504)
 
 
-def _raise_network(exc: Exception) -> DomainError:
+def _raise_network() -> DomainError:
     return DomainError(DomainErrorCode.UPSTREAM_ERROR, "上游 LLM 网络错误", status_code=502)
 
 
@@ -53,6 +66,29 @@ def _raise_bad_json() -> DomainError:
     return DomainError(
         DomainErrorCode.UPSTREAM_ERROR, "上游 LLM 响应不是合法 JSON", status_code=502
     )
+
+
+def _raise_too_large(kind: str) -> DomainError:
+    return DomainError(
+        DomainErrorCode.UPSTREAM_ERROR,
+        f"上游 LLM 响应{kind}超出上限",
+        status_code=502,
+    )
+
+
+async def _precheck_ssrf(base_url: str) -> None:
+    """请求前 SSRF 分档校验：配置后 DNS 指向可能改变（rebinding）。
+
+    getaddrinfo 是阻塞调用：经 threadpool 执行，不阻塞事件循环。
+    """
+    from starlette.concurrency import run_in_threadpool
+
+    from ..core.ssrf import SsrfViolation, validate_base_url
+
+    try:
+        await run_in_threadpool(validate_base_url, base_url)
+    except SsrfViolation as exc:
+        raise DomainError(DomainErrorCode.UPSTREAM_ERROR, str(exc), status_code=502) from exc
 
 
 def _chat_headers(api_key: str, extra: dict[str, str]) -> dict[str, str]:
@@ -95,6 +131,7 @@ async def post_chat_completions(
     extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
+    await _precheck_ssrf(base_url)
     url = base_url.rstrip("/") + "/chat/completions"
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -104,11 +141,14 @@ async def post_chat_completions(
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
-        raise _raise_network(exc) from exc
+        raise _raise_network() from exc
     if resp.status_code >= 400:
         raise _raise_upstream(resp.status_code)
+    raw = resp.content
+    if len(raw) > LLM_MAX_RESPONSE_BYTES:
+        raise _raise_too_large("体积")
     try:
-        return resp.json()
+        return json.loads(raw)
     except (ValueError, json.JSONDecodeError) as exc:
         raise _raise_bad_json() from exc
 
@@ -121,6 +161,7 @@ async def post_anthropic_messages(
     extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
+    await _precheck_ssrf(base_url)
     url = _anthropic_messages_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -130,11 +171,14 @@ async def post_anthropic_messages(
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
-        raise _raise_network(exc) from exc
+        raise _raise_network() from exc
     if resp.status_code >= 400:
         raise _raise_upstream(resp.status_code)
+    raw = resp.content
+    if len(raw) > LLM_MAX_RESPONSE_BYTES:
+        raise _raise_too_large("体积")
     try:
-        return resp.json()
+        return json.loads(raw)
     except (ValueError, json.JSONDecodeError) as exc:
         raise _raise_bad_json() from exc
 
@@ -142,6 +186,21 @@ async def post_anthropic_messages(
 # ----------------------------------------------------------------------
 # 流式（SSE）
 # ----------------------------------------------------------------------
+
+
+class _StreamBudget:
+    """流式资源预算：累计字节 + 总接收时长（httpx timeout 只管单次读写）。"""
+
+    def __init__(self) -> None:
+        self.bytes_read = 0
+        self.started_at = time.monotonic()
+
+    def charge(self, line: str) -> None:
+        self.bytes_read += len(line.encode("utf-8", errors="replace")) + 1
+        if self.bytes_read > LLM_MAX_STREAM_BYTES:
+            raise _raise_too_large("累计字节")
+        if time.monotonic() - self.started_at > LLM_MAX_STREAM_SECONDS:
+            raise _raise_timeout()
 
 
 async def stream_chat_completions(
@@ -154,8 +213,10 @@ async def stream_chat_completions(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Chat Completions：解析 delta.content / reasoning_content /
     tool_calls 增量并归一为 UpstreamChunk。"""
+    await _precheck_ssrf(base_url)
     url = base_url.rstrip("/") + "/chat/completions"
     body = {**request_body, "stream": True}
+    budget = _StreamBudget()
     client = httpx.AsyncClient(timeout=timeout_seconds)
     try:
         async with client.stream(
@@ -164,12 +225,12 @@ async def stream_chat_completions(
             if resp.status_code >= 400:
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
-            async for chunk in _iter_sse_data(resp):
+            async for chunk in _iter_sse_data(resp, budget):
                 yield _parse_chat_delta(chunk)
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
-        raise _raise_network(exc) from exc
+        raise _raise_network() from exc
     finally:
         await client.aclose()
 
@@ -184,8 +245,10 @@ async def stream_anthropic_messages(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Anthropic Messages：解析 content_block_delta（text_delta /
     thinking_delta / input_json_delta）并归一为 UpstreamChunk。"""
+    await _precheck_ssrf(base_url)
     url = _anthropic_messages_url(base_url)
     body = {**request_body, "stream": True}
+    budget = _StreamBudget()
     client = httpx.AsyncClient(timeout=timeout_seconds)
     tool_json_buffers: dict[int, dict[str, str]] = {}
     try:
@@ -195,21 +258,26 @@ async def stream_anthropic_messages(
             if resp.status_code >= 400:
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
-            async for event in _iter_sse(resp):
+            async for event in _iter_sse(resp, budget):
                 chunk = _parse_anthropic_event(event, tool_json_buffers)
                 if chunk is not None:
                     yield chunk
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
-        raise _raise_network(exc) from exc
+        raise _raise_network() from exc
     finally:
         await client.aclose()
 
 
-async def _iter_sse_data(resp: httpx.Response) -> AsyncIterator[dict[str, Any]]:
+async def _iter_sse_data(
+    resp: httpx.Response, budget: _StreamBudget
+) -> AsyncIterator[dict[str, Any]]:
     """提取 data: JSON 行（Chat 格式：每 data 行一个完整对象）。"""
     async for line in resp.aiter_lines():
+        budget.charge(line)
+        if len(line.encode("utf-8", errors="replace")) > LLM_MAX_SSE_LINE_BYTES:
+            raise _raise_too_large("单行")
         if not line.startswith("data:"):
             continue
         payload = line[5:].strip()
@@ -218,13 +286,18 @@ async def _iter_sse_data(resp: httpx.Response) -> AsyncIterator[dict[str, Any]]:
         try:
             yield json.loads(payload)
         except ValueError:
-            continue
+            _log_bad_sse_line(payload)
 
 
-async def _iter_sse(resp: httpx.Response) -> AsyncIterator[tuple[str, dict[str, Any]]]:
+async def _iter_sse(
+    resp: httpx.Response, budget: _StreamBudget
+) -> AsyncIterator[tuple[str, dict[str, Any]]]:
     """提取 (event, data) 对（Anthropic 格式：event: + data: 成对）。"""
     event_name = ""
     async for line in resp.aiter_lines():
+        budget.charge(line)
+        if len(line.encode("utf-8", errors="replace")) > LLM_MAX_SSE_LINE_BYTES:
+            raise _raise_too_large("单行")
         if line.startswith("event:"):
             event_name = line[6:].strip()
         elif line.startswith("data:"):
@@ -234,8 +307,18 @@ async def _iter_sse(resp: httpx.Response) -> AsyncIterator[tuple[str, dict[str, 
             try:
                 yield event_name, json.loads(payload)
             except ValueError:
+                _log_bad_sse_line(payload)
                 continue
             event_name = ""
+
+
+def _log_bad_sse_line(payload: str) -> None:
+    """SSE 坏行告警（截断采样，线上排障必需；不整行落日志防放大）。"""
+    import logging
+
+    logging.getLogger("app.services.llm_upstream").warning(
+        "上游 SSE 行不是合法 JSON（已跳过）: %s...", payload[:80]
+    )
 
 
 def _parse_chat_delta(payload: dict[str, Any]) -> UpstreamChunk:

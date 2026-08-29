@@ -24,6 +24,32 @@ FULL_ADMIN_PASSWORD = "Updated-Admin-Pass2!"
 
 
 @pytest.fixture(autouse=True)
+def stub_dns(monkeypatch):
+    """SSRF 校验的 DNS stub：任意主机解析为合成公网 IP（93.184.x.x 段）。
+
+    真实 getaddrinfo 在测试环境不可控（离线/内网 DNS 会 fail-closed 拒绝
+    一切公网域名）。SSRF 分档行为由 test_ssrf_and_limits.py 显式覆盖。
+    """
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        family = args[0] if args else 0
+        proto = args[2] if len(args) > 2 else 6
+        # 稳定散列到 93.184.0.0/16 公网段；特殊内网测试名直译。
+        if host in ("localhost",):
+            ip = "127.0.0.1"
+        elif host.startswith("intranet-"):
+            ip = "10.0.0.9"
+        else:
+            digest = sum(ord(c) for c in host)
+            ip = f"93.184.{digest % 256}.{(digest * 7) % 254 + 1}"
+        return [(family, proto, 6, "", (ip, port or 0))]
+
+    import socket as _socket
+
+    monkeypatch.setattr(_socket, "getaddrinfo", fake_getaddrinfo)
+
+
+@pytest.fixture(autouse=True)
 def bypass_captcha(monkeypatch):
     """测试环境绕过图形验证码校验（验证码正确性由独立单元测试覆盖）。"""
     monkeypatch.setattr("app.api.auth.verify_captcha", lambda token, code: True)

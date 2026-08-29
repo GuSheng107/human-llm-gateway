@@ -76,6 +76,14 @@ def _normalize_base_url(raw: str, protocol: LLMProtocol | None = None) -> str:
         path = parsed.path.rstrip("/")
         if path == "" or path == "/v1":
             return f"{cleaned}/v1" if path == "" else cleaned
+    # SSRF 分档校验：云元数据无条件拒；私有段受配置开关控制。
+    # 域名走 getaddrinfo 全量解析（含 rebinding fail-closed）。
+    from ..core.ssrf import SsrfViolation, validate_base_url
+
+    try:
+        validate_base_url(cleaned)
+    except SsrfViolation as exc:
+        raise DomainError(DomainErrorCode.VALIDATION_FAILED, str(exc), status_code=400) from exc
     return cleaned
 
 

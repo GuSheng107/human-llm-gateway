@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     stream_delay_max_ms: int = 90
     allow_plain_human_reply: bool = True
     binding_code_ttl_seconds: int = 300
+    # 私有/回环上游默认拒绝；自建网关连本机 Ollama/内网 vLLM 时显式开启
+    # （云元数据段无论开关一律拒绝，见 app/core/ssrf.py）。
+    llm_allow_private_upstream: bool = False
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

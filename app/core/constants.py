@@ -51,3 +51,23 @@ LLM_MAX_HEADERS = 20
 LLM_CONNECT_TEST_TIMEOUT_SECONDS = 10
 # Anthropic 上游请求 max_tokens 缺省值（请求未带输出上限时）
 LLM_DEFAULT_MAX_TOKENS = 1024
+
+# 上游响应体积/时长上限（SSRF 配套的资源防护）
+# 非流式响应体上限（httpx aread 后解析前检查）。
+LLM_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# 流式：累计字节上限与总接收时长上限（httpx timeout 只约束单次读写）。
+LLM_MAX_STREAM_BYTES = 16 * 1024 * 1024
+LLM_MAX_STREAM_SECONDS = 600.0
+# SSE 单行上限（防御无换行的恶意长行占满内存）。
+LLM_MAX_SSE_LINE_BYTES = 1024 * 1024
+
+# SSRF 无条件拒绝：云元数据主机与网段（合法自建场景无理由访问）。
+SSRF_METADATA_HOSTS = frozenset(
+    {
+        "169.254.169.254",
+        "100.100.100.200",  # 阿里云元数据
+        "168.63.129.16",  # Azure WireServer
+        "metadata.google.internal",
+    }
+)
+SSRF_METADATA_NETWORKS = ("169.254.0.0/16",)

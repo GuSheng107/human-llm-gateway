@@ -43,6 +43,19 @@ def _normalize_openai_models_url(base_url: str) -> str:
     return base_url.rstrip("/") + "/models"
 
 
+async def _ssrf_precheck(base_url: str) -> ConnTestOutcome | None:
+    """连通性测试前的 SSRF 校验；违规返回失败 outcome（不抛错）。"""
+    from starlette.concurrency import run_in_threadpool
+
+    from ..core.ssrf import SsrfViolation, validate_base_url
+
+    try:
+        await run_in_threadpool(validate_base_url, base_url)
+    except SsrfViolation as exc:
+        return ConnTestOutcome(False, "blocked", str(exc), None)
+    return None
+
+
 async def test_openai_compatible(
     *,
     base_url: str,
@@ -50,6 +63,9 @@ async def test_openai_compatible(
     extra_headers: dict[str, str] | None = None,
     timeout_seconds: float = LLM_CONNECT_TEST_TIMEOUT_SECONDS,
 ) -> ConnTestOutcome:
+    blocked = await _ssrf_precheck(base_url)
+    if blocked is not None:
+        return blocked
     url = _normalize_openai_models_url(base_url)
     headers = {"Authorization": f"Bearer {api_key}"}
     if extra_headers:
@@ -80,6 +96,9 @@ async def test_anthropic(
     timeout_seconds: float = LLM_CONNECT_TEST_TIMEOUT_SECONDS,
 ) -> ConnTestOutcome:
     """Anthropic 没有 list_models；最小 messages 请求是连通 + 鉴权的标准做法。"""
+    blocked = await _ssrf_precheck(base_url)
+    if blocked is not None:
+        return blocked
     url = _normalize_anthropic_url(base_url)
     headers = {
         "x-api-key": api_key,
