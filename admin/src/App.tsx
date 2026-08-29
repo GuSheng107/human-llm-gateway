@@ -12,6 +12,7 @@ import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { ModelsPage } from "./features/models/ModelsPage";
 import { InvitationsPage } from "./features/invitations/InvitationsPage";
 import { AccountPage } from "./features/settings/AccountPage";
+import { TasksPage } from "./features/tasks/TasksPage";
 import { UsersPage } from "./features/users/UsersPage";
 import { APP_ROUTES, type AppRouteId } from "./navigation";
 import type { Capability } from "./types/auth";
@@ -80,6 +81,7 @@ function ForbiddenPage() {
 export default function App() {
   const routeElements: Record<AppRouteId, ReactNode> = {
     console: <DashboardPage />,
+    tasks: <TasksPage />,
     connections: <ConnectionsPage />,
     apiKeys: <ApiKeysPage />,
     models: <ModelsPage />,

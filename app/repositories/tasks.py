@@ -1,19 +1,21 @@
-"""任务仓库：状态推进、首个回复、名额释放、fallback 声明、断开取消。
+"""任务仓库：状态推进、首个回复、名额释放、fallback 声明、断开取消、
+任务列表、事件分页与草稿 CRUD（docs/DATABASE.md §10）。
 
-所有竞争都由条件 UPDATE 原子裁决（见 docs/DATABASE.md §10），不依赖进程锁。
+所有竞争都由条件 UPDATE 原子裁决，不依赖进程锁。
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..core.time import utc_now
-from ..domain.enums import TaskState
+from ..domain.enums import DraftSource, DraftState, TaskState
 from ..domain.tasks import TERMINAL_STATES
-from .models import RequestTask
+from .models import RequestTask, TaskDraft, TaskEvent
 
 
 def _now() -> datetime:
@@ -152,3 +154,156 @@ class TaskRepository:
             )
         )
         return result.rowcount
+
+    # ------------------------------------------------------------------
+    # 任务列表与事件时间线（M6-B）
+    # ------------------------------------------------------------------
+
+    def list_page(
+        self,
+        session: Session,
+        *,
+        page: int,
+        page_size: int,
+        owner_user_id: int | None = None,
+        search: str | None = None,
+        state: TaskState | None = None,
+    ) -> tuple[list[RequestTask], int]:
+        """分页查询任务；普通用户按 owner 过滤，管理员传 None 看全部。"""
+        filters: list = []
+        if owner_user_id is not None:
+            filters.append(RequestTask.owner_user_id == owner_user_id)
+        if state is not None:
+            filters.append(RequestTask.state == state)
+        if search:
+            term = search.strip()
+            filters.append(
+                or_(
+                    RequestTask.public_id.ilike(f"%{term}%"),
+                    RequestTask.requested_model.ilike(f"%{term}%"),
+                    RequestTask.api_key_prefix_snapshot.ilike(f"%{term}%"),
+                )
+            )
+        total = session.scalar(select(func.count()).select_from(RequestTask).where(*filters)) or 0
+        rows = list(
+            session.scalars(
+                select(RequestTask)
+                .where(*filters)
+                .order_by(RequestTask.created_at.desc(), RequestTask.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        return rows, total
+
+    def list_events(
+        self,
+        session: Session,
+        *,
+        task_id: int,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[TaskEvent], int]:
+        """分页查询任务事件（时间线，按 id 升序）。"""
+        total = (
+            session.scalar(
+                select(func.count()).select_from(TaskEvent).where(TaskEvent.task_id == task_id)
+            )
+            or 0
+        )
+        rows = list(
+            session.scalars(
+                select(TaskEvent)
+                .where(TaskEvent.task_id == task_id)
+                .order_by(TaskEvent.id.asc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        return rows, total
+
+    def get_by_public_id(
+        self, session: Session, *, owner_user_id: int, public_id: str
+    ) -> RequestTask | None:
+        return session.execute(
+            select(RequestTask).where(
+                RequestTask.public_id == public_id,
+                RequestTask.owner_user_id == owner_user_id,
+            )
+        ).scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # 草稿 CRUD（M6-B）
+    # ------------------------------------------------------------------
+
+    def get_draft(self, session: Session, draft_id: int) -> TaskDraft | None:
+        return session.get(TaskDraft, draft_id)
+
+    def get_active_draft(self, session: Session, *, task_id: int) -> TaskDraft | None:
+        """返回任务的最新未提交草稿（state=EDITING），用于编辑器恢复。"""
+        return session.execute(
+            select(TaskDraft)
+            .where(TaskDraft.task_id == task_id, TaskDraft.state == DraftState.EDITING)
+            .order_by(TaskDraft.updated_at.desc(), TaskDraft.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+
+    def list_drafts(self, session: Session, *, task_id: int) -> list[TaskDraft]:
+        return list(
+            session.scalars(
+                select(TaskDraft)
+                .where(TaskDraft.task_id == task_id)
+                .order_by(TaskDraft.updated_at.desc(), TaskDraft.id.desc())
+            )
+        )
+
+    def create_draft(
+        self,
+        session: Session,
+        *,
+        task_id: int,
+        owner_user_id: int,
+        source: DraftSource,
+        reasoning_text: str | None,
+        tool_calls_json: str,
+        final_text: str | None,
+    ) -> TaskDraft:
+        row = TaskDraft(
+            task_id=task_id,
+            owner_user_id=owner_user_id,
+            source=source,
+            state=DraftState.EDITING,
+            reasoning_text=reasoning_text,
+            tool_calls_json=tool_calls_json,
+            final_text=final_text,
+        )
+        session.add(row)
+        return row
+
+    def mark_draft_state(self, session: Session, *, draft_id: int, state: DraftState) -> bool:
+        result = session.execute(
+            update(TaskDraft)
+            .where(TaskDraft.id == draft_id, TaskDraft.state == DraftState.EDITING)
+            .values(state=state, version=TaskDraft.version + 1, updated_at=_now())
+        )
+        return result.rowcount == 1
+
+    def delete_draft(self, session: Session, *, draft_id: int) -> bool:
+        row = session.get(TaskDraft, draft_id)
+        if row is None or row.state is not DraftState.EDITING:
+            return False
+        session.delete(row)
+        return True
+
+    @staticmethod
+    def draft_payload(row: TaskDraft) -> dict:
+        """把 TaskDraft 行还原为 ReplyDraft 兼容的 dict。"""
+        try:
+            tool_calls = json.loads(row.tool_calls_json or "[]")
+        except (ValueError, TypeError):
+            tool_calls = []
+        return {
+            "reasoning": row.reasoning_text,
+            "tool_calls": tool_calls,
+            "final_text": row.final_text,
+        }

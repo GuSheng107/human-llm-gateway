@@ -1,0 +1,194 @@
+import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { listTasks } from "../../api/tasks";
+import { Card } from "../../components/data-display/Card";
+import { Pagination } from "../../components/data-display/Pagination";
+import { StatusBadge } from "../../components/data-display/StatusBadge";
+import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { PageHeader } from "../../components/layout/PageHeader";
+import { Button } from "../../components/ui/Button";
+import { Icon } from "../../icons";
+import type { TaskItem, TaskState } from "../../types/gateway";
+import { useAuth } from "../auth/AuthContext";
+import { TaskDetailDrawer } from "./TaskDetailDrawer";
+import {
+  DELIVERY_MODE_LABELS,
+  PROTOCOL_LABELS,
+  REPLY_STRATEGY_LABELS,
+  STATE_FILTER_OPTIONS,
+  formatDateTime,
+  formatDeadline,
+} from "./labels";
+
+const PAGE_SIZE = 20;
+
+export function TasksPage() {
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === "admin";
+  const [items, setItems] = useState<TaskItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [input, setInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [stateFilter, setStateFilter] = useState<TaskState | "">("");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [detailId, setDetailId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const result = await listTasks({
+        page,
+        search,
+        state: stateFilter || undefined,
+      });
+      setItems(result.items);
+      setTotal(result.total);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [page, search, stateFilter]);
+
+  useEffect(() => void load(), [load]);
+
+  const submitSearch = (event: FormEvent) => {
+    event.preventDefault();
+    setPage(1);
+    setSearch(input.trim());
+  };
+
+  return (
+    <div className="space-y-5">
+      <PageHeader
+        title="任务工作台"
+        description={isAdmin ? "全局任务监控（脱敏视图，只读）" : "处理你的人工任务并提交回复"}
+      />
+
+      <Card>
+        <form
+          onSubmit={submitSearch}
+          className="flex flex-wrap gap-2 border-b border-slate-100 p-4"
+        >
+          <input
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            className="field-input min-w-0 flex-1 sm:max-w-sm"
+            placeholder="搜索任务编号或模型"
+          />
+          <select
+            value={stateFilter}
+            onChange={(event) => {
+              setStateFilter(event.target.value as TaskState | "");
+              setPage(1);
+            }}
+            className="field-input sm:w-44"
+          >
+            <option value="">全部状态</option>
+            {STATE_FILTER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <Button variant="ghost" type="submit">
+            <Icon name="search" className="h-3.5 w-3.5" />
+            搜索
+          </Button>
+        </form>
+        {error && <ErrorBanner message={error} className="m-4" />}
+        <div className="overflow-x-auto">
+          <table className="min-w-[960px] w-full text-left text-xs">
+            <thead className="bg-slate-50 text-slate-400">
+              <tr>
+                <th className="px-4 py-3 font-medium">任务编号</th>
+                <th className="px-4 py-3 font-medium">模型</th>
+                <th className="px-4 py-3 font-medium">协议</th>
+                <th className="px-4 py-3 font-medium">状态</th>
+                <th className="px-4 py-3 font-medium">策略</th>
+                <th className="px-4 py-3 font-medium">投递</th>
+                <th className="px-4 py-3 font-medium">创建时间</th>
+                <th className="px-4 py-3 font-medium">人工截止</th>
+                {isAdmin && <th className="px-4 py-3 font-medium">归属</th>}
+                <th className="sticky right-0 z-10 bg-slate-50 px-4 py-3 text-right font-medium">
+                  操作
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {items.map((task) => (
+                <tr key={task.id} className="group hover:bg-slate-50/60">
+                  <td className="px-4 py-3 font-mono text-slate-700">
+                    <span className="inline-flex items-center gap-1.5">
+                      {task.has_tools && (
+                        <Icon name="code" className="h-3.5 w-3.5 text-primary" />
+                      )}
+                      #{task.public_id}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-slate-600">{task.fake_model_name}</td>
+                  <td className="px-4 py-3 text-slate-500">
+                    {PROTOCOL_LABELS[task.protocol] ?? task.protocol}
+                  </td>
+                  <td className="px-4 py-3">
+                    <StatusBadge status={task.state} />
+                  </td>
+                  <td className="px-4 py-3 text-slate-500">
+                    {REPLY_STRATEGY_LABELS[task.reply_strategy] ?? task.reply_strategy}
+                  </td>
+                  <td className="px-4 py-3 text-slate-500">
+                    {DELIVERY_MODE_LABELS[task.delivery_mode] ?? task.delivery_mode}
+                    {task.stream_requested && (
+                      <span className="ml-1 text-slate-400">流式</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-slate-500">
+                    {formatDateTime(task.created_at)}
+                  </td>
+                  <td className="px-4 py-3 text-slate-500">
+                    {task.human_deadline_at
+                      ? formatDeadline(task.human_deadline_at)
+                      : "-"}
+                  </td>
+                  {isAdmin && (
+                    <td className="px-4 py-3 text-slate-500">
+                      {task.owner_username ?? "-"}
+                    </td>
+                  )}
+                  <td className="sticky right-0 space-x-3 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
+                    <button onClick={() => setDetailId(task.id)} className="text-primary">
+                      详情
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!loading && items.length === 0 && (
+                <tr>
+                  <td
+                    colSpan={isAdmin ? 10 : 9}
+                    className="px-4 py-12 text-center text-slate-400"
+                  >
+                    暂无任务
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex justify-end border-t border-slate-100 px-4 py-3">
+          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+        </div>
+      </Card>
+
+      {detailId && (
+        <TaskDetailDrawer
+          taskId={detailId}
+          onClose={() => setDetailId(null)}
+          onChanged={() => void load()}
+        />
+      )}
+    </div>
+  );
+}

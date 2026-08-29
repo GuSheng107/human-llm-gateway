@@ -30,6 +30,7 @@ from ..core.security import (
     verify_binding_code,
 )
 from ..core.time import utc_now
+from ..domain.dsl import is_empty_draft, parse_reply
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -540,8 +541,10 @@ class ConnectionService:
     ) -> InboundResult:
         """把进站文本提交为任务回复（首个有效提交获胜）。
 
-        IM DSL 完整语法在 M6 落地；M4 阶段支持 `#<task_public_id> <文本>` 的
-        显式回复定位，或仅存在唯一等待任务时的默认回复。
+        正文经 IM DSL 解析为 ReplyDraft（思考 / 假 tool call / 最终文本），与 Web
+        编辑器共享同一结构且往返不丢字段；无围栏块时整段作为 final_text，向后兼容
+        M4 纯文本回复（docs/API_CONTRACT.md §9、docs/PRODUCT.md §6.4）。
+        定位语义：回复上下文 > `#<task_public_id> <正文>` > 唯一等待任务默认。
         """
         text = (message.text or "").strip()
         if not text:
@@ -563,9 +566,9 @@ class ConnectionService:
         if task is None or not text:
             return InboundResult.UNHANDLED
 
-        from ..domain.values import ReplyDraft
-
-        draft = ReplyDraft(final_text=text)
+        draft = parse_reply(text)
+        if is_empty_draft(draft):
+            return InboundResult.UNHANDLED
         accepted = self.tasks.first_reply_wins(
             session,
             task_id=task.id,

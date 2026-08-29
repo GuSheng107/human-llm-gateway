@@ -2,6 +2,7 @@ import type { Capability } from "./types/auth";
 
 export type AppRouteId =
   | "console"
+  | "tasks"
   | "connections"
   | "apiKeys"
   | "models"
@@ -33,6 +34,13 @@ export const NAVIGATION: NavigationGroup[] = [
         label: "控制台",
         description: "运行概览",
         icon: "dashboard",
+      },
+      {
+        id: "tasks",
+        path: "/tasks",
+        label: "任务工作台",
+        description: "人工任务与回复提交",
+        icon: "reply",
       },
     ],
   },

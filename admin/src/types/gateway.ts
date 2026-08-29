@@ -126,3 +126,94 @@ export interface ApiKey {
 export interface ApiKeyCreated extends ApiKey {
   plaintext: string;
 }
+
+// ---------------------------------------------------------------------------
+// 任务工作台（docs/API_CONTRACT.md §9）
+// ---------------------------------------------------------------------------
+
+export type TaskState =
+  | "received"
+  | "waiting_human"
+  | "forwarding_llm"
+  | "response_ready"
+  | "responding"
+  | "completed"
+  | "failed"
+  | "timed_out"
+  | "cancelled";
+
+export type TaskProtocol =
+  | "openai_chat"
+  | "openai_responses"
+  | "anthropic_messages";
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface ReplyDraft {
+  reasoning: string | null;
+  tool_calls: ToolCall[];
+  final_text: string | null;
+}
+
+export interface TaskDraft extends ReplyDraft {
+  id: string;
+  source: "manual" | "llm";
+  state: "editing" | "submitted" | "discarded";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TaskEvent {
+  id: string;
+  event_type: string;
+  actor_type: string;
+  actor_user_id: string | null;
+  request_id: string | null;
+  payload: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface TaskItem {
+  id: string;
+  public_id: string;
+  requested_model: string;
+  fake_model_name: string;
+  protocol: TaskProtocol;
+  state: TaskState;
+  reply_strategy: string;
+  delivery_mode: string;
+  api_key_prefix: string;
+  stream_requested: boolean;
+  has_tools: boolean;
+  response_id: string | null;
+  human_deadline_at: string | null;
+  created_at: string;
+  completed_at: string | null;
+  owner_user_id: string | null;
+  owner_username: string | null;
+}
+
+export interface TaskDetail extends TaskItem {
+  is_owner: boolean;
+  can_edit: boolean;
+  prompt_text: string;
+  tool_names: string[];
+  raw_request: Record<string, unknown> | null;
+  previous_task_id: string | null;
+  drafts: TaskDraft[];
+  active_draft_id: string | null;
+  result_draft: ReplyDraft | null;
+  public_error_code: string | null;
+  cancel_reason_code: string | null;
+  events: TaskEvent[];
+}
+
+export interface ReplyResult {
+  accepted: boolean;
+  task_id: string;
+  state: TaskState;
+}
