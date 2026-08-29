@@ -1,6 +1,13 @@
 import type { Capability } from "./types/auth";
 
-export type AppRouteId = "console" | "invitations" | "users" | "account";
+export type AppRouteId =
+  | "console"
+  | "connections"
+  | "apiKeys"
+  | "models"
+  | "invitations"
+  | "users"
+  | "account";
 
 export interface NavigationItem {
   id: AppRouteId;
@@ -26,6 +33,35 @@ export const NAVIGATION: NavigationGroup[] = [
         label: "控制台",
         description: "运行概览",
         icon: "dashboard",
+      },
+    ],
+  },
+  {
+    label: "接入",
+    items: [
+      {
+        id: "connections",
+        path: "/connections",
+        label: "连接 IM",
+        description: "IM 连接与投递入口",
+        icon: "link",
+        capability: "connection.manage",
+      },
+      {
+        id: "apiKeys",
+        path: "/api-keys",
+        label: "API 管理",
+        description: "API Key、策略与模型筛选",
+        icon: "key",
+        capability: "api_key.manage",
+      },
+      {
+        id: "models",
+        path: "/models",
+        label: "模型目录",
+        description: "Fake Model 与模型分组",
+        icon: "cpu",
+        capability: "model.manage",
       },
     ],
   },

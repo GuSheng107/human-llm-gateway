@@ -73,6 +73,9 @@ def test_restricted_session_only_allows_me_logout_and_password(client) -> None:
         "account.profile.update",
         "invitation.manage",
         "user.manage",
+        "connection.manage",
+        "model.manage",
+        "api_key.manage",
     }
     assert client.get("/api/invitations", headers=headers).status_code == 200
 

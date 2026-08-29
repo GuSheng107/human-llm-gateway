@@ -155,7 +155,7 @@
 
 `username` 是登录标识，仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`：服务端先 strip 再做 ASCII 小写归一并校验，数据库以普通唯一索引保证唯一；Unicode 名称、中文、Emoji 一律放 `display_name`。
 
-`GET /api/auth/me`、登录和改密响应返回稳定的 `capabilities` 数组，前端菜单和路由不得自行从角色推断权限。M3 能力值为：`account.password.change`、`account.profile.update`、`invitation.manage`、`user.manage`。受限会话只返回 `account.password.change`。
+`GET /api/auth/me`、登录和改密响应返回稳定的 `capabilities` 数组，前端菜单和路由不得自行从角色推断权限。M5 起能力值为：`account.password.change`、`account.profile.update`、`invitation.manage`（仅管理员）、`user.manage`（仅管理员）、`connection.manage`、`model.manage`、`api_key.manage`。受限会话只返回 `account.password.change`。
 
 ### 3.1 密码策略
 

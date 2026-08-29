@@ -1,15 +1,17 @@
-export type UserRole = "admin" | "user";
 export type Capability =
   | "account.password.change"
   | "account.profile.update"
   | "invitation.manage"
-  | "user.manage";
+  | "user.manage"
+  | "connection.manage"
+  | "model.manage"
+  | "api_key.manage";
 
 export interface CurrentUser {
   id: string;
   username: string;
   display_name: string;
-  role: UserRole;
+  role: "admin" | "user";
   must_change_password: boolean;
   capabilities: Capability[];
   email: string | null;

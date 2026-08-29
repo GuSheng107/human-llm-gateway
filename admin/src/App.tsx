@@ -2,11 +2,14 @@ import type { ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { ToastHost } from "./components/feedback/Toast";
 import { AppShell } from "./components/layout/AppShell";
+import { ApiKeysPage } from "./features/apikeys/ApiKeysPage";
 import { AuthProvider, useAuth } from "./features/auth/AuthContext";
 import { ForcePasswordPage } from "./features/auth/ForcePasswordPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { RegisterPage } from "./features/auth/RegisterPage";
+import { ConnectionsPage } from "./features/connections/ConnectionsPage";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
+import { ModelsPage } from "./features/models/ModelsPage";
 import { InvitationsPage } from "./features/invitations/InvitationsPage";
 import { AccountPage } from "./features/settings/AccountPage";
 import { UsersPage } from "./features/users/UsersPage";
@@ -77,6 +80,9 @@ function ForbiddenPage() {
 export default function App() {
   const routeElements: Record<AppRouteId, ReactNode> = {
     console: <DashboardPage />,
+    connections: <ConnectionsPage />,
+    apiKeys: <ApiKeysPage />,
+    models: <ModelsPage />,
     invitations: <InvitationsPage />,
     users: <UsersPage />,
     account: <AccountPage />,

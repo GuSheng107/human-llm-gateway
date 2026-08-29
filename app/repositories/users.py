@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
+from ..core.constants import MAX_ACTIVE_TASKS_PER_USER
 from ..core.time import utc_now
 from ..domain.enums import UserRole
 from .models import (
@@ -106,7 +107,7 @@ class UserRepository:
             .where(
                 User.id == user_id,
                 User.is_active.is_(True),
-                User.active_task_count < 10,
+                User.active_task_count < MAX_ACTIVE_TASKS_PER_USER,
             )
             .values(active_task_count=User.active_task_count + 1, updated_at=_now())
         )
