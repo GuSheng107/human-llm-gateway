@@ -129,14 +129,27 @@ class TaskRepository:
         )
         return result.rowcount
 
-    def release_slot_to_terminal(self, session: Session, task_id: int, state: TaskState) -> bool:
-        """推进到终态并幂等释放名额；影响 1 行才需扣减用户计数。"""
+    def release_slot_to_terminal(
+        self,
+        session: Session,
+        task_id: int,
+        state: TaskState,
+        *,
+        allowed_sources: frozenset[TaskState] | set[TaskState] | None = None,
+    ) -> bool:
+        """推进到终态并幂等释放名额；影响 1 行才需扣减用户计数。
+
+        allowed_sources 提供时额外校验当前状态：防止"人工先到已
+        RESPONSE_READY，末梢超时路径仍把它覆盖为 TIMED_OUT"之类的竞态
+        （快照陈旧 + slot_released_at 仍为 NULL 的窗口）。
+        """
         if state not in TERMINAL_STATES:
             raise ValueError(f"非终态不能走名额释放路径: {state}")
+        conditions = [RequestTask.id == task_id, RequestTask.slot_released_at.is_(None)]
+        if allowed_sources is not None:
+            conditions.append(RequestTask.state.in_(list(allowed_sources)))
         result = session.execute(
-            update(RequestTask)
-            .where(RequestTask.id == task_id, RequestTask.slot_released_at.is_(None))
-            .values(**_terminal_values(state))
+            update(RequestTask).where(*conditions).values(**_terminal_values(state))
         )
         return result.rowcount == 1
 

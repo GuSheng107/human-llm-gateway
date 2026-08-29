@@ -202,14 +202,24 @@ class InferenceService:
         # DeliveryService 自身记录投递事件；失败不影响 Web 任务可见性。
         DeliveryService().deliver_task(session, task=task, connection=connection)
 
-    def finalize(self, session: Session, task: RequestTask, state: TaskState) -> bool:
+    def finalize(
+        self,
+        session: Session,
+        task: RequestTask,
+        state: TaskState,
+        *,
+        allowed_sources: frozenset[TaskState] | set[TaskState] | None = None,
+    ) -> bool:
         """推进到终态并幂等释放名额（只有裁决成功方才扣减用户计数）。
 
         终态失败/超时/取消路径同时写入对外稳定错误码（§16.3），便于
         M6-B 任务工作台直接展示协议层错误，无需重建 DomainError 路径。
         completed 保持 None（成功无错误码）。
+        allowed_sources 透传给仓库层做源状态防御（超时末梢防人工先到覆盖）。
         """
-        if self.tasks.release_slot_to_terminal(session, task.id, state):
+        if self.tasks.release_slot_to_terminal(
+            session, task.id, state, allowed_sources=allowed_sources
+        ):
             self.admission.release_slot(session, task.owner_user_id)
             event_type = {
                 TaskState.COMPLETED: TaskEventType.COMPLETED,

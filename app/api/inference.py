@@ -127,7 +127,14 @@ def _finalize(task_id: int, state: TaskState) -> None:
     with SessionLocal() as session:
         task = session.get(RequestTask, task_id)
         if task is not None:
-            _service.finalize(session, task, state)
+            # 超时终态只允许从等待/转发中推进：人工先到（RESPONSE_READY）或
+            # 已开始输出（RESPONDING）的任务不被覆盖。
+            allowed = (
+                {TaskState.WAITING_HUMAN, TaskState.FORWARDING_LLM}
+                if state is TaskState.TIMED_OUT
+                else None
+            )
+            _service.finalize(session, task, state, allowed_sources=allowed)
             session.commit()
 
 
@@ -288,6 +295,17 @@ async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _
                 fallback = await _run_fallback(task_id)
                 if fallback is not None:
                     return fallback
+            # 竞态防御：fallback 声明失败可能是因为人工恰在超时判定后抢先
+            # 提交（任务已 RESPONSE_READY）。终态化前重读一次状态，人工已
+            # 到则返回人工回复，不覆盖。
+            fresh = await run_in_threadpool(_load_task, task_id)
+            if (
+                fresh is not None
+                and fresh.state is TaskState.RESPONSE_READY
+                and fresh.response_payload_json
+            ):
+                draft = ReplyDraft.model_validate_json(fresh.response_payload_json)
+                return _Outcome(fresh, draft)
             await run_in_threadpool(_finalize, task_id, TaskState.TIMED_OUT)
             # 通用超时错误，不暴露人工等待细节（§16.3）。
             log_event(

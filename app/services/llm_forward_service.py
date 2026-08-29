@@ -21,6 +21,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..core.constants import LLM_DEFAULT_MAX_TOKENS
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -248,7 +249,7 @@ class LlmForwardService:
             body = _build_anthropic_request(
                 real_model=cfg.real_model,
                 normalized=normalized,
-                max_tokens=int(normalized.get("max_tokens") or 1024),
+                max_tokens=int(normalized.get("max_tokens") or LLM_DEFAULT_MAX_TOKENS),
             )
         else:
             body = cross.to_anthropic_request(normalized, cfg.real_model)

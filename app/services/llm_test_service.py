@@ -33,8 +33,10 @@ class ConnTestOutcome:
 
 
 def _normalize_anthropic_url(base_url: str) -> str:
-    """Anthropic base_url 形如 https://host；在其后拼接 /v1/messages。"""
-    return base_url.rstrip("/") + "/v1/messages"
+    """Anthropic 连通性测试端点：复用 llm_upstream 的兼容归一。"""
+    from .llm_upstream import _anthropic_messages_url
+
+    return _anthropic_messages_url(base_url)
 
 
 def _normalize_openai_models_url(base_url: str) -> str:

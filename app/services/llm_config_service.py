@@ -41,8 +41,14 @@ from ..repositories.system import AuditRepository
 _LLM_SECRET_PURPOSE = "llm-config"
 
 
-def _normalize_base_url(raw: str) -> str:
-    """去掉尾斜杠与空白；要求 https/http scheme 且包含 host。"""
+def _normalize_base_url(raw: str, protocol: LLMProtocol | None = None) -> str:
+    """去尾斜杠与空白；要求 http(s) scheme + host。
+
+    Anthropic 协议自动补齐 /v1 前缀（官方 SDK base_url 即 https://host，
+    endpoint 为 /v1/messages）：填 https://host 或 https://host/v1 均可，
+    统一归一为后者，消除"OpenAI 要带 /v1、Anthropic 不带"的不对称。
+    OpenAI 兼容协议保持用户原样（生态中网关路径不一，不做猜测）。
+    """
     value = (raw or "").strip()
     if not value:
         raise DomainError(DomainErrorCode.VALIDATION_FAILED, "base_url 不能为空", status_code=400)
@@ -63,7 +69,14 @@ def _normalize_base_url(raw: str) -> str:
         raise DomainError(
             DomainErrorCode.VALIDATION_FAILED, "base_url 必须包含主机", status_code=400
         )
-    return value.rstrip("/")
+    cleaned = value.rstrip("/")
+    if protocol is LLMProtocol.ANTHROPIC:
+        # path 为空或已是 /v1（或 /v1/ 结尾已 rstrip）时补齐/保持；
+        # 其他自定义 path（代理场景）原样保留。
+        path = parsed.path.rstrip("/")
+        if path == "" or path == "/v1":
+            return f"{cleaned}/v1" if path == "" else cleaned
+    return cleaned
 
 
 def _normalize_headers(raw: dict[str, str] | None) -> dict[str, str]:
@@ -205,7 +218,7 @@ class LlmConfigService:
     ) -> LlmConfig:
         begin_immediate_if_sqlite(session)
         self._validate_name(name)
-        normalized_url = _normalize_base_url(base_url)
+        normalized_url = _normalize_base_url(base_url, protocol)
         self._validate_model(model)
         self._validate_timeout(timeout_seconds)
         normalized_headers = _normalize_headers(headers)
@@ -314,9 +327,17 @@ class LlmConfigService:
                 changed.append("protocol")
 
         if "base_url" in fields and fields["base_url"] is not None:
-            normalized = _normalize_base_url(fields["base_url"])
+            # 协议字段（若同请求更新）已先行写入 row，归一化按目标协议执行；
+            # 协议切换后旧 base_url 形态会被重新归一（如 anthropic 补 /v1）。
+            normalized = _normalize_base_url(fields["base_url"], row.protocol)
             if normalized != row.base_url:
                 row.base_url = normalized
+                changed.append("base_url")
+        elif "protocol" in fields and changed and "protocol" in changed:
+            # 仅切协议未提交 base_url：对既有 base_url 按新协议重新归一。
+            renormalized = _normalize_base_url(row.base_url, row.protocol)
+            if renormalized != row.base_url:
+                row.base_url = renormalized
                 changed.append("base_url")
 
         if "model" in fields and fields["model"] is not None:

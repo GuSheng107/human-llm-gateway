@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..core.config import get_settings
+from ..core.constants import LLM_DEFAULT_MAX_TOKENS
 from ..core.db import begin_immediate_if_sqlite
 from ..core.security import decrypt_secret
 from ..domain.enums import (
@@ -27,6 +28,7 @@ from ..domain.enums import (
 )
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft
+from ..protocols import cross
 from ..repositories.llm_configs import LlmConfigRepository
 from ..repositories.models import (
     LlmConfig,
@@ -36,6 +38,7 @@ from ..repositories.models import (
 )
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
+from . import llm_upstream
 
 _LLM_SECRET_PURPOSE = "llm-config"
 
@@ -282,10 +285,8 @@ async def _post_chat_completions(
     extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    """委托共享上游调用（app.services.llm_upstream），保留原名供既有调用/测试。"""
-    from .llm_upstream import post_chat_completions
-
-    return await post_chat_completions(
+    """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）。"""
+    return await llm_upstream.post_chat_completions(
         base_url=base_url,
         api_key=api_key,
         request_body=request_body,
@@ -302,10 +303,8 @@ async def _post_anthropic_messages(
     extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    """委托共享上游调用（app.services.llm_upstream），保留原名供既有调用/测试。"""
-    from .llm_upstream import post_anthropic_messages
-
-    return await post_anthropic_messages(
+    """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）。"""
+    return await llm_upstream.post_anthropic_messages(
         base_url=base_url,
         api_key=api_key,
         request_body=request_body,
@@ -374,8 +373,6 @@ class LlmDraftService:
         except (ValueError, json.JSONDecodeError):
             normalized = {}
         # 5. 构造目标协议请求体（同协议直拼；跨协议走 cross 矩阵，§12.6）
-        from ..protocols import cross
-
         expected_llm_protocol = _INFERENCE_TO_LLM.get(task.protocol)
         if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
             if expected_llm_protocol is LLMProtocol.OPENAI_COMPATIBLE:
@@ -387,15 +384,15 @@ class LlmDraftService:
                 body = _build_anthropic_request(
                     real_model=cfg.real_model,
                     normalized=normalized,
-                    max_tokens=int(normalized.get("max_tokens") or 1024),
+                    max_tokens=int(normalized.get("max_tokens") or LLM_DEFAULT_MAX_TOKENS),
                 )
             else:
                 body = cross.to_anthropic_request(normalized, cfg.real_model)
-        # 6. 解密凭据并调上游
+        # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch）
         secret, headers = _decrypt_config(cfg)
         try:
             if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
-                upstream = await _post_chat_completions(
+                upstream = await llm_upstream.post_chat_completions(
                     base_url=cfg.base_url,
                     api_key=secret,
                     request_body=body,
@@ -404,7 +401,7 @@ class LlmDraftService:
                 )
                 draft = _parse_chat_response(upstream)
             else:
-                upstream = await _post_anthropic_messages(
+                upstream = await llm_upstream.post_anthropic_messages(
                     base_url=cfg.base_url,
                     api_key=secret,
                     request_body=body,

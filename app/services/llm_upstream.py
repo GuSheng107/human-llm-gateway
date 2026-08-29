@@ -63,6 +63,18 @@ def _chat_headers(api_key: str, extra: dict[str, str]) -> dict[str, str]:
     return headers
 
 
+def _anthropic_messages_url(base_url: str) -> str:
+    """Anthropic messages endpoint：兼容已归一（含 /v1）与裸 host 两种形态。
+
+    M7-D 起配置层把 anthropic base_url 归一为含 /v1；历史配置（裸 host）
+    在此防御性补齐，避免旧数据升级后 404。
+    """
+    cleaned = base_url.rstrip("/")
+    if cleaned.endswith("/v1"):
+        return cleaned + "/messages"
+    return cleaned + "/v1/messages"
+
+
 def _anthropic_headers(api_key: str, extra: dict[str, str]) -> dict[str, str]:
     headers = {
         "x-api-key": api_key,
@@ -109,7 +121,7 @@ async def post_anthropic_messages(
     extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    url = base_url.rstrip("/") + "/v1/messages"
+    url = _anthropic_messages_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             resp = await client.post(
@@ -172,7 +184,7 @@ async def stream_anthropic_messages(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Anthropic Messages：解析 content_block_delta（text_delta /
     thinking_delta / input_json_delta）并归一为 UpstreamChunk。"""
-    url = base_url.rstrip("/") + "/v1/messages"
+    url = _anthropic_messages_url(base_url)
     body = {**request_body, "stream": True}
     client = httpx.AsyncClient(timeout=timeout_seconds)
     tool_json_buffers: dict[int, dict[str, str]] = {}

@@ -49,3 +49,5 @@ LLM_HEADER_VALUE_MAX_LENGTH = 1024
 LLM_MAX_HEADERS = 20
 # 连通性测试硬上限（无论配置 timeout_seconds 多大）
 LLM_CONNECT_TEST_TIMEOUT_SECONDS = 10
+# Anthropic 上游请求 max_tokens 缺省值（请求未带输出上限时）
+LLM_DEFAULT_MAX_TOKENS = 1024
