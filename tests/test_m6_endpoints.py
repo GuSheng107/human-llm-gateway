@@ -238,6 +238,19 @@ def test_anthropic_payload_too_large_returns_413(client, created_key, monkeypatc
     assert resp.json()["error"]["type"] == "request_too_large"
 
 
+def test_payload_too_large_includes_request_id_header(client, created_key, monkeypatch) -> None:
+    """BodySize 注册在 RequestId 之外，413 短路需自填 x-request-id（§16.3）。"""
+    monkeypatch.setattr("app.api.limits.MAX_INFERENCE_REQUEST_BYTES", 64)
+    payload = _chat_payload(messages=[{"role": "user", "content": "x" * 200}])
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={**_bearer(created_key.plaintext), "x-request-id": "test-rid-413"},
+        json=payload,
+    )
+    assert resp.status_code == 413
+    assert resp.headers.get("x-request-id") == "test-rid-413"
+
+
 # ----------------------------------------------------------------------
 # 并发名额 429
 # ----------------------------------------------------------------------

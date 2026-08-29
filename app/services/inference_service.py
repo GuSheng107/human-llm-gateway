@@ -33,6 +33,14 @@ from ..repositories.tasks import TaskRepository
 from ..services.admission import AdmissionService
 from ..services.effective_models import EffectiveModelService
 
+# 终态 -> 对外稳定错误码（§16.3 状态映射）。
+# completed 不在此表，对应 public_error_code 保持 None。
+_TERMINAL_PUBLIC_ERROR_CODE: dict[TaskState, str] = {
+    TaskState.FAILED: "upstream_error",
+    TaskState.TIMED_OUT: "request_timeout",
+    TaskState.CANCELLED: "cancelled",
+}
+
 
 class InferenceService:
     def __init__(self) -> None:
@@ -134,10 +142,19 @@ class InferenceService:
             if depth > MAX_CONTEXT_CHAIN_DEPTH:
                 raise DomainError(
                     DomainErrorCode.CONTEXT_LENGTH_EXCEEDED,
-                    "历史响应链深度超出上限",
+                    "Context chain depth exceeds the maximum.",
                     status_code=400,
                 )
             cursor = session.get(RequestTask, cursor.previous_task_id)
+            # 链断裂（祖先被删除）属非法链（§12.5）：当前 FK 无 ondelete，
+            # 实际不会发生，但显式 400 比静默返回缺失祖先的任务更稳。
+            if cursor is None:
+                raise DomainError(
+                    DomainErrorCode.INVALID_REQUEST,
+                    "Invalid previous_response_id.",
+                    status_code=400,
+                    public_code="invalid_previous_response_id",
+                )
         return task
 
     def _build_normalized(
@@ -186,7 +203,12 @@ class InferenceService:
         DeliveryService().deliver_task(session, task=task, connection=connection)
 
     def finalize(self, session: Session, task: RequestTask, state: TaskState) -> bool:
-        """推进到终态并幂等释放名额（只有裁决成功方才扣减用户计数）。"""
+        """推进到终态并幂等释放名额（只有裁决成功方才扣减用户计数）。
+
+        终态失败/超时/取消路径同时写入对外稳定错误码（§16.3），便于
+        M6-B 任务工作台直接展示协议层错误，无需重建 DomainError 路径。
+        completed 保持 None（成功无错误码）。
+        """
         if self.tasks.release_slot_to_terminal(session, task.id, state):
             self.admission.release_slot(session, task.owner_user_id)
             event_type = {
@@ -195,6 +217,11 @@ class InferenceService:
                 TaskState.TIMED_OUT: TaskEventType.TIMED_OUT,
                 TaskState.CANCELLED: TaskEventType.CANCELLED,
             }[state]
+            public_code = _TERMINAL_PUBLIC_ERROR_CODE.get(state)
+            if public_code is not None:
+                # release_slot_to_terminal 走 Core UPDATE 不回填 ORM 对象，
+                # 需显式 set，使同一 session 后续视图/事件读取一致。
+                task.public_error_code = public_code
             self._event(session, task, event_type, ActorType.SYSTEM)
             return True
         return False

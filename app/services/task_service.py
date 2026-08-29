@@ -246,11 +246,21 @@ class TaskService:
 
     @staticmethod
     def _assert_writable(task: RequestTask, owner: User) -> None:
-        """写接口统一前置：归属校验 + 管理员禁写 + 任务仍可编辑。"""
+        """写接口统一前置：归属校验 + 管理员禁写 + 用户仍启用 + 任务仍可编辑。
+
+        AGENTS.md §1：禁用用户时必须立即终止活动任务并释放名额；本校验
+        兜底用户在取消尚未生效时通过已发出的会话/凭据继续写回复。
+        """
         TaskService._assert_owner(task, owner)
         if owner.role is UserRole.ADMIN:
             raise DomainError(
                 DomainErrorCode.FORBIDDEN, "管理员不能编辑草稿或提交回复", status_code=403
+            )
+        if not owner.is_active:
+            raise DomainError(
+                DomainErrorCode.FORBIDDEN,
+                "账户已停用，无法继续编辑或回复",
+                status_code=403,
             )
         TaskService._assert_editable(task)
 

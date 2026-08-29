@@ -478,7 +478,7 @@ requires-dist = [
 provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "openai", specifier = ">=3.6.0" }]
+dev = [{ name = "openai", specifier = "==3.6.0" }]
 
 [[package]]
 name = "idna"

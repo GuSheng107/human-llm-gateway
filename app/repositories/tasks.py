@@ -36,6 +36,13 @@ class TaskRepository:
     def get(self, session: Session, task_id: int) -> RequestTask | None:
         return session.get(RequestTask, task_id)
 
+    def get_previous_public_id(self, session: Session, task: RequestTask) -> str | None:
+        """取前置任务的 public_id（详情视图用，FK 保护下不会 None）。"""
+        if task.previous_task_id is None:
+            return None
+        prev = session.get(RequestTask, task.previous_task_id)
+        return prev.public_id if prev else None
+
     def add(self, session: Session, task: RequestTask) -> RequestTask:
         session.add(task)
         return task

@@ -10,9 +10,22 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 from ..core.constants import MAX_ADMIN_REQUEST_BYTES, MAX_INFERENCE_REQUEST_BYTES
+
+
+def _request_id_from_scope(scope: dict[str, Any]) -> str:
+    """复用 RequestIdMiddleware 的取值规则：优先回显客户端 x-request-id。
+
+    BodySize 注册在 RequestId 之外（最外层），413 短路时尚未触发 RequestId
+    注入，因此自行解析并回写，保证 413 响应也带 x-request-id（§16.3）。
+    """
+    for key, value in scope.get("headers") or []:
+        if key == b"x-request-id":
+            return value.decode("latin-1")
+    return f"req_{uuid.uuid4().hex[:24]}"
 
 
 def _limit_for(path: str) -> int | None:
@@ -49,7 +62,7 @@ def _payload(path: str) -> tuple[int, dict[str, Any]]:
     }
 
 
-async def _send_json(send: Any, status: int, payload: dict[str, Any]) -> None:
+async def _send_json(send: Any, status: int, payload: dict[str, Any], *, request_id: str) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     await send(
         {
@@ -58,6 +71,7 @@ async def _send_json(send: Any, status: int, payload: dict[str, Any]) -> None:
             "headers": [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode()),
+                (b"x-request-id", request_id.encode("latin-1")),
             ],
         }
     )
@@ -81,6 +95,7 @@ class BodySizeLimitMiddleware:
 
         buffered: list[dict[str, Any]] = []
         total = 0
+        request_id = _request_id_from_scope(scope)
         while True:
             message = await receive()
             if message["type"] == "http.disconnect":
@@ -91,7 +106,7 @@ class BodySizeLimitMiddleware:
             total += len(message.get("body", b""))
             if total > limit:
                 # 不进入应用层，保证在解析与任务创建之前返回 413。
-                await _send_json(send, *_payload(scope.get("path", "")))
+                await _send_json(send, *_payload(scope.get("path", "")), request_id=request_id)
                 return
             buffered.append(message)
             if not message.get("more_body"):

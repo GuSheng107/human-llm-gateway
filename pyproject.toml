@@ -52,6 +52,8 @@ openilink-sdk-python = { git = "https://github.com/openilink/openilink-sdk-pytho
 
 [dependency-groups]
 dev = [
-    "openai>=3.6.0",
+    # 契约 §16.4：使用项目锁定的 openai SDK 实际调用 Chat Completions 流。
+    # SDK 升级时必须重新运行契约测试；3.x 之前版本号隐含破坏性变更。
+    "openai==3.6.0",
 ]
 

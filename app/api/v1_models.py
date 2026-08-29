@@ -31,13 +31,15 @@ def require_api_key(
     """API Key 鉴权依赖：返回 (Key, 所有者)。匿名或无效返回 401。"""
     token = credentials.credentials if credentials else None
     if not token:
-        raise DomainError(DomainErrorCode.INVALID_API_KEY, "无效的 API Key", status_code=401)
+        raise DomainError(
+            DomainErrorCode.INVALID_API_KEY, "Authentication required", status_code=401
+        )
     matched = _keys.authenticate(db, token)
     if matched is None:
-        raise DomainError(DomainErrorCode.INVALID_API_KEY, "无效的 API Key", status_code=401)
+        raise DomainError(DomainErrorCode.INVALID_API_KEY, "Invalid API key", status_code=401)
     owner = db.get(User, matched.owner_user_id)
     if owner is None or not owner.is_active:
-        raise DomainError(DomainErrorCode.INVALID_API_KEY, "无效的 API Key", status_code=401)
+        raise DomainError(DomainErrorCode.INVALID_API_KEY, "Invalid API key", status_code=401)
     _keys.touch_last_used(db, matched.id)
     # get_db 仅负责关闭连接；last_used_at 需要显式提交才能真正落库。
     db.commit()
@@ -51,7 +53,7 @@ def list_models(
 ):
     key, _owner = key_owner
     if not key.is_enabled:
-        raise DomainError(DomainErrorCode.INVALID_API_KEY, "无效的 API Key", status_code=401)
+        raise DomainError(DomainErrorCode.INVALID_API_KEY, "Invalid API key", status_code=401)
     models = _service.effective_models(db, key)
     return {
         "object": "list",

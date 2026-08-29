@@ -210,6 +210,7 @@ export interface TaskDetail extends TaskItem {
   public_error_code: string | null;
   cancel_reason_code: string | null;
   events: TaskEvent[];
+  events_total: number;
 }
 
 export interface ReplyResult {

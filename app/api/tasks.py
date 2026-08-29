@@ -11,6 +11,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
@@ -19,7 +20,7 @@ from ..domain.dsl import is_empty_draft
 from ..domain.enums import TaskState, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft, ReplyToolCall
-from ..repositories.models import RequestTask, TaskDraft, TaskEvent, User
+from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, User
 from ..services.delivery_service import DeliveryService
 from ..services.task_service import TaskService, draft_from_row
 from .common import StrictModel
@@ -132,6 +133,7 @@ class TaskDetail(TaskItem):
     public_error_code: str | None
     cancel_reason_code: str | None
     events: list[EventView]
+    events_total: int
 
 
 class EventPage(BaseModel):
@@ -198,17 +200,48 @@ def _summary(task: RequestTask) -> tuple[str, list[str]]:
     return DeliveryService._extract_request_summary(task)
 
 
-def _item_view(session: Session, task: RequestTask, *, include_owner: bool = False) -> TaskItem:
+def _batch_fake_model_names(session: Session, tasks: list[RequestTask]) -> dict[int, str]:
+    """批量解析 FakeModel 名称；批量查询避免列表 N+1。"""
+    ids = {t.fake_model_id for t in tasks if t.fake_model_id is not None}
+    if not ids:
+        return {}
+    rows = session.execute(select(FakeModel).where(FakeModel.id.in_(ids))).scalars().all()
+    return {row.id: row.model_id for row in rows}
+
+
+def _batch_owner_usernames(session: Session, tasks: list[RequestTask]) -> dict[int, str]:
+    """批量解析 owner username；管理员列表用，普通用户无 include_owner。"""
+    ids = {t.owner_user_id for t in tasks}
+    if not ids:
+        return {}
+    rows = session.execute(select(User).where(User.id.in_(ids))).scalars().all()
+    return {row.id: row.username for row in rows}
+
+
+def _item_view(
+    session: Session,
+    task: RequestTask,
+    *,
+    include_owner: bool = False,
+    fake_model_names: dict[int, str] | None = None,
+    owner_usernames: dict[int, str] | None = None,
+) -> TaskItem:
     _prompt, tool_names = _summary(task)
-    owner_username = None
-    if include_owner:
+    owner_username: str | None = None
+    if include_owner and owner_usernames is not None:
+        owner_username = owner_usernames.get(task.owner_user_id)
+    elif include_owner:
         owner = session.get(User, task.owner_user_id)
         owner_username = owner.username if owner else None
+    if fake_model_names is not None and task.fake_model_id is not None:
+        fake_model_name = fake_model_names.get(task.fake_model_id, task.requested_model)
+    else:
+        fake_model_name = TaskService.fake_model_name(session, task)
     return TaskItem(
         id=str(task.id),
         public_id=task.public_id,
         requested_model=task.requested_model,
-        fake_model_name=TaskService.fake_model_name(session, task),
+        fake_model_name=fake_model_name,
         protocol=task.protocol.value,
         state=task.state.value,
         reply_strategy=task.reply_strategy_snapshot.value,
@@ -249,7 +282,8 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
             raw_request = json.loads(task.raw_payload_json)
         except (ValueError, TypeError):
             raw_request = None
-    events, _ = _service.list_events(session, task=task, page=1, page_size=50)
+    events, events_total = _service.list_events(session, task=task, page=1, page_size=50)
+    previous_public_id = _service.repo.get_previous_public_id(session, task)
     return TaskDetail(
         **item.model_dump(),
         is_owner=is_owner,
@@ -259,13 +293,14 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
         prompt_text=prompt if is_owner else (prompt[:200] if prompt else ""),
         tool_names=tool_names,
         raw_request=raw_request,
-        previous_task_id=str(task.previous_task_id) if task.previous_task_id else None,
+        previous_task_id=previous_public_id,
         drafts=drafts,
         active_draft_id=active_draft_id,
         result_draft=result_draft,
         public_error_code=task.public_error_code,
         cancel_reason_code=task.cancel_reason_code,
         events=[_event_view(row) for row in events],
+        events_total=events_total,
     )
 
 
@@ -300,8 +335,20 @@ def list_tasks(
     rows, total = _service.list_tasks(
         db, user=user, page=page, page_size=page_size, search=search, state=state
     )
+    include_owner = user.role is UserRole.ADMIN
+    fake_model_names = _batch_fake_model_names(db, rows) if rows else {}
+    owner_usernames = _batch_owner_usernames(db, rows) if include_owner and rows else {}
     return TaskPage(
-        items=[_item_view(db, row, include_owner=user.role is UserRole.ADMIN) for row in rows],
+        items=[
+            _item_view(
+                db,
+                row,
+                include_owner=include_owner,
+                fake_model_names=fake_model_names,
+                owner_usernames=owner_usernames,
+            )
+            for row in rows
+        ],
         page=page,
         page_size=page_size,
         total=total,
@@ -336,7 +383,7 @@ def list_task_events(
     )
 
 
-@router.post("/{task_id}/drafts", response_model=DraftView)
+@router.post("/{task_id}/drafts", response_model=DraftView, status_code=201)
 def save_draft(
     task_id: int,
     payload: ReplyDraftInput,
@@ -380,7 +427,7 @@ def delete_draft(
     return Response(status_code=204)
 
 
-@router.post("/{task_id}/reply", response_model=ReplyResultView)
+@router.post("/{task_id}/reply", response_model=ReplyResultView, status_code=201)
 def submit_reply(
     task_id: int,
     payload: ReplySubmitInput,

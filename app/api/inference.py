@@ -18,7 +18,7 @@ from sse_starlette import EventSourceResponse, ServerSentEvent
 from starlette.concurrency import run_in_threadpool
 
 from ..core.db import get_db
-from ..core.logging import get_request_id
+from ..core.logging import get_request_id, log_event
 from ..domain.enums import InferenceProtocol, TaskState
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft
@@ -50,7 +50,7 @@ def _require_api_key_anthropic(
     if not token:
         raise DomainError(
             DomainErrorCode.INVALID_API_KEY,
-            "x-api-key header is required",
+            "Authentication required",
             status_code=401,
         )
     from ..repositories.api_keys import ApiKeyRepository
@@ -59,12 +59,12 @@ def _require_api_key_anthropic(
     if matched is None:
         raise DomainError(
             DomainErrorCode.INVALID_API_KEY,
-            "invalid x-api-key",
+            "Invalid API key",
             status_code=401,
         )
     owner = db.get(User, matched.owner_user_id)
     if owner is None or not owner.is_active:
-        raise DomainError(DomainErrorCode.INVALID_API_KEY, "invalid x-api-key", status_code=401)
+        raise DomainError(DomainErrorCode.INVALID_API_KEY, "Invalid API key", status_code=401)
     ApiKeyRepository().touch_last_used(db, matched.id)
     db.commit()
     return matched, owner
@@ -72,7 +72,14 @@ def _require_api_key_anthropic(
 
 def _capture_headers(request: Request) -> dict[str, str]:
     """仅捕获与协议展示相关的头部；不保存 Authorization / Cookie。"""
-    allow = {"user-agent", "accept", "anthropic-version", "openai-beta"}
+    allow = {
+        "user-agent",
+        "accept",
+        "accept-language",
+        "content-type",
+        "anthropic-version",
+        "openai-beta",
+    }
     return {key: value for key, value in request.headers.items() if key.lower() in allow}
 
 
@@ -150,9 +157,16 @@ async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _
             return None
         row = await run_in_threadpool(_load_task, task_id)
         if row is None:
+            # 对外只返回通用 500；中文上下文仅本地日志可见（§16.3）。
+            log_event(
+                "error",
+                "inference.task_missing",
+                "等待人工回复期间任务行不存在",
+                task_id=task_id,
+            )
             raise DomainError(
                 DomainErrorCode.UPSTREAM_ERROR,
-                "任务不存在",
+                "Internal server error.",
                 status_code=500,
             )
         state = row.state
@@ -160,9 +174,16 @@ async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _
             draft = ReplyDraft.model_validate_json(row.response_payload_json)
             return _Outcome(row, draft)
         if state is TaskState.TIMED_OUT:
+            # 通用超时错误，不暴露人工等待细节（§16.3）。
+            log_event(
+                "info",
+                "inference.human_timeout",
+                "等待人工回复超时",
+                task_id=task_id,
+            )
             raise DomainError(
                 DomainErrorCode.REQUEST_TIMEOUT,
-                "The request timed out while waiting for a reply.",
+                "Request timed out.",
                 status_code=504,
             )
         if state is TaskState.CANCELLED:
@@ -177,9 +198,16 @@ async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _
             )
         if deadline_at is not None and _now() > deadline_at:
             await run_in_threadpool(_finalize, task_id, TaskState.TIMED_OUT)
+            # 通用超时错误，不暴露人工等待细节（§16.3）。
+            log_event(
+                "info",
+                "inference.human_timeout",
+                "等待人工回复超时",
+                task_id=task_id,
+            )
             raise DomainError(
                 DomainErrorCode.REQUEST_TIMEOUT,
-                "The request timed out while waiting for a reply.",
+                "Request timed out.",
                 status_code=504,
             )
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
@@ -212,10 +240,17 @@ async def _stream(
         await run_in_threadpool(_finalize, task.id, TaskState.FAILED)
 
 
-def _json_response(payload: dict[str, Any], *, request_id: str) -> JSONResponse:
-    headers = {}
+def _json_response(
+    payload: dict[str, Any],
+    *,
+    request_id: str,
+    extra_headers: dict[str, str] | None = None,
+) -> JSONResponse:
+    headers: dict[str, str] = {}
     if request_id:
         headers["request-id"] = request_id
+    if extra_headers:
+        headers.update(extra_headers)
     return JSONResponse(payload, headers=headers)
 
 
@@ -242,36 +277,32 @@ async def chat_completions(
     db: Session = Depends(get_db),
 ):
     key, owner = key_owner
-
-    async def run() -> Any:
-        outcome = await _handle(
-            request,
-            InferenceProtocol.OPENAI_CHAT,
-            chat_protocol.parse_request,
-            key,
-            owner,
-            db,
+    outcome = await _handle(
+        request,
+        InferenceProtocol.OPENAI_CHAT,
+        chat_protocol.parse_request,
+        key,
+        owner,
+        db,
+    )
+    if outcome is None:
+        return JSONResponse(status_code=499, content={})
+    task = outcome.task
+    model = task.requested_model
+    if not task.stream_requested:
+        await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
+        return _json_response(
+            chat_protocol.render_response(model, outcome.draft),
+            request_id="",
         )
-        if outcome is None:
-            return JSONResponse(status_code=499, content={})
-        task = outcome.task
-        model = task.requested_model
-        if not task.stream_requested:
-            await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
-            return _json_response(
-                chat_protocol.render_response(model, outcome.draft),
-                request_id="",
-            )
-        return EventSourceResponse(
-            _stream(
-                task,
-                outcome.draft,
-                lambda: chat_protocol.stream_frames(model, outcome.draft),
-                chat_protocol.stream_error_frame,
-            )
+    return EventSourceResponse(
+        _stream(
+            task,
+            outcome.draft,
+            lambda: chat_protocol.stream_frames(model, outcome.draft),
+            chat_protocol.stream_error_frame,
         )
-
-    return await run()
+    )
 
 
 @router.post("/responses")
@@ -281,37 +312,33 @@ async def create_response(
     db: Session = Depends(get_db),
 ):
     key, owner = key_owner
-
-    async def run() -> Any:
-        outcome = await _handle(
-            request,
-            InferenceProtocol.OPENAI_RESPONSES,
-            responses_protocol.parse_request,
-            key,
-            owner,
-            db,
+    outcome = await _handle(
+        request,
+        InferenceProtocol.OPENAI_RESPONSES,
+        responses_protocol.parse_request,
+        key,
+        owner,
+        db,
+    )
+    if outcome is None:
+        return JSONResponse(status_code=499, content={})
+    task = outcome.task
+    model = task.requested_model
+    response_id = task.response_public_id or ""
+    if not task.stream_requested:
+        await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
+        return _json_response(
+            responses_protocol.render_response(model, response_id, outcome.draft),
+            request_id="",
         )
-        if outcome is None:
-            return JSONResponse(status_code=499, content={})
-        task = outcome.task
-        model = task.requested_model
-        response_id = task.response_public_id or ""
-        if not task.stream_requested:
-            await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
-            return _json_response(
-                responses_protocol.render_response(model, response_id, outcome.draft),
-                request_id="",
-            )
-        return EventSourceResponse(
-            _stream(
-                task,
-                outcome.draft,
-                lambda: responses_protocol.stream_events(model, response_id, outcome.draft),
-                lambda message: responses_protocol.stream_error_event(response_id, model, message),
-            )
+    return EventSourceResponse(
+        _stream(
+            task,
+            outcome.draft,
+            lambda: responses_protocol.stream_events(model, response_id, outcome.draft),
+            lambda message: responses_protocol.stream_error_event(response_id, model, message),
         )
-
-    return await run()
+    )
 
 
 @router.post("/messages")
@@ -321,33 +348,31 @@ async def anthropic_messages(
     db: Session = Depends(get_db),
 ):
     key, owner = key_owner
-
-    async def run() -> Any:
-        outcome = await _handle(
-            request,
-            InferenceProtocol.ANTHROPIC_MESSAGES,
-            anthropic_protocol.parse_request,
-            key,
-            owner,
-            db,
+    outcome = await _handle(
+        request,
+        InferenceProtocol.ANTHROPIC_MESSAGES,
+        anthropic_protocol.parse_request,
+        key,
+        owner,
+        db,
+    )
+    if outcome is None:
+        return JSONResponse(status_code=499, content={})
+    task = outcome.task
+    model = task.requested_model
+    if not task.stream_requested:
+        await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
+        # Anthropic SDK 客户端期望响应头回显请求的 anthropic-version。
+        return _json_response(
+            anthropic_protocol.render_response(model, outcome.draft),
+            request_id=get_request_id() or "",
+            extra_headers={"anthropic-version": request.headers.get("anthropic-version", "")},
         )
-        if outcome is None:
-            return JSONResponse(status_code=499, content={})
-        task = outcome.task
-        model = task.requested_model
-        if not task.stream_requested:
-            await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
-            return _json_response(
-                anthropic_protocol.render_response(model, outcome.draft),
-                request_id=get_request_id() or "",
-            )
-        return EventSourceResponse(
-            _stream(
-                task,
-                outcome.draft,
-                lambda: anthropic_protocol.stream_events(model, outcome.draft),
-                lambda _message: anthropic_protocol.stream_error_event(),
-            )
+    return EventSourceResponse(
+        _stream(
+            task,
+            outcome.draft,
+            lambda: anthropic_protocol.stream_events(model, outcome.draft),
+            lambda _message: anthropic_protocol.stream_error_event(),
         )
-
-    return await run()
+    )

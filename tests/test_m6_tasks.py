@@ -153,7 +153,7 @@ def test_draft_save_and_restore_roundtrip(client, created_user, created_key) -> 
         final_text="最终回复",
     )
     resp = client.post(f"/api/tasks/{task_id}/drafts", headers=created_user.headers, json=draft)
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     created = resp.json()
     assert created["source"] == "manual"
     assert created["state"] == "editing"
@@ -176,12 +176,12 @@ def test_draft_save_upsert_overwrites_active(client, created_user, created_key) 
     task_id = _make_waiting_task(created_key.id, created_user.user_id)
     body1 = _draft_body(final_text="第一版")
     resp1 = client.post(f"/api/tasks/{task_id}/drafts", headers=created_user.headers, json=body1)
-    assert resp1.status_code == 200
+    assert resp1.status_code == 201
     draft1_id = resp1.json()["id"]
 
     body2 = _draft_body(final_text="第二版")
     resp2 = client.post(f"/api/tasks/{task_id}/drafts", headers=created_user.headers, json=body2)
-    assert resp2.status_code == 200
+    assert resp2.status_code == 201
     assert resp2.json()["id"] == draft1_id
 
     detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers).json()
@@ -252,7 +252,7 @@ def test_submit_reply_first_wins_accepted(client, created_user, created_key) -> 
             final_text="已回复",
         ),
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
     result = resp.json()
     assert result["accepted"] is True
     assert result["state"] == "response_ready"
@@ -278,7 +278,7 @@ def test_submit_reply_late_returns_409(client, created_user, created_key) -> Non
         headers=created_user.headers,
         json=_draft_body(final_text="第一个"),
     )
-    assert first.status_code == 200
+    assert first.status_code == 201
 
     late = client.post(
         f"/api/tasks/{task_id}/reply",
@@ -362,7 +362,7 @@ def test_submit_with_source_draft_marks_submitted(client, created_user, created_
             "source_draft_id": draft_id,
         },
     )
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 201, resp.text
 
     detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers).json()
     submitted = [d for d in detail["drafts"] if d["state"] == "submitted"]
@@ -410,6 +410,56 @@ def test_write_after_terminal_state_returns_409(client, created_user, created_ke
     )
     assert resp.status_code == 409
     assert resp.json()["error"]["code"] == "conflict"
+
+
+def test_disabled_user_cannot_save_draft(client, admin_headers, created_user, created_key) -> None:
+    """AGENTS.md §1：禁用用户时立即撤销会话/活动任务，写接口兜底 401/403。"""
+    task_id = _make_waiting_task(created_key.id, created_user.user_id)
+    disable = client.patch(
+        f"/api/users/{created_user.user_id}",
+        headers=admin_headers,
+        json={"is_active": False},
+    )
+    assert disable.status_code == 200
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts",
+        headers=created_user.headers,
+        json=_draft_body(final_text="禁用后写"),
+    )
+    assert resp.status_code in (401, 403)
+
+
+def test_disabled_user_cannot_submit_reply(
+    client, admin_headers, created_user, created_key
+) -> None:
+    task_id = _make_waiting_task(created_key.id, created_user.user_id)
+    client.patch(
+        f"/api/users/{created_user.user_id}",
+        headers=admin_headers,
+        json={"is_active": False},
+    )
+    resp = client.post(
+        f"/api/tasks/{task_id}/reply",
+        headers=created_user.headers,
+        json=_draft_body(final_text="禁用后提交"),
+    )
+    assert resp.status_code in (401, 403)
+
+
+def test_detail_previous_task_id_returns_public_id(client, created_user, created_key) -> None:
+    """详情页 previous_task_id 应返回前序任务的 public_id 而非内部数字。"""
+    parent_id = _make_waiting_task(created_key.id, created_user.user_id)
+    child_id = _make_waiting_task(created_key.id, created_user.user_id)
+    with database.SessionLocal() as session:
+        parent = session.get(RequestTask, parent_id)
+        child = session.get(RequestTask, child_id)
+        child.previous_task_id = parent.id
+        session.commit()
+    resp = client.get(f"/api/tasks/{child_id}", headers=created_user.headers)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["previous_task_id"] == parent.public_id
+    assert body["events_total"] >= 1
 
 
 # ======================================================================
