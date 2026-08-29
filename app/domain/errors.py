@@ -28,7 +28,11 @@ class DomainErrorCode(StrEnum):
 
 
 class DomainError(Exception):
-    """带稳定错误码的领域异常。"""
+    """带稳定错误码的领域异常。
+
+    `public_code` 允许推理协议在既定 HTTP/type 映射上附加更具体的
+    对外 code（如 `invalid_previous_response_id`），不改变领域语义。
+    """
 
     def __init__(
         self,
@@ -36,8 +40,10 @@ class DomainError(Exception):
         message: str = "",
         *,
         status_code: int = 500,
+        public_code: str | None = None,
     ) -> None:
         super().__init__(message or code.value)
         self.code = code
         self.message = message
         self.status_code = status_code
+        self.public_code = public_code

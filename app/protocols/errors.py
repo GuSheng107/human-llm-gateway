@@ -104,8 +104,27 @@ def openai_domain_error_response(exc: DomainError) -> JSONResponse:
     return openai_error_response(
         exc.message or "请求无法处理",
         error_type=error_type,
-        code=code,
+        code=exc.public_code or code,
         status_code=status,
+    )
+
+
+def anthropic_domain_error_response(exc: DomainError, *, request_id: str = "") -> JSONResponse:
+    """把领域错误转为 Anthropic 兼容响应；未映射的错误不泄露内部消息。"""
+    mapping = _ANTHROPIC_MAPPING.get(exc.code)
+    if mapping is None:
+        return anthropic_error_response(
+            "Internal server error",
+            error_type="api_error",
+            status_code=500,
+            request_id=request_id,
+        )
+    status, error_type = mapping
+    return anthropic_error_response(
+        exc.message or "Request could not be processed",
+        error_type=error_type,
+        status_code=status,
+        request_id=request_id,
     )
 
 

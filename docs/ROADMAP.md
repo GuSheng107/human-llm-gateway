@@ -231,22 +231,22 @@ Key 选择，只收窄不扩张）；名额由 `app/services/admission.py` 基�
 
 ---
 
-## M6：人工 Fake LLM 闭环（未开始）
+## M6：人工 Fake LLM 闭环（M6-A 已完成，M6-B 进行中）
 
 ### M6-A：统一结构与三协议契约
 
-- [ ] 完整接收 OpenAI Chat Completions 请求。
-- [ ] 完整接收 OpenAI Responses 请求。
-- [ ] 完整接收 Anthropic Messages 请求。
-- [ ] 原始请求完整落库，规范化请求不覆盖原始字段。
-- [ ] 建立 IM DSL、Web 编辑器、LLM 草稿和协议渲染器共享的 ReplyDraft JSON Schema。
-- [ ] `previous_response_id` 只能引用同一 API Key 的完成响应，并由网关等价展开历史上下文；展开遵守链深 20、条目 512、字节 2 MiB 三重上限，超限整请求 400 不截断；展开唯一语义防止历史重复拼接。
-- [ ] 完成三协议非流式 JSON、流式事件顺序、reasoning、tool call、结束原因和错误契约测试。
-- [ ] SSE 中断语义：Responses 发 `response.failed`、Anthropic 发 `event: error`、Chat 经锁定版本 OpenAI SDK 契约测试后确定具体中断帧格式或直接断流；中断路径不得伪造正常完成，Chat 中断不得发送 `[DONE]`（正常完成的 Chat 流仍按协议发送 `[DONE]`）。
-- [ ] 使用项目锁定的 `openai` Python SDK 实际调用 Chat Completions 流，验证正常完成、中途 error frame、无 error 断流和客户端主动取消；SDK 升级时重新运行该契约测试。
-- [ ] Responses `background`、`conversation`、`store` 按字段矩阵返回 400 `unsupported_parameter`，不透传语义无法兑现的状态化字段；`service_tier` 同协议透传。
-- [ ] 外部调用方断开规则：任务终态前断开原子进入 CANCELLED（`caller_disconnected`）并幂等释放名额；COMPLETED 与断开竞争时首个合法条件转换获胜，晚到回复只记录审计。
-- [ ] 请求体大小上限：`/v1/*` 推理请求 8 MiB、管理 API 1 MiB，超限在完整 JSON 解析和任务创建之前返回协议兼容 413；chunked 传输按读取累计字节执行同一上限。
+- [x] 完整接收 OpenAI Chat Completions 请求。
+- [x] 完整接收 OpenAI Responses 请求。
+- [x] 完整接收 Anthropic Messages 请求。
+- [x] 原始请求完整落库，规范化请求不覆盖原始字段。
+- [x] 建立 IM DSL、Web 编辑器、LLM 草稿和协议渲染器共享的 ReplyDraft JSON Schema。
+- [x] `previous_response_id` 只能引用同一 API Key 的完成响应，并由网关等价展开历史上下文；展开遵守链深 20、条目 512、字节 2 MiB 三重上限，超限整请求 400 不截断；展开唯一语义防止历史重复拼接。
+- [x] 完成三协议非流式 JSON、流式事件顺序、reasoning、tool call、结束原因和错误契约测试。
+- [x] SSE 中断语义：Responses 发 `response.failed`、Anthropic 发 `event: error`、Chat 经锁定版本 OpenAI SDK 契约测试后确定具体中断帧格式或直接断流；中断路径不得伪造正常完成，Chat 中断不得发送 `[DONE]`（正常完成的 Chat 流仍按协议发送 `[DONE]`）。
+- [x] 使用项目锁定的 `openai` Python SDK 实际调用 Chat Completions 流，验证正常完成、中途 error frame、无 error 断流和客户端主动取消；SDK 升级时重新运行该契约测试。
+- [x] Responses `background`、`conversation`、`store` 按字段矩阵返回 400 `unsupported_parameter`，不透传语义无法兑现的状态化字段；`service_tier` 同协议透传。
+- [x] 外部调用方断开规则：任务终态前断开原子进入 CANCELLED（`caller_disconnected`）并幂等释放名额；COMPLETED 与断开竞争时首个合法条件转换获胜，晚到回复只记录审计。
+- [x] 请求体大小上限：`/v1/*` 推理请求 8 MiB、管理 API 1 MiB，超限在完整 JSON 解析和任务创建之前返回协议兼容 413；chunked 传输按读取累计字节执行同一上限。
 
 ### M6-B：任务工作台与人工提交
 

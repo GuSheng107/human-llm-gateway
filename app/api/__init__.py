@@ -23,7 +23,9 @@ from .connectors import router as connectors_router
 from .errors import RequestIdMiddleware, install_error_handlers
 from .fake_models import groups_router
 from .fake_models import router as fake_models_router
+from .inference import router as inference_router
 from .invitations import router as invitations_router
+from .limits import BodySizeLimitMiddleware
 from .users import router as users_router
 from .v1_models import router as v1_models_router
 
@@ -51,8 +53,10 @@ def create_app() -> FastAPI:
         # 优雅关闭：停止全部连接器实例。
         await manager.stop_all()
 
-    app = FastAPI(title="Human LLM Gateway", version="0.4.0", lifespan=lifespan)
+    app = FastAPI(title="Human LLM Gateway", version="0.6.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)
+    # 请求体大小上限必须在鉴权与解析之前生效，因此注册在最外层。
+    app.add_middleware(BodySizeLimitMiddleware)
     install_error_handlers(app)
 
     app.include_router(auth_router)
@@ -66,6 +70,7 @@ def create_app() -> FastAPI:
     app.include_router(groups_router)
     app.include_router(api_keys_router)
     app.include_router(v1_models_router)
+    app.include_router(inference_router)
 
     @app.get("/healthz")
     def health() -> dict[str, Any]:

@@ -10,8 +10,6 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request as StarletteRequest
 
 from ..domain.errors import DomainError, DomainErrorCode
 
@@ -100,17 +98,44 @@ def error_body(
     }
 
 
-class RequestIdMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: StarletteRequest, call_next):
+class RequestIdMiddleware:
+    """纯 ASGI 实现：注入 request_id（scope.state + contextvar）并回写响应头。
+
+    不能使用 BaseHTTPMiddleware：它会拦截 receive 通道，使
+    request.is_disconnected() 在等待阶段永远返回 False，/v1/* 的
+    调用方断开取消随之失效。
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
         from ..core.logging import reset_request_id, set_request_id
 
-        request_id = request.headers.get("X-Request-Id") or f"req_{uuid.uuid4().hex[:24]}"
-        request.state.request_id = request_id
+        request_id = ""
+        for key, value in scope.get("headers") or []:
+            if key == b"x-request-id":
+                request_id = value.decode("latin-1")
+                break
+        if not request_id:
+            request_id = f"req_{uuid.uuid4().hex[:24]}"
+        scope.setdefault("state", {})["request_id"] = request_id
         token = set_request_id(request_id)
+        header_value = request_id.encode("latin-1")
+
+        async def send_with_request_id(message: dict[str, Any]) -> None:
+            if message["type"] == "http.response.start":
+                message = {
+                    **message,
+                    "headers": [*(message.get("headers") or []), (b"x-request-id", header_value)],
+                }
+            await send(message)
+
         try:
-            response = await call_next(request)
-            response.headers["X-Request-Id"] = request_id
-            return response
+            await self.app(scope, receive, send_with_request_id)
         finally:
             reset_request_id(token)
 
@@ -124,6 +149,11 @@ def install_error_handlers(app: FastAPI) -> None:
     async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
         # /v1/* 使用 OpenAI 兼容错误结构；管理 API 使用统一错误结构。
         if request.url.path.startswith("/v1/"):
+            # Anthropic Messages 使用 Anthropic 错误结构；其余 /v1 走 OpenAI 结构。
+            if request.url.path.startswith("/v1/messages"):
+                from ..protocols.errors import anthropic_domain_error_response
+
+                return anthropic_domain_error_response(exc, request_id=get_request_id(request))
             from ..protocols.errors import openai_domain_error_response
 
             return openai_domain_error_response(exc)

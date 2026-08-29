@@ -61,4 +61,84 @@ def admin_headers(client):
         json={"current_password": ADMIN_PASSWORD, "new_password": FULL_ADMIN_PASSWORD},
     )
     assert changed.status_code == 200, changed.text
+    # 调试：确认 must_change_password 已清除
+    from sqlalchemy import select
+
+    with database.SessionLocal() as s2:
+        from app.repositories.models import User as _U
+
+        u = s2.execute(select(_U).where(_U.username == "admin")).scalar_one()
+        print("DEBUG admin must_change_password=", u.must_change_password)
     return headers
+
+
+from types import SimpleNamespace
+
+
+@pytest.fixture()
+def created_user(client, admin_headers):
+    import secrets as _secrets
+
+    from sqlalchemy import select
+
+    from app.core.db import SessionLocal
+    from app.repositories.models import User
+
+    username = f"u-{_secrets.token_hex(4)}"
+    password = "User-Pass1!"
+    created = client.post(
+        "/api/users",
+        headers=admin_headers,
+        json={"username": username, "display_name": username, "password": password},
+    )
+    assert created.status_code == 201, created.text
+    resp = client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": password,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    # 管理员创建的用户默认 must_change_password=true；为后续端点可用需先改密。
+    changed = client.post(
+        "/api/account/password",
+        headers=headers,
+        json={"current_password": password, "new_password": "Changed-Pass1!"},
+    )
+    assert changed.status_code == 200, changed.text
+    resp = client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": "Changed-Pass1!",
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    with SessionLocal() as session:
+        user = session.execute(select(User).where(User.username == username)).scalar_one()
+    return SimpleNamespace(headers=headers, user_id=user.id, username=username, password=password)
+
+
+@pytest.fixture()
+def created_key(client, created_user):
+    resp = client.post(
+        "/api/api-keys",
+        headers=created_user.headers,
+        json={"name": "k", "delivery_mode": "web", "reply_strategy": "human"},
+    )
+    assert resp.status_code == 201, resp.text
+    data = resp.json()
+    return SimpleNamespace(
+        id=int(data["id"]),
+        plaintext=data["plaintext"],
+        owner_user_id=created_user.user_id,
+    )
