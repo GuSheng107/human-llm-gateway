@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { createApiKey, deleteApiKey, listApiKeys, updateApiKey } from "../../api/apiKeys";
 import { listAllConnections, listPlatforms } from "../../api/connections";
+import { listLlmConfigs } from "../../api/llmConfigs";
 import { listFakeModels, listModelGroups } from "../../api/models";
 import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
@@ -12,7 +13,13 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
-import type { ApiKey, ApiKeyCreated, ImConnection, ModelGroup } from "../../types/gateway";
+import type {
+  ApiKey,
+  ApiKeyCreated,
+  ImConnection,
+  LlmConfig,
+  ModelGroup,
+} from "../../types/gateway";
 
 const PAGE_SIZE = 20;
 
@@ -34,6 +41,7 @@ export function ApiKeysPage() {
   const [deliveryPlatforms, setDeliveryPlatforms] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState<ModelGroup[]>([]);
   const [models, setModels] = useState<{ id: string; model_id: string }[]>([]);
+  const [llmConfigs, setLlmConfigs] = useState<LlmConfig[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -45,6 +53,7 @@ export function ApiKeysPage() {
     delivery_mode: "web" | "im";
     im_connection_id: string;
     reply_strategy: "human" | "llm" | "human_fallback_llm";
+    llm_config_id: string;
     human_timeout_seconds: number;
     model_group_id: string;
     fake_model_ids: number[];
@@ -58,12 +67,13 @@ export function ApiKeysPage() {
     setLoading(true);
     setError("");
     try {
-      const [list, allConnections, groupPage, modelPage, platformList] = await Promise.all([
+      const [list, allConnections, groupPage, modelPage, platformList, llmPage] = await Promise.all([
         listApiKeys(page),
         listAllConnections(),
         listModelGroups(),
         listFakeModels(),
         listPlatforms(),
+        listLlmConfigs(1),
       ]);
       setItems(list.items);
       setTotal(list.total);
@@ -73,6 +83,7 @@ export function ApiKeysPage() {
       );
       setGroups(groupPage.items);
       setModels(modelPage.items.map((item) => ({ id: item.id, model_id: item.model_id })));
+      setLlmConfigs(llmPage.items.filter((cfg) => cfg.is_enabled));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "加载失败");
     } finally {
@@ -90,6 +101,7 @@ export function ApiKeysPage() {
       delivery_mode: "web",
       im_connection_id: "",
       reply_strategy: "human",
+      llm_config_id: "",
       human_timeout_seconds: 300,
       model_group_id: "",
       fake_model_ids: [],
@@ -105,6 +117,7 @@ export function ApiKeysPage() {
       delivery_mode: key.delivery_mode,
       im_connection_id: key.im_connection_id ?? "",
       reply_strategy: key.reply_strategy,
+      llm_config_id: key.llm_config_id ?? "",
       human_timeout_seconds: key.human_timeout_seconds,
       model_group_id: key.model_group_id ?? "",
       fake_model_ids: key.fake_model_ids.map(Number),
@@ -113,12 +126,14 @@ export function ApiKeysPage() {
 
   const submit = async () => {
     if (!form) return;
+    const usesLlm = form.reply_strategy !== "human";
     const payload = {
       name: form.name.trim(),
       enabled: form.enabled,
       delivery_mode: form.delivery_mode,
       im_connection_id: form.delivery_mode === "im" ? Number(form.im_connection_id) : null,
       reply_strategy: form.reply_strategy,
+      llm_config_id: usesLlm && form.llm_config_id ? Number(form.llm_config_id) : null,
       human_timeout_seconds: form.human_timeout_seconds,
       model_group_id: form.model_group_id ? Number(form.model_group_id) : null,
       fake_model_ids: form.fake_model_ids,
@@ -315,14 +330,31 @@ export function ApiKeysPage() {
                   className="field-input"
                 >
                   <option value="human">人工回复</option>
-                  <option value="human_fallback_llm" disabled={form.reply_strategy !== "human_fallback_llm"}>
-                    人工优先，超时降级 LLM（LLM 配置上线后开放）
-                  </option>
-                  <option value="llm" disabled={form.reply_strategy !== "llm"}>
-                    直接转发 LLM（LLM 配置上线后开放）
-                  </option>
+                  <option value="human_fallback_llm">人工优先，超时降级 LLM</option>
+                  <option value="llm">直接转发 LLM</option>
                 </select>
               </label>
+              {form.reply_strategy !== "human" && (
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                    LLM 配置（同协议）
+                  </span>
+                  <select
+                    value={form.llm_config_id}
+                    onChange={(event) =>
+                      setForm({ ...form, llm_config_id: event.target.value })
+                    }
+                    className="field-input"
+                  >
+                    <option value="">请选择 LLM 配置</option>
+                    {llmConfigs.map((cfg) => (
+                      <option key={cfg.id} value={cfg.id}>
+                        {cfg.name}（{cfg.protocol === "anthropic" ? "Anthropic" : "OpenAI 兼容"}）
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
                   人工超时（秒，10-1800）
@@ -409,7 +441,8 @@ export function ApiKeysPage() {
                 loading={saving}
                 disabled={
                   !form.name.trim() ||
-                  (form.delivery_mode === "im" && !form.im_connection_id)
+                  (form.delivery_mode === "im" && !form.im_connection_id) ||
+                  (form.reply_strategy !== "human" && !form.llm_config_id)
                 }
               >
                 <Icon name="check" className="h-4 w-4" />

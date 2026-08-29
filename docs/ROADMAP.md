@@ -264,7 +264,7 @@ M6 完成后达到首个可用 MVP。
 
 ---
 
-## M7：LLM 配置、草稿和自动转发（M7-A 和 M7-B 已完成）
+## M7：LLM 配置、草稿和自动转发（M7-A、M7-B 和 M7-C 已完成）
 
 ### M7-A：用户级 LLM 配置管理
 
@@ -282,19 +282,23 @@ M6 完成后达到首个可用 MVP。
 - [x] 上游响应解析为统一 ReplyDraft（reasoning / tool_calls / final_text），失败返回 502/504 不泄露 Secret。
 - [x] 前端任务详情抽屉提供"生成草稿"入口：选择 LLM 配置 -> 生成 -> 进入编辑器。
 
-### M7-C：自动转发与字段矩阵（未开始）
+### M7-C：自动转发核心（已完成）
 
-- [ ] `llm` 策略直接转发真实 LLM。
-- [ ] `human_fallback_llm` 在人工超时后只转发一次。
-- [ ] 转发请求追加基于 Fake Model description 派生的身份 system 指令。
-- [ ] 同协议默认保留全部原始字段和未知扩展字段；声明为网关控制的字段按契约等价消费或重写。
-- [ ] 按 API_CONTRACT 字段矩阵实现透传、等价转换、网关消费和明确拒绝四种行为。
-- [ ] tools、tool choice、并行工具、tool result、采样、stop、结构化输出、reasoning 控制和 metadata 转换有逐项测试。
+- [x] `llm` 策略直接转发真实 LLM：任务创建后不经人工等待，转发结果进 RESPONSE_READY，由既有伪流式路径输出。
+- [x] `human_fallback_llm` 在人工超时后只转发一次：等待循环内联触发，claim_fallback 原子声明（人工先到则声明失败、上游从未被调用）；转发失败不重试。
+- [x] 转发请求追加基于 Fake Model description 派生的身份 system 指令（无 description 时通用兜底），追加在调用方已有 system 内容之后。
+- [x] 仅同协议转发（Chat/Responses -> openai_compatible；Anthropic -> anthropic）；跨协议按矩阵返回 400 `unsupported_parameter`（对外通用 500，不暴露细节）。
+- [x] 上游非流式响应解析为统一 ReplyDraft 后走既有渲染器；响应与流事件 model 改写为 Fake Model（M6 已有）。
+- [x] 上游 tool call 只写入 ReplyDraft 转发，不执行、不等待。
+- [x] API Key 前端放开 `llm` / `human_fallback_llm` 策略选择与 LLM 配置绑定。
+- [x] 上游 HTTP 调用抽到 `app/services/llm_upstream.py`（草稿生成与转发共用，超时 504 / 网络 502 / 非 2xx 502，不透传上游正文）。
+
+### M7-D：完整跨协议字段矩阵（未开始，后续独立提交）
+
+- [ ] 按 API_CONTRACT §12.6 实现跨协议等价转换：tools schema、tool choice、并行工具、采样、stop、结构化输出、metadata、reasoning 控制逐项转换与拒绝。
 - [ ] `cache_control` 等供应商专有字段同协议保留，跨协议无等价项时返回协议兼容的 400。
 - [ ] 未知跨协议字段返回 `unsupported_parameter`，不静默忽略或塞入 metadata。
-- [ ] 上游真实流直接转发或实时转换。
-- [ ] 所有响应和流事件隐藏真实模型标识并使用 Fake Model。
-- [ ] 上游 tool call 只转发，不执行。
+- [ ] 上游真实流直接转发或实时转换（当前为非流式取回后伪流式输出）。
 
 ---
 

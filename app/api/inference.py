@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 from ..core.db import get_db
 from ..core.logging import get_request_id, log_event
-from ..domain.enums import InferenceProtocol, TaskState
+from ..domain.enums import InferenceProtocol, ReplyStrategy, TaskState
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft
 from ..protocols import anthropic as anthropic_protocol
@@ -149,6 +149,82 @@ def _mark_responding(task_id: int) -> None:
             session.commit()
 
 
+async def _run_direct_forward(task_id: int) -> None:
+    """llm 策略：任务创建后立即转发；失败走 FAILED 终态（对外 500 通用错误）。
+
+    转发本身不抛错：失败时 finalize(FAILED) 并记录事件/审计，
+    等待循环读到 FAILED 后向调用方返回通用 500。
+    """
+    import asyncio as _asyncio
+
+    from ..core.db import SessionLocal
+    from ..services.llm_forward_service import LlmForwardService
+
+    def _forward() -> tuple[bool, str | None]:
+        with SessionLocal() as session:
+            task = session.get(RequestTask, task_id)
+            if task is None:
+                return False, "task_missing"
+            service = LlmForwardService()
+            accepted, _draft, error = _asyncio.run(service.forward(session, task, reason="direct"))
+            return accepted, error
+
+    try:
+        accepted, error = await run_in_threadpool(_forward)
+    except Exception:  # noqa: BLE001  # 转发基础设施异常按失败终态
+        accepted, error = False, "exception"
+    if not accepted:
+        log_event(
+            "warning",
+            "inference.forward_failed",
+            "llm 策略直接转发失败",
+            task_id=task_id,
+            error_code=error or "unknown",
+        )
+        await run_in_threadpool(_finalize, task_id, TaskState.FAILED)
+
+
+async def _run_fallback(task_id: int) -> _Outcome | None:
+    """human_fallback_llm 超时转发：成功返回 Outcome，失败返回 None（走终态）。
+
+    转发失败不重试；失败详情写事件与审计，对外仍为通用超时错误。
+    """
+    from ..core.db import SessionLocal
+    from ..services.llm_forward_service import LlmForwardService
+
+    def _forward() -> tuple[bool, str | None]:
+        with SessionLocal() as session:
+            task = session.get(RequestTask, task_id)
+            if task is None:
+                return False, "task_missing"
+            import asyncio as _asyncio
+
+            service = LlmForwardService()
+            accepted, _draft, error = _asyncio.run(
+                service.forward(session, task, reason="human_timeout")
+            )
+            return accepted, error
+
+    try:
+        accepted, error = await run_in_threadpool(_forward)
+    except Exception:  # noqa: BLE001  # fallback 失败按超时终态处理
+        return None
+    if not accepted:
+        log_event(
+            "warning",
+            "inference.fallback_failed",
+            "human_fallback_llm 转发未接受",
+            task_id=task_id,
+            error_code=error or "unknown",
+        )
+        return None
+    row = await run_in_threadpool(_load_task, task_id)
+    if row is None or not row.response_payload_json:
+        return None
+    draft = ReplyDraft.model_validate_json(row.response_payload_json)
+    return _Outcome(row, draft)
+
+
 async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _Outcome | None:
     """等待人工回复；返回 None 表示调用方已断开（任务已取消）。"""
     while True:
@@ -197,6 +273,12 @@ async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _
                 status_code=500,
             )
         if deadline_at is not None and _now() > deadline_at:
+            # human_fallback_llm：超时后原子声明一次转发权；成功则继续
+            # 伪流式输出，失败（声明丢失 / 上游错误）走终态。
+            if row.reply_strategy_snapshot is ReplyStrategy.HUMAN_FALLBACK_LLM:
+                fallback = await _run_fallback(task_id)
+                if fallback is not None:
+                    return fallback
             await run_in_threadpool(_finalize, task_id, TaskState.TIMED_OUT)
             # 通用超时错误，不暴露人工等待细节（§16.3）。
             log_event(
@@ -262,11 +344,18 @@ async def _handle(
     owner: User,
     db: Session,
 ) -> _Outcome | None:
-    """建任务并等待人工回复；返回 None 表示调用方已断开（任务已取消）。"""
+    """建任务并等待回复；返回 None 表示调用方已断开（任务已取消）。
+
+    - human：等待人工回复直到超时。
+    - llm：创建后立即转发真实 LLM（不经人工等待）。
+    - human_fallback_llm：先等待人工；超时后由等待循环触发一次 fallback。
+    """
     body = await request.body()
     parsed = parse(body)
     headers = _capture_headers(request)
     task = await run_in_threadpool(_create_task, db, key, owner, protocol, parsed, body, headers)
+    if key.reply_strategy is ReplyStrategy.LLM:
+        await _run_direct_forward(task.id)
     return await _wait_for_reply(request, task.id, task.human_deadline_at)
 
 

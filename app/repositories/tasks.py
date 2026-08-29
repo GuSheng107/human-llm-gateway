@@ -90,6 +90,37 @@ class TaskRepository:
         )
         return result.rowcount == 1
 
+    def accept_forward_reply(
+        self,
+        session: Session,
+        *,
+        task_id: int,
+        owner_user_id: int,
+        expected_version: int,
+        response_payload_json: str,
+    ) -> bool:
+        """LLM 转发结果接受：forwarding_llm + 版本匹配才推进到 response_ready。
+
+        与 first_reply_wins 对称：人工回复从 WAITING_HUMAN 接受，转发结果从
+        FORWARDING_LLM 接受；两个入口互斥（claim_fallback 原子切换归属）。
+        """
+        result = session.execute(
+            update(RequestTask)
+            .where(
+                RequestTask.id == task_id,
+                RequestTask.owner_user_id == owner_user_id,
+                RequestTask.state == TaskState.FORWARDING_LLM,
+                RequestTask.version == expected_version,
+            )
+            .values(
+                state=TaskState.RESPONSE_READY,
+                response_payload_json=response_payload_json,
+                version=RequestTask.version + 1,
+                updated_at=_now(),
+            )
+        )
+        return result.rowcount == 1
+
     def advance_state(self, session: Session, task_id: int, state: TaskState) -> int:
         result = session.execute(
             update(RequestTask)

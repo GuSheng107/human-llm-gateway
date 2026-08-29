@@ -118,7 +118,7 @@ def test_generate_chat_with_openai_compatible_llm(client, created_user, created_
             ],
         }
 
-    with patch("app.services.llm_draft_service._post_chat_completions", side_effect=fake):
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
@@ -147,7 +147,7 @@ def test_generate_draft_uses_active_draft_slot(client, created_user, created_key
             ]
         }
 
-    with patch("app.services.llm_draft_service._post_chat_completions", side_effect=fake):
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
@@ -168,7 +168,7 @@ def test_generate_draft_then_edit_then_submit(client, created_user, created_key)
             "choices": [{"message": {"role": "assistant", "content": "上游草稿"}}],
         }
 
-    with patch("app.services.llm_draft_service._post_chat_completions", side_effect=fake):
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         generated = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
@@ -265,7 +265,7 @@ def test_generate_anthropic_with_anthropic_llm(client, created_user, created_key
             ],
         }
 
-    with patch("app.services.llm_draft_service._post_anthropic_messages", side_effect=fake):
+    with patch("app.services.llm_upstream.post_anthropic_messages", side_effect=fake):
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
@@ -468,7 +468,7 @@ def test_upstream_timeout_returns_504(client, created_user, created_key) -> None
             status_code=504,
         )
 
-    with patch("app.services.llm_draft_service._post_chat_completions", side_effect=fake):
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
@@ -490,7 +490,7 @@ def test_upstream_response_error_returns_502(client, created_user, created_key) 
             status_code=502,
         )
 
-    with patch("app.services.llm_draft_service._post_chat_completions", side_effect=fake):
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
