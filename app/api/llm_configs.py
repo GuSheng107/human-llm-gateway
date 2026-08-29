@@ -59,7 +59,8 @@ class LlmConfigUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=LLM_NAME_MAX_LENGTH)
     protocol: LLMProtocol | None = None
     base_url: str | None = Field(default=None, min_length=1)
-    api_key: str | None = Field(default=None, min_length=1)
+    # 空串/纯空白视为"保留旧值"（service 层统一语义）；仅非空字符串轮换密钥。
+    api_key: str | None = None
     model: str | None = Field(default=None, min_length=1)
     timeout_seconds: int | None = Field(default=None, ge=5, le=600)
     headers: list[LlmConfigHeaderSpec] | None = None

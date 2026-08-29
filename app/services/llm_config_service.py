@@ -109,6 +109,14 @@ def _normalize_headers(raw: dict[str, str] | None) -> dict[str, str]:
                 f"自定义 Header {cleaned_key} 不允许（API Key 通过 api_key 字段管理）",
                 status_code=400,
             )
+        # 大小写不敏感去重：Foo 与 foo 在 HTTP 语义中同名，显式拒绝
+        # 而非静默覆盖。
+        if cleaned_key.lower() in {k.lower() for k in normalized}:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                f"自定义 Header {cleaned_key} 与已有 Header 大小写冲突",
+                status_code=400,
+            )
         normalized[cleaned_key] = cleaned_value
     return normalized
 
@@ -332,16 +340,13 @@ class LlmConfigService:
 
         if "api_key" in fields:
             new_key = fields["api_key"]
-            if new_key is None or not new_key:
-                raise DomainError(
-                    DomainErrorCode.VALIDATION_FAILED,
-                    "api_key 不能为空字符串",
-                    status_code=400,
+            # PATCH 语义：None / 空串 / 纯空白一律视为"保留旧值"（与前端
+            # "留空表示保留旧值"提示一致）；仅显式提交非空字符串才轮换密钥。
+            if isinstance(new_key, str) and new_key.strip():
+                row.secret_ciphertext = encrypt_secret(
+                    new_key.strip(), get_settings().app_secret, _LLM_SECRET_PURPOSE
                 )
-            row.secret_ciphertext = encrypt_secret(
-                new_key, get_settings().app_secret, _LLM_SECRET_PURPOSE
-            )
-            changed.append("api_key")
+                changed.append("api_key")
 
         if "headers" in fields:
             new_headers = _normalize_headers(fields["headers"] or {})

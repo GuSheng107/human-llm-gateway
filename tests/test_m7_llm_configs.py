@@ -273,6 +273,70 @@ def test_update_omitting_secret_preserves_existing(client, created_user) -> None
     assert plaintext == "sk-test-123"
 
 
+def test_update_empty_api_key_string_preserves_secret(client, created_user) -> None:
+    """PATCH 显式提交空串/纯空白 api_key 视为保留旧值（与前端"留空保留"一致）。"""
+    from sqlalchemy import select
+
+    from app.core.config import get_settings
+    from app.core.db import SessionLocal
+    from app.core.security import decrypt_secret
+    from app.repositories.models import LlmConfig
+
+    created = client.post(
+        "/api/llm-configs", headers=created_user.headers, json=_create_body()
+    ).json()
+    config_id = int(created["id"])
+    for empty_value in ("", "   "):
+        resp = client.patch(
+            f"/api/llm-configs/{config_id}",
+            headers=created_user.headers,
+            json={"api_key": empty_value},
+        )
+        assert resp.status_code == 200, resp.text
+    with SessionLocal() as session:
+        row = session.execute(select(LlmConfig).where(LlmConfig.id == config_id)).scalar_one()
+        plaintext = decrypt_secret(row.secret_ciphertext, get_settings().app_secret, "llm-config")
+    assert plaintext == "sk-test-123"
+
+
+def test_update_api_key_strips_whitespace(client, created_user) -> None:
+    """api_key 更新时先 strip 再加密。"""
+    from sqlalchemy import select
+
+    from app.core.config import get_settings
+    from app.core.db import SessionLocal
+    from app.core.security import decrypt_secret
+    from app.repositories.models import LlmConfig
+
+    created = client.post(
+        "/api/llm-configs", headers=created_user.headers, json=_create_body()
+    ).json()
+    config_id = int(created["id"])
+    resp = client.patch(
+        f"/api/llm-configs/{config_id}",
+        headers=created_user.headers,
+        json={"api_key": "  sk-new-42  "},
+    )
+    assert resp.status_code == 200
+    with SessionLocal() as session:
+        row = session.execute(select(LlmConfig).where(LlmConfig.id == config_id)).scalar_one()
+        plaintext = decrypt_secret(row.secret_ciphertext, get_settings().app_secret, "llm-config")
+    assert plaintext == "sk-new-42"
+
+
+def test_create_rejects_case_conflicting_headers(client, created_user) -> None:
+    """Foo 与 foo 在 HTTP 语义中同名：显式 400 而非静默覆盖。"""
+    body = _create_body(
+        headers=[
+            {"name": "X-Org", "value": "a"},
+            {"name": "x-org", "value": "b"},
+        ]
+    )
+    resp = client.post("/api/llm-configs", headers=created_user.headers, json=body)
+    assert resp.status_code == 400
+    assert "冲突" in resp.json()["error"]["message"]
+
+
 def test_delete_unreferenced_soft_deletes(client, created_user) -> None:
     created = client.post(
         "/api/llm-configs", headers=created_user.headers, json=_create_body()
@@ -451,7 +515,8 @@ def test_connectivity_test_success_records_last_tested_at(client, created_user) 
     assert body["reason_code"] == "ok"
     assert body["http_status"] == 200
     assert body["last_tested_at"]
-    assert runner.await_count if hasattr(runner, "await_count") else True
+    # 连通性测试必须真实经过 runner（而非未调用即通过）。
+    assert runner.await_count == 1
 
 
 def test_connectivity_test_network_error_returns_failed(client, created_user) -> None:

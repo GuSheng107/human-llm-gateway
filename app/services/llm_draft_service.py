@@ -337,6 +337,24 @@ class LlmDraftService:
                 status_code=409,
                 public_code="task_already_resolved",
             )
+        # 1.5 幂等防护：已存在未提交的 LLM 草稿时拒绝重复生成（避免连点
+        # 产生多条 LLM 草稿；用户应在既有草稿上编辑或删除后重生成）。
+        from sqlalchemy import select as sa_select
+
+        existing = session.execute(
+            sa_select(TaskDraft.id).where(
+                TaskDraft.task_id == task.id,
+                TaskDraft.source == DraftSource.LLM,
+                TaskDraft.state == DraftState.EDITING,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                "已存在未提交的 LLM 草稿，请编辑或删除后重新生成",
+                status_code=409,
+                public_code="llm_draft_exists",
+            )
         # 2. 归属校验
         if task.owner_user_id != owner.id:
             raise DomainError(DomainErrorCode.NOT_FOUND, "任务不存在", status_code=404)

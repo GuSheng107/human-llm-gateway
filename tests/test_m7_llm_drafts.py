@@ -158,6 +158,53 @@ def test_generate_draft_uses_active_draft_slot(client, created_user, created_key
     assert detail["active_draft_id"] == resp.json()["id"]
 
 
+def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key) -> None:
+    """已存在未提交 LLM 草稿时拒绝重复生成（幂等防护，避免连点多条草稿）。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id)
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    call_count = {"n": 0}
+
+    async def fake(**kwargs: Any) -> Any:
+        call_count["n"] += 1
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        first = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"])},
+        )
+        assert first.status_code == 201
+
+        second = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"])},
+        )
+        assert second.status_code == 409
+        assert "LLM 草稿" in second.json()["error"]["message"]
+
+    # 上游只被调用一次
+    assert call_count["n"] == 1
+
+    # 删除草稿后可重新生成
+    draft_id = first.json()["id"]
+    deleted = client.delete(
+        f"/api/tasks/{task_id}/drafts/{draft_id}",
+        headers=created_user.headers,
+    )
+    assert deleted.status_code == 204
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        third = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"])},
+        )
+        assert third.status_code == 201
+    assert call_count["n"] == 2
+
+
 def test_generate_draft_then_edit_then_submit(client, created_user, created_key) -> None:
     """LLM 草稿可被人工编辑后正式提交回复（首胜语义保持）。"""
     task_id = _make_waiting_task(client, created_key.id, created_user.user_id)
