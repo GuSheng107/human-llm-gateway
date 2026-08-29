@@ -264,7 +264,7 @@ M6 完成后达到首个可用 MVP。
 
 ---
 
-## M7：LLM 配置、草稿和自动转发（M7-A、M7-B 和 M7-C 已完成）
+## M7：LLM 配置、草稿和自动转发（M7-A、M7-B、M7-C 和 M7-D 已完成）
 
 ### M7-A：用户级 LLM 配置管理
 
@@ -293,12 +293,14 @@ M6 完成后达到首个可用 MVP。
 - [x] API Key 前端放开 `llm` / `human_fallback_llm` 策略选择与 LLM 配置绑定。
 - [x] 上游 HTTP 调用抽到 `app/services/llm_upstream.py`（草稿生成与转发共用，超时 504 / 网络 502 / 非 2xx 502，不透传上游正文）。
 
-### M7-D：完整跨协议字段矩阵（未开始，后续独立提交）
+### M7-D：完整跨协议字段矩阵与上游流式（已完成）
 
-- [ ] 按 API_CONTRACT §12.6 实现跨协议等价转换：tools schema、tool choice、并行工具、采样、stop、结构化输出、metadata、reasoning 控制逐项转换与拒绝。
-- [ ] `cache_control` 等供应商专有字段同协议保留，跨协议无等价项时返回协议兼容的 400。
-- [ ] 未知跨协议字段返回 `unsupported_parameter`，不静默忽略或塞入 metadata。
-- [ ] 上游真实流直接转发或实时转换（当前为非流式取回后伪流式输出）。
+- [x] `app/protocols/cross.py`：§12.6 矩阵逐项实现——系统指令/内容块（含 developer role、Anthropic blocks）、输出上限（max_tokens <-> max_completion_tokens / max_output_tokens）、采样参数、停止序列（字符串 <-> 数组 <-> stop_sequences）、函数工具 Schema（function.parameters <-> input_schema）、工具选择（required <-> any；指定函数 <-> tool{name}）、并行工具（parallel_tool_calls <-> disable_parallel_tool_use 取反）、工具调用/结果（tool_calls/tool role <-> tool_use/tool_result）、metadata（user <-> metadata.user_id）。
+- [x] `cache_control` 等供应商专有字段：同协议原样保留；跨协议（含内容块内嵌）无等价项返回 400 `unsupported_parameter`。
+- [x] 未知跨协议字段返回 `unsupported_parameter`（严格白名单 + 显式拒绝列表：reasoning 控制、结构化输出转 Anthropic、service_tier、托管工具），不静默忽略或塞入 metadata。
+- [x] 上游真实流转发：`stream_chat_completions` / `stream_anthropic_messages` 以 SSE 接收增量（Chat delta / Anthropic content_block 事件），归一为 UpstreamChunk 增量聚合为完整 ReplyDraft 后按既有原子裁决落库，再伪流式输出（完整结果先持久化语义保持）。
+- [x] 跨协议生成（M7-B 草稿）同步开放：Chat/Responses 任务可选 Anthropic LLM 配置，反之亦然。
+- [x] 流式转发在 llm 策略 stream=true 请求时自动启用（human_fallback_llm 与非流式仍走非流式路径）。
 
 ---
 

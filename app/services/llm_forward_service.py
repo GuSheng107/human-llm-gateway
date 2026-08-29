@@ -106,7 +106,11 @@ class LlmForwardService:
     def resolve_config(
         self, session: Session, task: RequestTask
     ) -> tuple[LlmConfig, FakeModel | None]:
-        """按任务快照解析 LLM 配置与 Fake Model；校验协议匹配。"""
+        """按任务快照解析 LLM 配置与 Fake Model（协议任意组合）。
+
+        同协议走既有直拼路径；跨协议由 cross 矩阵逐项转换或拒绝
+        （docs/API_CONTRACT.md §12.6）。
+        """
         config_id = task.llm_config_id_snapshot
         if config_id is None:
             raise DomainError(
@@ -121,17 +125,6 @@ class LlmForwardService:
                 "LLM 配置已删除，无法转发",
                 status_code=500,
             )
-        expected = _INFERENCE_TO_LLM.get(task.protocol)
-        if expected is None or cfg.protocol is not expected:
-            # 跨协议转发：按 §12.6 返回 unsupported_parameter，不静默降级。
-            raise DomainError(
-                DomainErrorCode.UNSUPPORTED_PARAMETER,
-                (
-                    f"Cross-protocol forwarding ({task.protocol.value} -> "
-                    f"{cfg.protocol.value}) is not supported yet."
-                ),
-                status_code=400,
-            )
         fake_model = session.get(FakeModel, task.fake_model_id) if task.fake_model_id else None
         return cfg, fake_model
 
@@ -142,11 +135,29 @@ class LlmForwardService:
     async def forward(
         self, session: Session, task: RequestTask, *, reason: str
     ) -> tuple[bool, ReplyDraft | None, str | None]:
-        """执行一次转发；返回 (accepted, draft, error_code)。
+        """执行一次转发（非流式上游）；返回 (accepted, draft, error_code)。
 
         accepted=False 表示声明失败（他人已裁决）或转发失败；
         调用方据此推进终态。转发失败不重试（fallback 只转发一次）。
         """
+        result = await self._forward_inner(session, task, reason=reason, stream=False)
+        return result
+
+    async def forward_stream(
+        self, session: Session, task: RequestTask, *, reason: str
+    ) -> tuple[bool, list[Any] | None, str | None]:
+        """执行一次流式转发；返回 (accepted, chunks, error_code)。
+
+        上游以 SSE 接收，增量归一为 UpstreamChunk 列表；接收完成后聚合为
+        ReplyDraft 并按既有原子裁决写回（完整结果先持久化，§13.3 伪流式
+        输出前已落库的语义保持）。调用方拿到 chunks 后即可回放输出。
+        """
+        return await self._forward_inner(session, task, reason=reason, stream=True)
+
+    async def _forward_inner(
+        self, session: Session, task: RequestTask, *, reason: str, stream: bool
+    ) -> tuple[bool, Any, str | None]:
+        """转发内核：声明 -> 上游（流式/非流式）-> 原子接受。"""
         # 原子声明转发权：WAITING_HUMAN -> FORWARDING_LLM（唯一入口）。
         if not self.tasks.claim_fallback(session, task.id):
             return False, None, "claim_lost"
@@ -162,9 +173,24 @@ class LlmForwardService:
 
         try:
             cfg, fake_model = self.resolve_config(session, task)
-            draft = await self._call_upstream(session, task, cfg, fake_model)
+            if stream:
+                chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
+            else:
+                draft = await self._call_upstream(session, task, cfg, fake_model)
         except DomainError as exc:
             return False, None, exc.code.value
+
+        if stream:
+            # 聚合流式增量为 ReplyDraft（完整结果先持久化再回放，§13.3）。
+            collected: dict[str, Any] = {}
+            for chunk in chunks:
+                llm_upstream.collect_chunk(collected, chunk)
+            summary = llm_upstream.finalize_collected(collected)
+            draft = ReplyDraft(
+                reasoning=summary["reasoning"],
+                tool_calls=summary["tool_calls"],
+                final_text=summary["final_text"],
+            )
 
         payload = draft.model_dump_json(exclude_none=True)
         # 不依赖 ORM 缓存版本：以 claim 后的 DB 实际版本为准（SQLite RETURNING
@@ -200,6 +226,34 @@ class LlmForwardService:
         session.commit()
         return True, draft, None
 
+    def build_upstream_request(
+        self,
+        task: RequestTask,
+        cfg: LlmConfig,
+        fake_model: FakeModel | None,
+        normalized: dict[str, Any],
+    ) -> dict[str, Any]:
+        """构造目标协议请求体：同协议直拼，跨协议走 cross 矩阵。"""
+        from ..protocols import cross
+
+        expected = _INFERENCE_TO_LLM.get(task.protocol)
+        identity = identity_system_message(fake_model, task.requested_model)
+        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
+            if expected is LLMProtocol.OPENAI_COMPATIBLE:
+                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized)
+            else:
+                body = cross.to_chat_request(normalized, cfg.real_model)
+            return _inject_identity_chat(body, identity)
+        if expected is LLMProtocol.ANTHROPIC:
+            body = _build_anthropic_request(
+                real_model=cfg.real_model,
+                normalized=normalized,
+                max_tokens=int(normalized.get("max_tokens") or 1024),
+            )
+        else:
+            body = cross.to_anthropic_request(normalized, cfg.real_model)
+        return _inject_identity_anthropic(body, identity)
+
     async def _call_upstream(
         self,
         session: Session,
@@ -212,12 +266,8 @@ class LlmForwardService:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, json.JSONDecodeError):
             normalized = {}
-        identity = identity_system_message(fake_model, task.requested_model)
+        body = self.build_upstream_request(task, cfg, fake_model, normalized)
         if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
-            body = _inject_identity_chat(
-                _build_chat_request(real_model=cfg.real_model, normalized=normalized),
-                identity,
-            )
             upstream = await llm_upstream.post_chat_completions(
                 base_url=cfg.base_url,
                 api_key=secret,
@@ -226,14 +276,6 @@ class LlmForwardService:
                 timeout_seconds=cfg.timeout_seconds,
             )
             return _parse_chat_response(upstream)
-        body = _inject_identity_anthropic(
-            _build_anthropic_request(
-                real_model=cfg.real_model,
-                normalized=normalized,
-                max_tokens=int(normalized.get("max_tokens") or 1024),
-            ),
-            identity,
-        )
         upstream = await llm_upstream.post_anthropic_messages(
             base_url=cfg.base_url,
             api_key=secret,
@@ -242,6 +284,43 @@ class LlmForwardService:
             timeout_seconds=cfg.timeout_seconds,
         )
         return _parse_anthropic_response(upstream)
+
+    async def _call_upstream_stream(
+        self,
+        session: Session,
+        task: RequestTask,
+        cfg: LlmConfig,
+        fake_model: FakeModel | None,
+    ) -> list[Any]:
+        """流式接收上游增量（UpstreamChunk 列表），由内核统一聚合接受。"""
+        from ..services.llm_upstream import UpstreamChunk
+
+        secret, headers = _decrypt_config(cfg)
+        try:
+            normalized = json.loads(task.normalized_request_json or "{}")
+        except (ValueError, json.JSONDecodeError):
+            normalized = {}
+        body = self.build_upstream_request(task, cfg, fake_model, normalized)
+        chunks: list[UpstreamChunk] = []
+        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
+            async for chunk in llm_upstream.stream_chat_completions(
+                base_url=cfg.base_url,
+                api_key=secret,
+                request_body=body,
+                extra_headers=headers,
+                timeout_seconds=cfg.timeout_seconds,
+            ):
+                chunks.append(chunk)
+        else:
+            async for chunk in llm_upstream.stream_anthropic_messages(
+                base_url=cfg.base_url,
+                api_key=secret,
+                request_body=body,
+                extra_headers=headers,
+                timeout_seconds=cfg.timeout_seconds,
+            ):
+                chunks.append(chunk)
+        return chunks
 
     # ------------------------------------------------------------------
 

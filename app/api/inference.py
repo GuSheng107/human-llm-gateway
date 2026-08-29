@@ -149,9 +149,11 @@ def _mark_responding(task_id: int) -> None:
             session.commit()
 
 
-async def _run_direct_forward(task_id: int) -> None:
+async def _run_direct_forward(task_id: int, *, stream: bool = False) -> None:
     """llm 策略：任务创建后立即转发；失败走 FAILED 终态（对外 500 通用错误）。
 
+    stream=True 时上游以 SSE 流式接收（增量聚合后仍按完整结果原子落库，
+    再由等待循环进入伪流式输出）。
     转发本身不抛错：失败时 finalize(FAILED) 并记录事件/审计，
     等待循环读到 FAILED 后向调用方返回通用 500。
     """
@@ -166,7 +168,14 @@ async def _run_direct_forward(task_id: int) -> None:
             if task is None:
                 return False, "task_missing"
             service = LlmForwardService()
-            accepted, _draft, error = _asyncio.run(service.forward(session, task, reason="direct"))
+            if stream:
+                accepted, _chunks, error = _asyncio.run(
+                    service.forward_stream(session, task, reason="direct")
+                )
+            else:
+                accepted, _draft, error = _asyncio.run(
+                    service.forward(session, task, reason="direct")
+                )
             return accepted, error
 
     try:
@@ -355,7 +364,8 @@ async def _handle(
     headers = _capture_headers(request)
     task = await run_in_threadpool(_create_task, db, key, owner, protocol, parsed, body, headers)
     if key.reply_strategy is ReplyStrategy.LLM:
-        await _run_direct_forward(task.id)
+        # 调用方请求流式时，上游同样以 SSE 接收（增量聚合后原子落库）。
+        await _run_direct_forward(task.id, stream=parsed.stream)
     return await _wait_for_reply(request, task.id, task.human_deadline_at)
 
 

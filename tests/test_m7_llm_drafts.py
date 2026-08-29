@@ -332,14 +332,70 @@ def test_generate_anthropic_with_anthropic_llm(client, created_user, created_key
 # ----------------------------------------------------------------------
 
 
-def test_cross_protocol_generation_returns_400(client, created_user, created_key) -> None:
-    """Chat 任务不能选 anthropic LLM（跨协议在后续阶段开放）。"""
-    task_id = _make_waiting_task(client, created_key.id, created_user.user_id)
+def test_cross_protocol_generation_chat_to_anthropic(client, created_user, created_key) -> None:
+    """M7-D：Chat 任务 + Anthropic LLM 跨协议生成经 cross 矩阵转换成功。"""
+    task_id = _make_waiting_task(
+        client, created_key.id, created_user.user_id, content="hello cross"
+    )
     cfg = _create_llm_config(
         client,
         created_user.headers,
         _llm_body(
-            name="anthropic-misuse",
+            name="anthropic-cross",
+            protocol="anthropic",
+            base_url="https://api.anthropic.com",
+            model="claude-3-5-sonnet",
+        ),
+    )
+
+    async def fake(**kwargs: Any) -> Any:
+        # 验证 cross 矩阵转换：Anthropic 请求体结构正确
+        body = kwargs["request_body"]
+        assert body["model"] == "claude-3-5-sonnet"
+        assert body["max_tokens"] == 1024
+        assert {"role": "user", "content": "hello cross"} in body["messages"]
+        return {
+            "id": "msg_cross",
+            "content": [{"type": "text", "text": "跨协议回答"}],
+        }
+
+    with patch("app.services.llm_upstream.post_anthropic_messages", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"])},
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["final_text"] == "跨协议回答"
+    assert resp.json()["source"] == "llm"
+
+
+def test_cross_protocol_generation_rejects_unequivalent_fields(
+    client, created_user, created_key
+) -> None:
+    """跨协议不可等价字段（reasoning 控制 / 结构化输出）返回 400。"""
+    from sqlalchemy import update as sa_update
+
+    import app.core.db as database
+    from app.repositories.models import RequestTask
+
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id)
+    # 注入 response_format 到规范化 options（模拟 Chat 结构化输出请求）
+    with database.SessionLocal() as session:
+        normalized = json.loads(session.get(RequestTask, task_id).normalized_request_json)
+        normalized["options"]["response_format"] = {"type": "json_object"}
+        session.execute(
+            sa_update(RequestTask)
+            .where(RequestTask.id == task_id)
+            .values(normalized_request_json=json.dumps(normalized, ensure_ascii=False))
+        )
+        session.commit()
+
+    cfg = _create_llm_config(
+        client,
+        created_user.headers,
+        _llm_body(
+            name="anthropic-strict",
             protocol="anthropic",
             base_url="https://api.anthropic.com",
             model="claude-3-5-sonnet",
@@ -351,7 +407,7 @@ def test_cross_protocol_generation_returns_400(client, created_user, created_key
         json={"llm_config_id": int(cfg["id"])},
     )
     assert resp.status_code == 400
-    assert "不匹配" in resp.text
+    assert "response_format" in resp.json()["error"]["message"]
 
 
 def test_generate_with_disabled_config_returns_400(client, created_user, created_key) -> None:

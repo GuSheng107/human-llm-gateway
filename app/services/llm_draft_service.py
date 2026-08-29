@@ -368,27 +368,33 @@ class LlmDraftService:
                 "LLM 配置已停用，无法生成草稿",
                 status_code=400,
             )
-        # 4. 同协议限制（M7-B 仅同协议）
-        expected_llm_protocol = _INFERENCE_TO_LLM.get(task.protocol)
-        if expected_llm_protocol is None or cfg.protocol is not expected_llm_protocol:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                (
-                    f"任务协议 {task.protocol.value} 与 LLM 协议 "
-                    f"{cfg.protocol.value} 不匹配，跨协议生成将在后续阶段开放"
-                ),
-                status_code=400,
-            )
-        # 5. 解密凭据 + 解析规范化请求
-        secret, headers = _decrypt_config(cfg)
+        # 4. 解析规范化请求
         try:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, json.JSONDecodeError):
             normalized = {}
-        # 6. 调上游
+        # 5. 构造目标协议请求体（同协议直拼；跨协议走 cross 矩阵，§12.6）
+        from ..protocols import cross
+
+        expected_llm_protocol = _INFERENCE_TO_LLM.get(task.protocol)
+        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
+            if expected_llm_protocol is LLMProtocol.OPENAI_COMPATIBLE:
+                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized)
+            else:
+                body = cross.to_chat_request(normalized, cfg.real_model)
+        else:
+            if expected_llm_protocol is LLMProtocol.ANTHROPIC:
+                body = _build_anthropic_request(
+                    real_model=cfg.real_model,
+                    normalized=normalized,
+                    max_tokens=int(normalized.get("max_tokens") or 1024),
+                )
+            else:
+                body = cross.to_anthropic_request(normalized, cfg.real_model)
+        # 6. 解密凭据并调上游
+        secret, headers = _decrypt_config(cfg)
         try:
             if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
-                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized)
                 upstream = await _post_chat_completions(
                     base_url=cfg.base_url,
                     api_key=secret,
@@ -398,11 +404,6 @@ class LlmDraftService:
                 )
                 draft = _parse_chat_response(upstream)
             else:
-                body = _build_anthropic_request(
-                    real_model=cfg.real_model,
-                    normalized=normalized,
-                    max_tokens=int(normalized.get("max_tokens") or 1024),
-                )
                 upstream = await _post_anthropic_messages(
                     base_url=cfg.base_url,
                     api_key=secret,

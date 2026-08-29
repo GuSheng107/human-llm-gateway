@@ -29,6 +29,7 @@ from app.services.llm_forward_service import (
 )
 
 _UPSTREAM_CHAT = "app.services.llm_upstream.post_chat_completions"
+_UPSTREAM_ANTHROPIC = "app.services.llm_upstream.post_anthropic_messages"
 
 
 # ----------------------------------------------------------------------
@@ -230,6 +231,7 @@ def test_llm_strategy_direct_forward_non_stream(client, created_user) -> None:
 
 
 def test_llm_strategy_direct_forward_stream(client, created_user) -> None:
+    """stream=true 时上游走 SSE 流式接收，聚合后伪流式输出（§13.3）。"""
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     key = _create_strategy_key(
         client,
@@ -238,10 +240,17 @@ def test_llm_strategy_direct_forward_stream(client, created_user) -> None:
         llm_config_id=int(cfg["id"]),
     )
 
-    async def fake_post(**kwargs: Any) -> dict[str, Any]:
-        return _chat_upstream_ok(**kwargs)
+    from app.services.llm_upstream import UpstreamChunk
 
-    with patch(_UPSTREAM_CHAT, side_effect=fake_post):
+    async def fake_stream(**kwargs: Any):
+        # stream=true 由 stream_chat_completions 内部注入（body 收到时未带）。
+        for chunk in (
+            UpstreamChunk(text="流式"),
+            UpstreamChunk(text="回答"),
+        ):
+            yield chunk
+
+    with patch("app.services.llm_upstream.stream_chat_completions", side_effect=fake_stream):
         resp = client.post(
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
@@ -254,7 +263,10 @@ def test_llm_strategy_direct_forward_stream(client, created_user) -> None:
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
     assert "data:" in resp.text
+    assert "流式回答" in resp.text
     assert "[DONE]" in resp.text
+    row = _latest_task(int(key["id"]))
+    assert row.state is TaskState.COMPLETED
 
 
 def test_llm_strategy_upstream_failure_returns_500(client, created_user) -> None:
@@ -445,12 +457,12 @@ def test_fallback_upstream_failure_keeps_timeout_terminal(client, created_user) 
 # ----------------------------------------------------------------------
 
 
-def test_cross_protocol_forward_fails_with_terminal(client, created_user) -> None:
-    """Anthropic LLM 配置 + Chat 任务：转发失败走 FAILED（对外通用 500）。"""
+def test_cross_protocol_forward_chat_to_anthropic(client, created_user) -> None:
+    """M7-D：Chat 任务 + Anthropic LLM 跨协议转发经 cross 矩阵转换成功。"""
     cfg = _create_llm_config(
         client,
         created_user.headers,
-        _llm_body(name="anthro", protocol="anthropic"),
+        _llm_body(name="anthro-cross", protocol="anthropic"),
     )
     key = _create_strategy_key(
         client,
@@ -460,9 +472,16 @@ def test_cross_protocol_forward_fails_with_terminal(client, created_user) -> Non
     )
 
     async def fake_post(**kwargs: Any) -> dict[str, Any]:
-        raise AssertionError("跨协议不应调用上游")
+        body = kwargs["request_body"]
+        # cross 矩阵转换出的 Anthropic 请求体
+        assert body["model"] == "claude-3-5-sonnet"
+        assert any(m == {"role": "user", "content": "hi"} for m in body["messages"])
+        return {
+            "id": "msg_cross",
+            "content": [{"type": "text", "text": "跨协议转发回答"}],
+        }
 
-    with patch(_UPSTREAM_CHAT, side_effect=fake_post):
+    with patch(_UPSTREAM_ANTHROPIC, side_effect=fake_post):
         resp = client.post(
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
@@ -471,6 +490,43 @@ def test_cross_protocol_forward_fails_with_terminal(client, created_user) -> Non
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
+    assert resp.status_code == 200, resp.text
+    # 响应仍是调用方协议（Chat），model 为 Fake Model
+    body = resp.json()
+    assert body["model"] == "human-gateway"
+    assert body["choices"][0]["message"]["content"] == "跨协议转发回答"
+    row = _latest_task(int(key["id"]))
+    assert row.state is TaskState.COMPLETED
+
+
+def test_cross_protocol_forward_rejects_unequivalent_field(client, created_user) -> None:
+    """跨协议不可等价字段（response_format 转 Anthropic）整请求拒绝。"""
+    cfg = _create_llm_config(
+        client,
+        created_user.headers,
+        _llm_body(name="anthro-strict", protocol="anthropic"),
+    )
+    key = _create_strategy_key(
+        client,
+        created_user.headers,
+        strategy="llm",
+        llm_config_id=int(cfg["id"]),
+    )
+
+    async def fake_post(**kwargs: Any) -> dict[str, Any]:
+        raise AssertionError("不可等价字段不应调用上游")
+
+    with patch(_UPSTREAM_ANTHROPIC, side_effect=fake_post):
+        resp = client.post(
+            "/v1/chat/completions",
+            headers=_bearer(key["plaintext"]),
+            json={
+                "model": "human-gateway",
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": {"type": "json_object"},
+            },
+        )
+    # 上游不可达 -> 转发失败 -> 对外通用 500（不暴露 matrix 细节）
     assert resp.status_code == 500
     row = _latest_task(int(key["id"]))
     assert row.state is TaskState.FAILED
