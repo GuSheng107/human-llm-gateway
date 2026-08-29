@@ -24,6 +24,17 @@ export function listConnections(page: number, search = ""): Promise<Page<ImConne
   return api<Page<ImConnection>>(`/api/im-connections?${query}`);
 }
 
+export async function listAllConnections(): Promise<ImConnection[]> {
+  const items: ImConnection[] = [];
+  let page = 1;
+  for (;;) {
+    const result = await listConnections(page);
+    items.push(...result.items);
+    if (items.length >= result.total || result.items.length === 0) return items;
+    page += 1;
+  }
+}
+
 export function createConnection(payload: ConnectionPayload): Promise<ImConnection> {
   return api<ImConnection>("/api/im-connections", {
     method: "POST",

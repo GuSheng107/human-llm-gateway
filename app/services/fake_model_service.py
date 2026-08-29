@@ -248,6 +248,7 @@ class ModelGroupService:
     def update(
         self, session: Session, *, row: ModelGroup, actor: User, fields: dict[str, Any]
     ) -> ModelGroup:
+        begin_immediate_if_sqlite(session)
         changed: list[str] = []
         if "name" in fields:
             new_name = (fields["name"] or "").strip()
@@ -290,6 +291,7 @@ class ModelGroupService:
         self, session: Session, *, row: ModelGroup, actor: User, fake_model_ids: list[int]
     ) -> ModelGroup:
         """原子替换分组成员；成员必须属于组所有者的可见模型集合。"""
+        begin_immediate_if_sqlite(session)
         visible_ids = {
             model.id for model in self.catalog.visible_models(session, row.owner_user_id)
         }

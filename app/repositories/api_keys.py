@@ -79,6 +79,8 @@ class ApiKeyRepository:
 
         prefix = plaintext[:12]
         for row in self.find_by_prefix(session, prefix):
+            if not row.is_enabled:
+                continue
             if not verify_api_key(plaintext, row.key_hash):
                 continue
             owner = session.get(User, row.owner_user_id)

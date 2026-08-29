@@ -87,7 +87,26 @@ def anthropic_error_response(
 
 
 def map_domain_error_openai(exc: DomainError) -> tuple[int, str, str]:
-    return _OPENAI_MAPPING.get(exc.code, _GENERIC_500)
+    return _OPENAI_MAPPING.get(exc.code, (*_GENERIC_500, "internal_error"))
+
+
+def openai_domain_error_response(exc: DomainError) -> JSONResponse:
+    """把领域错误转为 OpenAI 兼容响应；未映射的错误不泄露内部消息。"""
+    mapping = _OPENAI_MAPPING.get(exc.code)
+    if mapping is None:
+        return openai_error_response(
+            "服务暂时不可用",
+            error_type="server_error",
+            code="internal_error",
+            status_code=500,
+        )
+    status, error_type, code = mapping
+    return openai_error_response(
+        exc.message or "请求无法处理",
+        error_type=error_type,
+        code=code,
+        status_code=status,
+    )
 
 
 def map_domain_error_anthropic(exc: DomainError) -> tuple[int, str]:

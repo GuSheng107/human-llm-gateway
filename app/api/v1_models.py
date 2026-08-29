@@ -39,6 +39,8 @@ def require_api_key(
     if owner is None or not owner.is_active:
         raise DomainError(DomainErrorCode.INVALID_API_KEY, "无效的 API Key", status_code=401)
     _keys.touch_last_used(db, matched.id)
+    # get_db 仅负责关闭连接；last_used_at 需要显式提交才能真正落库。
+    db.commit()
     return matched, owner
 
 

@@ -74,12 +74,25 @@ class DeliveryService:
 
         if running_loop:
             # 事件循环上下文（异步请求）：投递转为后台任务，任务包留在
-            # outbox，由异步路径确认；同步路径才允许内联推送。
+            # outbox。必须在调用方事务提交后再推送，否则后台任务用新会话
+            # 更新 outbox 时行尚不可见，确认会静默丢失（rowcount=0）。
             import asyncio as _asyncio
 
-            _asyncio.get_running_loop().create_task(
-                self._async_push(connector, envelope, connection.id, task.id, via_outbox)
-            )
+            from sqlalchemy import event
+
+            loop = _asyncio.get_running_loop()
+            pushed = False
+
+            def _push_after_commit(_session: Session) -> None:
+                nonlocal pushed
+                if pushed:
+                    return
+                pushed = True
+                loop.create_task(
+                    self._async_push(connector, envelope, connection.id, task.id, via_outbox)
+                )
+
+            event.listen(session, "after_commit", _push_after_commit, once=True)
             return DeliveryOutcome(
                 connection_id=connection.id,
                 platform=connection.platform,

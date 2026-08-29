@@ -77,26 +77,46 @@ export function ConnectionsPage() {
   };
 
   const toggle = async (item: ImConnection) => {
-    const next = item.desired_running ? await stopConnection(item.id) : await startConnection(item.id);
-    notify(item.desired_running ? "连接已停止" : "连接已启动");
-    return next;
+    try {
+      if (item.desired_running) {
+        await stopConnection(item.id);
+      } else {
+        await startConnection(item.id);
+      }
+      notify(item.desired_running ? "连接已停止" : "连接已启动");
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "操作失败");
+    }
   };
 
   const remove = async (item: ImConnection) => {
     if (!window.confirm(`确认删除连接「${item.name}」？`)) return;
-    await deleteConnection(item.id);
-    notify("连接已删除");
-    await load();
+    try {
+      await deleteConnection(item.id);
+      notify("连接已删除");
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "删除失败");
+    }
   };
 
   const showHealth = async (item: ImConnection) => {
-    setHealth(await connectionHealth(item.id));
+    try {
+      setHealth(await connectionHealth(item.id));
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "获取健康状态失败");
+    }
   };
 
   const generateBinding = async (item: ImConnection) => {
-    const created = await createBinding(item.id);
-    setBindingCode(created.binding_code);
-    setBinding(await bindingStatus(item.id));
+    try {
+      const created = await createBinding(item.id);
+      setBindingCode(created.binding_code);
+      setBinding(await bindingStatus(item.id));
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "生成绑定码失败");
+    }
   };
 
   return (

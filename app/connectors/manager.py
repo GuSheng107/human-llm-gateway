@@ -88,6 +88,12 @@ class ConnectionManager:
             platform=row.platform,
             config=config,
         )
+        # 先登记监督任务再执行任何 await，避免并发 start 在幂等检查与
+        # 任务登记之间交错而产生孤儿任务（重复启动）。
+        self._tasks[connection_id] = asyncio.create_task(
+            self._supervise(row, spec, ctx, inbound_handler),
+            name=f"connection-{connection_id}",
+        )
         await self._record(
             connection_id,
             {
@@ -95,10 +101,6 @@ class ConnectionManager:
                 "last_error_code": None,
                 "last_error_message": None,
             },
-        )
-        self._tasks[connection_id] = asyncio.create_task(
-            self._supervise(row, spec, ctx, inbound_handler),
-            name=f"connection-{connection_id}",
         )
 
     async def stop(self, connection_id: int) -> None:

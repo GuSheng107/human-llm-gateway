@@ -124,15 +124,9 @@ def install_error_handlers(app: FastAPI) -> None:
     async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
         # /v1/* 使用 OpenAI 兼容错误结构；管理 API 使用统一错误结构。
         if request.url.path.startswith("/v1/"):
-            from ..protocols.errors import map_domain_error_openai, openai_error_response
+            from ..protocols.errors import openai_domain_error_response
 
-            status, error_type, code = map_domain_error_openai(exc)
-            return openai_error_response(
-                exc.message or "请求无法处理",
-                error_type=error_type,
-                code=code,
-                status_code=status,
-            )
+            return openai_domain_error_response(exc)
         status, code, action = _DOMAIN_MAPPING.get(
             exc.code, (500, ApiErrorCode.INTERNAL_ERROR, ApiErrorAction.VIEW_LOGS)
         )

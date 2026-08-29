@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..core.db import get_db
 from ..core.time import iso_utc
@@ -250,14 +251,14 @@ def update_connection(
 
 
 @router.delete("/{connection_id}", status_code=204)
-def delete_connection(
+async def delete_connection(
     connection_id: int,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
-    row = _get_visible_connection(db, connection_id, user)
-    _service.delete(db, row=row, actor_user_id=user.id)
-    db.commit()
+    row = await run_in_threadpool(_get_visible_connection, db, connection_id, user)
+    await _service.delete(db, row=row, actor_user_id=user.id)
+    await run_in_threadpool(db.commit)
     return Response(status_code=204)
 
 
@@ -272,11 +273,11 @@ async def start_connection(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> ConnectionView:
-    row = _get_visible_connection(db, connection_id, user)
+    row = await run_in_threadpool(_get_visible_connection, db, connection_id, user)
     await _service.start(db, row=row, actor_user_id=user.id)
-    db.commit()
-    db.refresh(row)
-    return _view(db, row)
+    await run_in_threadpool(db.commit)
+    await run_in_threadpool(db.refresh, row)
+    return await run_in_threadpool(_view, db, row)
 
 
 @router.post("/{connection_id}/stop", response_model=ConnectionView)
@@ -285,11 +286,11 @@ async def stop_connection(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> ConnectionView:
-    row = _get_visible_connection(db, connection_id, user)
+    row = await run_in_threadpool(_get_visible_connection, db, connection_id, user)
     await _service.stop(db, row=row, actor_user_id=user.id)
-    db.commit()
-    db.refresh(row)
-    return _view(db, row)
+    await run_in_threadpool(db.commit)
+    await run_in_threadpool(db.refresh, row)
+    return await run_in_threadpool(_view, db, row)
 
 
 @router.post("/{connection_id}/apply", response_model=ConnectionView)
@@ -298,11 +299,11 @@ async def apply_connection(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> ConnectionView:
-    row = _get_visible_connection(db, connection_id, user)
+    row = await run_in_threadpool(_get_visible_connection, db, connection_id, user)
     await _service.apply(db, row=row, actor_user_id=user.id)
-    db.commit()
-    db.refresh(row)
-    return _view(db, row)
+    await run_in_threadpool(db.commit)
+    await run_in_threadpool(db.refresh, row)
+    return await run_in_threadpool(_view, db, row)
 
 
 @router.get("/{connection_id}/health", response_model=ConnectionHealth)

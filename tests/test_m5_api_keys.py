@@ -20,7 +20,15 @@ _TIMEOUT_MESSAGE = "人工超时时间必须在 10 到 1800 秒之间"
 
 
 def _login(client, username: str, password: str) -> dict:
-    response = client.post("/api/auth/login", json={"username": username, "password": password})
+    response = client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": password,
+            "captcha_token": "test-token",
+            "captcha_code": "test",
+        },
+    )
     assert response.status_code == 200, response.text
     return {"Authorization": f"Bearer {response.json()['access_token']}"}
 

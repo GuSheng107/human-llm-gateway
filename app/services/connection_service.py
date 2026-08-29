@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from ..connectors.base import Connector, InboundMessage
 from ..connectors.registry import ConnectorRegistry, default_registry
@@ -221,18 +222,24 @@ class ConnectionService:
             )
         return row
 
-    def delete(self, session: Session, *, row: ImConnection, actor_user_id: int) -> None:
+    async def delete(self, session: Session, *, row: ImConnection, actor_user_id: int) -> None:
 
-        references = self.repo.count_enabled_api_key_references(session, row.id)
+        references = await run_in_threadpool(
+            self.repo.count_enabled_api_key_references, session, row.id
+        )
         if references:
             raise DomainError(
                 DomainErrorCode.CONFLICT,
                 "连接仍被启用的 API Key 引用，请先改用 Web 入口或停用 Key",
                 status_code=409,
             )
+        # 先停止运行中的连接器，避免软删后线程/长连接泄漏并继续接收入站消息。
+        from ..connectors import connection_manager as manager
+
+        await manager.stop(row.id)
         row.desired_running = False
-        session.flush()
-        self.repo.soft_delete(session, row.id)
+        await run_in_threadpool(session.flush)
+        await run_in_threadpool(self.repo.soft_delete, session, row.id)
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_DELETED,
@@ -253,9 +260,9 @@ class ConnectionService:
         from ..connectors import connection_manager as manager
 
         row.desired_running = True
-        session.flush()
+        await run_in_threadpool(session.flush)
         await manager.start(row, self.decrypt_config(row), self.inbound_handler())
-        session.refresh(row)
+        await run_in_threadpool(session.refresh, row)
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_STARTED,
@@ -275,9 +282,9 @@ class ConnectionService:
         row.desired_running = False
         row.state = ConnectionState.STOPPED
         row.next_retry_at = None
-        session.flush()
+        await run_in_threadpool(session.flush)
         await manager.stop(row.id)
-        session.refresh(row)
+        await run_in_threadpool(session.refresh, row)
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_STOPPED,
@@ -298,11 +305,11 @@ class ConnectionService:
         await manager.stop(row.id)
         if row.desired_running:
             await manager.start(row, self.decrypt_config(row), self.inbound_handler())
-            session.refresh(row)
+            await run_in_threadpool(session.refresh, row)
         else:
             row.state = ConnectionState.STOPPED
-            session.flush()
-            session.refresh(row)
+            await run_in_threadpool(session.flush)
+            await run_in_threadpool(session.refresh, row)
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_APPLIED,

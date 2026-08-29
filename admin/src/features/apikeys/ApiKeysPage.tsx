@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { createApiKey, deleteApiKey, listApiKeys, updateApiKey } from "../../api/apiKeys";
-import { listConnections } from "../../api/connections";
+import { listAllConnections, listPlatforms } from "../../api/connections";
 import { listFakeModels, listModelGroups } from "../../api/models";
 import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
@@ -31,6 +31,7 @@ export function ApiKeysPage() {
   const { user } = useAuth();
   const [items, setItems] = useState<ApiKey[]>([]);
   const [connections, setConnections] = useState<ImConnection[]>([]);
+  const [deliveryPlatforms, setDeliveryPlatforms] = useState<Set<string>>(new Set());
   const [groups, setGroups] = useState<ModelGroup[]>([]);
   const [models, setModels] = useState<{ id: string; model_id: string }[]>([]);
   const [page, setPage] = useState(1);
@@ -48,6 +49,8 @@ export function ApiKeysPage() {
     model_group_id: string;
     fake_model_ids: number[];
   } | null>(null);
+  const [formError, setFormError] = useState("");
+  const [saving, setSaving] = useState(false);
   const [created, setCreated] = useState<ApiKeyCreated | null>(null);
   const isAdmin = user?.role === "admin";
 
@@ -55,15 +58,19 @@ export function ApiKeysPage() {
     setLoading(true);
     setError("");
     try {
-      const [list, connectionPage, groupPage, modelPage] = await Promise.all([
+      const [list, allConnections, groupPage, modelPage, platformList] = await Promise.all([
         listApiKeys(page),
-        listConnections(1),
+        listAllConnections(),
         listModelGroups(),
         listFakeModels(),
+        listPlatforms(),
       ]);
       setItems(list.items);
       setTotal(list.total);
-      setConnections(connectionPage.items);
+      setConnections(allConnections);
+      setDeliveryPlatforms(
+        new Set(platformList.filter((spec) => spec.supports_delivery).map((spec) => spec.code)),
+      );
       setGroups(groupPage.items);
       setModels(modelPage.items.map((item) => ({ id: item.id, model_id: item.model_id })));
     } catch (caught) {
@@ -75,7 +82,8 @@ export function ApiKeysPage() {
 
   useEffect(() => void load(), [load]);
 
-  const openCreate = () =>
+  const openCreate = () => {
+    setFormError("");
     setForm({
       name: "",
       enabled: true,
@@ -86,8 +94,10 @@ export function ApiKeysPage() {
       model_group_id: "",
       fake_model_ids: [],
     });
+  };
 
-  const openEdit = (key: ApiKey) =>
+  const openEdit = (key: ApiKey) => {
+    setFormError("");
     setForm({
       id: key.id,
       name: key.name,
@@ -99,6 +109,7 @@ export function ApiKeysPage() {
       model_group_id: key.model_group_id ?? "",
       fake_model_ids: key.fake_model_ids.map(Number),
     });
+  };
 
   const submit = async () => {
     if (!form) return;
@@ -112,29 +123,43 @@ export function ApiKeysPage() {
       model_group_id: form.model_group_id ? Number(form.model_group_id) : null,
       fake_model_ids: form.fake_model_ids,
     };
-    if (form.id) {
-      await updateApiKey(form.id, payload);
-      notify("API Key 已更新");
+    setSaving(true);
+    setFormError("");
+    try {
+      if (form.id) {
+        await updateApiKey(form.id, payload);
+        notify("API Key 已更新");
+      } else {
+        setCreated(await createApiKey(payload));
+      }
       setForm(null);
       await load();
-      return;
+    } catch (caught) {
+      setFormError(caught instanceof Error ? caught.message : "保存失败");
+    } finally {
+      setSaving(false);
     }
-    setCreated(await createApiKey(payload));
-    setForm(null);
-    await load();
   };
 
   const toggle = async (key: ApiKey) => {
-    await updateApiKey(key.id, { enabled: !key.is_enabled });
-    notify(key.is_enabled ? "Key 已停用" : "Key 已启用");
-    await load();
+    try {
+      await updateApiKey(key.id, { enabled: !key.is_enabled });
+      notify(key.is_enabled ? "Key 已停用" : "Key 已启用");
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "操作失败");
+    }
   };
 
   const remove = async (key: ApiKey) => {
     if (!window.confirm(`确认删除 Key「${key.name}」？删除后立即阻止新请求。`)) return;
-    await deleteApiKey(key.id);
-    notify("Key 已删除");
-    await load();
+    try {
+      await deleteApiKey(key.id);
+      notify("Key 已删除");
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "删除失败");
+    }
   };
 
   return (
@@ -260,11 +285,17 @@ export function ApiKeysPage() {
                     className="field-input"
                   >
                     <option value="">请选择连接</option>
-                    {connections.map((connection) => (
-                      <option key={connection.id} value={connection.id}>
-                        {connection.name}
-                      </option>
-                    ))}
+                    {connections
+                      .filter(
+                        (connection) =>
+                          (connection.bound && deliveryPlatforms.has(connection.platform)) ||
+                          connection.id === form.im_connection_id,
+                      )
+                      .map((connection) => (
+                        <option key={connection.id} value={connection.id}>
+                          {connection.name}
+                        </option>
+                      ))}
                   </select>
                 </label>
               )}
@@ -284,8 +315,12 @@ export function ApiKeysPage() {
                   className="field-input"
                 >
                   <option value="human">人工回复</option>
-                  <option value="human_fallback_llm">人工优先，超时降级 LLM</option>
-                  <option value="llm">直接转发 LLM</option>
+                  <option value="human_fallback_llm" disabled={form.reply_strategy !== "human_fallback_llm"}>
+                    人工优先，超时降级 LLM（LLM 配置上线后开放）
+                  </option>
+                  <option value="llm" disabled={form.reply_strategy !== "llm"}>
+                    直接转发 LLM（LLM 配置上线后开放）
+                  </option>
                 </select>
               </label>
               <label className="block">
@@ -359,12 +394,19 @@ export function ApiKeysPage() {
               </label>
             )}
 
+            {formError && (
+              <p className="rounded-md border border-red-100 bg-red-50 px-3 py-2 text-xs text-red-600">
+                {formError}
+              </p>
+            )}
+
             <div className="flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setForm(null)}>
                 取消
               </Button>
               <Button
                 onClick={() => void submit()}
+                loading={saving}
                 disabled={
                   !form.name.trim() ||
                   (form.delivery_mode === "im" && !form.im_connection_id)

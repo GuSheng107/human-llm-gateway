@@ -344,12 +344,14 @@ class ConnectionRepository:
         existing = self.get_receipt(session, connection_id, external_message_id)
         if existing is not None:
             return None
-        session.add(row)
         try:
-            session.flush()
+            # 仅回滚回执插入（SAVEPOINT），不破坏调用方事务内的其他工作。
+            with session.begin_nested():
+                session.add(row)
+                session.flush()
         except IntegrityError:
-            # 并发重复：回滚当前事务并只返回幂等裁决，不抛业务错误。
-            session.rollback()
+            # 并发重复：只返回幂等裁决，不抛业务错误。
+            session.expunge(row)
             return None
         return row
 

@@ -39,10 +39,10 @@ export function ConnectionFormModal({
     setSaving(true);
     setError("");
     try {
-      const payload = { name: name.trim(), platform, config };
+      // 编辑接口不接受 platform（平台不可变更），否则后端严格校验返回 422。
       const saved = connection
-        ? await updateConnection(connection.id, payload)
-        : await createConnection(payload);
+        ? await updateConnection(connection.id, { name: name.trim(), config })
+        : await createConnection({ name: name.trim(), platform, config });
       notify(connection ? "连接已更新" : "连接已创建");
       onSaved(saved);
     } catch (caught) {

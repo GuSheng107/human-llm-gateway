@@ -50,37 +50,53 @@ export function ModelsPage() {
 
   const submitModel = async () => {
     if (!modelForm) return;
-    await createFakeModel({
-      model_id: modelForm.model_id.trim(),
-      display_name: modelForm.display_name.trim() || null,
-    });
-    notify("模型已创建");
-    setModelForm(null);
-    await load();
+    try {
+      await createFakeModel({
+        model_id: modelForm.model_id.trim(),
+        display_name: modelForm.display_name.trim() || null,
+      });
+      notify("模型已创建");
+      setModelForm(null);
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "创建失败");
+    }
   };
 
   const submitGroup = async () => {
     if (!groupForm) return;
-    await createModelGroup({
-      name: groupForm.name.trim(),
-      description: groupForm.description.trim() || null,
-    });
-    notify("分组已创建");
-    setGroupForm(null);
-    await load();
+    try {
+      await createModelGroup({
+        name: groupForm.name.trim(),
+        description: groupForm.description.trim() || null,
+      });
+      notify("分组已创建");
+      setGroupForm(null);
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "创建失败");
+    }
   };
 
   const toggleModel = async (model: FakeModel) => {
-    await updateFakeModel(model.id, { enabled: !model.is_enabled });
-    notify(model.is_enabled ? "模型已停用" : "模型已启用");
-    await load();
+    try {
+      await updateFakeModel(model.id, { enabled: !model.is_enabled });
+      notify(model.is_enabled ? "模型已停用" : "模型已启用");
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "操作失败");
+    }
   };
 
   const removeModel = async (model: FakeModel) => {
     if (!window.confirm(`确认删除模型「${model.model_id}」？`)) return;
-    await deleteFakeModel(model.id);
-    notify("模型已删除");
-    await load();
+    try {
+      await deleteFakeModel(model.id);
+      notify("模型已删除");
+      await load();
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "删除失败");
+    }
   };
 
   const openMembers = (group: ModelGroup) => {

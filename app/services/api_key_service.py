@@ -122,6 +122,8 @@ class ApiKeyService:
         self, session: Session, *, row: ApiKey, actor: User, fields: dict[str, Any]
     ) -> ApiKey:
         """PATCH：只修改显式提交的字段。"""
+        # 读-改-写（含 replace_key_models 删除+插入）需先取写锁，避免 SQLite 锁升级竞争。
+        begin_immediate_if_sqlite(session)
         owner_id = row.owner_user_id
         changed: list[str] = []
         if "name" in fields:

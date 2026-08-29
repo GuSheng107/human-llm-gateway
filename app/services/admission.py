@@ -23,10 +23,11 @@ class AdmissionService:
         """原子占用用户活动任务名额；超过上限返回协议兼容 429。"""
         if not key.is_enabled or key.deleted_at is not None:
             raise DomainError(DomainErrorCode.INVALID_API_KEY, "API Key 无效", status_code=401)
+        # 在任何读取前取得写锁，避免事务升级竞争（先锁后读）。
+        begin_immediate_if_sqlite(session)
         session.refresh(owner)
         if not owner.is_active:
             raise DomainError(DomainErrorCode.INVALID_API_KEY, "API Key 无效", status_code=401)
-        begin_immediate_if_sqlite(session)
         if not self.users.atomic_acquire_slot(session, owner.id):
             # 与禁用用户竞争时按 401 处理，其余情况才是真实的并发上限。
             session.refresh(owner)
