@@ -86,7 +86,9 @@ def _to_summary(user: User) -> CurrentUser:
             ]
         )
         if user.role is UserRole.ADMIN:
-            capabilities.extend([Capability.INVITATION_MANAGE, Capability.USER_MANAGE])
+            capabilities.extend(
+                [Capability.INVITATION_MANAGE, Capability.USER_MANAGE, Capability.LOGS_MANAGE]
+            )
     return CurrentUser(
         id=str(user.id),
         username=user.username,

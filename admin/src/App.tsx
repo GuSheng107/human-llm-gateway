@@ -12,6 +12,7 @@ import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { ModelsPage } from "./features/models/ModelsPage";
 import { LlmConfigsPage } from "./features/llm/LlmConfigsPage";
 import { InvitationsPage } from "./features/invitations/InvitationsPage";
+import { LogsPage } from "./features/logs/LogsPage";
 import { AssistantPanel } from "./features/assistant/AssistantPanel";
 import { AssistantProvider } from "./features/assistant/AssistantContext";
 import { AccountPage } from "./features/settings/AccountPage";
@@ -98,6 +99,7 @@ export default function App() {
     apiKeys: <ApiKeysPage />,
     models: <ModelsPage />,
     llmConfigs: <LlmConfigsPage />,
+    logs: <LogsPage />,
     invitations: <InvitationsPage />,
     users: <UsersPage />,
     account: <AccountPage />,

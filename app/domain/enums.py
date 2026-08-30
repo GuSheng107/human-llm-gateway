@@ -20,6 +20,7 @@ class Capability(StrEnum):
     CONNECTION_MANAGE = "connection.manage"
     MODEL_MANAGE = "model.manage"
     API_KEY_MANAGE = "api_key.manage"
+    LOGS_MANAGE = "logs.manage"
 
 
 class ConnectionState(StrEnum):

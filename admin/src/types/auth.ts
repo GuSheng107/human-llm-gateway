@@ -5,7 +5,8 @@ export type Capability =
   | "user.manage"
   | "connection.manage"
   | "model.manage"
-  | "api_key.manage";
+  | "api_key.manage"
+  | "logs.manage";
 
 export interface CurrentUser {
   id: string;

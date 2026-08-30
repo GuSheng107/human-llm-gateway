@@ -74,6 +74,46 @@ class AuditRepository:
         session.add(row)
         return row
 
+    def list_page(
+        self,
+        session: Session,
+        *,
+        page: int,
+        page_size: int,
+        actor_user_id: int | None = None,
+        resource_type: str | None = None,
+        action: str | None = None,
+        owner_user_id: int | None = None,
+        hours: int | None = None,
+    ) -> tuple[list[AuditLog], int]:
+        """管理员审计检索：按操作者/资源/动作/所有者/时间窗筛选。"""
+        from sqlalchemy import func, select
+
+        filters: list[Any] = []
+        if actor_user_id is not None:
+            filters.append(AuditLog.actor_user_id == actor_user_id)
+        if resource_type:
+            filters.append(AuditLog.resource_type == resource_type)
+        if action:
+            filters.append(AuditLog.action == action)
+        if owner_user_id is not None:
+            filters.append(AuditLog.owner_user_id == owner_user_id)
+        if hours is not None and hours > 0:
+            from datetime import timedelta
+
+            filters.append(AuditLog.created_at >= _now() - timedelta(hours=hours))
+        total = session.scalar(select(func.count()).select_from(AuditLog).where(*filters)) or 0
+        rows = list(
+            session.scalars(
+                select(AuditLog)
+                .where(*filters)
+                .order_by(AuditLog.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        return rows, total
+
 
 class AppLogRepository:
     def add(
@@ -105,3 +145,49 @@ class AppLogRepository:
         )
         session.add(row)
         return row
+
+    def list_page(
+        self,
+        session: Session,
+        *,
+        page: int,
+        page_size: int,
+        level: str | None = None,
+        event: str | None = None,
+        user_id: int | None = None,
+        task_id: int | None = None,
+        api_key_id: int | None = None,
+        connection_id: int | None = None,
+        hours: int | None = None,
+    ) -> tuple[list[AppLog], int]:
+        """管理员应用日志检索：按级别/事件/关联 ID/时间窗筛选。"""
+        from sqlalchemy import func, select
+
+        filters: list[Any] = []
+        if level:
+            filters.append(AppLog.level == level)
+        if event:
+            filters.append(AppLog.event == event)
+        if user_id is not None:
+            filters.append(AppLog.user_id == user_id)
+        if task_id is not None:
+            filters.append(AppLog.task_id == task_id)
+        if api_key_id is not None:
+            filters.append(AppLog.api_key_id == api_key_id)
+        if connection_id is not None:
+            filters.append(AppLog.connection_id == connection_id)
+        if hours is not None and hours > 0:
+            from datetime import timedelta
+
+            filters.append(AppLog.created_at >= _now() - timedelta(hours=hours))
+        total = session.scalar(select(func.count()).select_from(AppLog).where(*filters)) or 0
+        rows = list(
+            session.scalars(
+                select(AppLog)
+                .where(*filters)
+                .order_by(AppLog.id.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        )
+        return rows, total
