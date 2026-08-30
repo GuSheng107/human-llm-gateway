@@ -26,16 +26,16 @@ from app.services.inference_service import InferenceService
 
 
 def _chat_payload(**extra: Any) -> dict[str, Any]:
-    return {"model": "human-gateway", "messages": [{"role": "user", "content": "hi"}], **extra}
+    return {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": "hi"}], **extra}
 
 
 def _responses_payload(**extra: Any) -> dict[str, Any]:
-    return {"model": "human-gateway", "input": "hi", **extra}
+    return {"model": "deepseek-v4-pro", "input": "hi", **extra}
 
 
 def _anthropic_payload(**extra: Any) -> dict[str, Any]:
     return {
-        "model": "human-gateway",
+        "model": "deepseek-v4-pro",
         "max_tokens": 128,
         "messages": [{"role": "user", "content": "hi"}],
         **extra,
@@ -142,7 +142,7 @@ def test_anthropic_parse_requires_positive_max_tokens() -> None:
         _anthropic_payload(max_tokens=True),
         _anthropic_payload(max_tokens="128"),
         _anthropic_payload(messages=[]),
-        {"model": "human-gateway", "max_tokens": 128, "messages": []},
+        {"model": "deepseek-v4-pro", "max_tokens": 128, "messages": []},
     ):
         error = _parse_error(payload, anthropic_protocol.parse_request)
         assert error.code is DomainErrorCode.INVALID_REQUEST
@@ -170,9 +170,9 @@ def test_anthropic_parse_system_accepts_string_or_blocks() -> None:
 
 
 def test_chat_render_response_full_draft() -> None:
-    body = chat_protocol.render_response("human-gateway", _FULL_DRAFT)
+    body = chat_protocol.render_response("deepseek-v4-pro", _FULL_DRAFT)
     assert body["object"] == "chat.completion"
-    assert body["model"] == "human-gateway"
+    assert body["model"] == "deepseek-v4-pro"
     message = body["choices"][0]["message"]
     assert message["role"] == "assistant"
     assert message["content"] == "今天晴"
@@ -186,7 +186,7 @@ def test_chat_render_response_full_draft() -> None:
 
 
 def test_chat_render_response_text_only_stops() -> None:
-    body = chat_protocol.render_response("human-gateway", ReplyDraft(final_text="ok"))
+    body = chat_protocol.render_response("deepseek-v4-pro", ReplyDraft(final_text="ok"))
     message = body["choices"][0]["message"]
     assert "reasoning_content" not in message
     assert "tool_calls" not in message
@@ -194,7 +194,7 @@ def test_chat_render_response_text_only_stops() -> None:
 
 
 def test_chat_stream_frames_order_and_done() -> None:
-    frames = list(chat_protocol.stream_frames("human-gateway", _FULL_DRAFT))
+    frames = list(chat_protocol.stream_frames("deepseek-v4-pro", _FULL_DRAFT))
     assert frames[-1].data == "[DONE]"
     payloads = [json.loads(frame.data) for frame in frames[:-1]]
     deltas = [item["choices"][0]["delta"] for item in payloads]
@@ -203,7 +203,7 @@ def test_chat_stream_frames_order_and_done() -> None:
     assert any("tool_calls" in delta for delta in deltas)
     assert any(delta.get("content") == "今天晴" for delta in deltas)
     assert payloads[-1]["choices"][0]["finish_reason"] == "tool_calls"
-    assert all(item["model"] == "human-gateway" for item in payloads)
+    assert all(item["model"] == "deepseek-v4-pro" for item in payloads)
 
 
 def test_responses_output_items_order() -> None:
@@ -216,13 +216,13 @@ def test_responses_output_items_order() -> None:
 
 
 def test_responses_render_and_stream_events() -> None:
-    body = responses_protocol.render_response("human-gateway", "resp_abc", _FULL_DRAFT)
+    body = responses_protocol.render_response("deepseek-v4-pro", "resp_abc", _FULL_DRAFT)
     assert body["id"] == "resp_abc"
     assert body["object"] == "response"
     assert body["status"] == "completed"
     assert [item["type"] for item in body["output"]] == ["reasoning", "function_call", "message"]
 
-    events = list(responses_protocol.stream_events("human-gateway", "resp_abc", _FULL_DRAFT))
+    events = list(responses_protocol.stream_events("deepseek-v4-pro", "resp_abc", _FULL_DRAFT))
     names = [event.event for event in events]
     assert names[0] == "response.created"
     assert names[1] == "response.in_progress"
@@ -238,7 +238,7 @@ def test_responses_render_and_stream_events() -> None:
 
 
 def test_anthropic_render_response_full_draft() -> None:
-    body = anthropic_protocol.render_response("human-gateway", _FULL_DRAFT)
+    body = anthropic_protocol.render_response("deepseek-v4-pro", _FULL_DRAFT)
     assert body["type"] == "message"
     assert body["role"] == "assistant"
     assert [block["type"] for block in body["content"]] == ["thinking", "tool_use", "text"]
@@ -251,7 +251,7 @@ def test_anthropic_render_response_full_draft() -> None:
 
 
 def test_anthropic_stream_events_order() -> None:
-    events = list(anthropic_protocol.stream_events("human-gateway", _FULL_DRAFT))
+    events = list(anthropic_protocol.stream_events("deepseek-v4-pro", _FULL_DRAFT))
     names = [event.event for event in events]
     assert names[0] == "message_start"
     assert names[-1] == "message_stop"

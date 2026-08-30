@@ -127,13 +127,13 @@ def test_identity_message_from_description() -> None:
         id=1,
         scope=None,
         owner_user_id=None,
-        model_id="human-gateway",
+        model_id="deepseek-v4-pro",
         display_name="网关模型",
         owned_by="gateway",
         description="你是专业翻译助手。",
     )
-    message = identity_system_message(model, "human-gateway")
-    assert message.startswith("[human-gateway]")
+    message = identity_system_message(model, "deepseek-v4-pro")
+    assert message.startswith("[deepseek-v4-pro]")
     assert "你是专业翻译助手。" in message
 
 
@@ -142,19 +142,19 @@ def test_identity_message_fallback_without_description() -> None:
         id=1,
         scope=None,
         owner_user_id=None,
-        model_id="human-gateway",
+        model_id="deepseek-v4-pro",
         display_name=None,
         owned_by="gateway",
         description=None,
     )
-    message = identity_system_message(model, "human-gateway")
-    assert message.startswith("[human-gateway]")
+    message = identity_system_message(model, "deepseek-v4-pro")
+    assert message.startswith("[deepseek-v4-pro]")
     assert "helpful assistant" in message
 
 
 def test_identity_message_none_model() -> None:
-    message = identity_system_message(None, "human-gateway")
-    assert message.startswith("[human-gateway]")
+    message = identity_system_message(None, "deepseek-v4-pro")
+    assert message.startswith("[deepseek-v4-pro]")
 
 
 def test_inject_identity_chat_appends_to_existing_system() -> None:
@@ -212,7 +212,7 @@ def test_llm_strategy_direct_forward_non_stream(client, created_user) -> None:
 
     async def fake_post(**kwargs: Any) -> dict[str, Any]:
         messages = kwargs["request_body"]["messages"]
-        assert any(m["role"] == "system" and "human-gateway" in m["content"] for m in messages)
+        assert any(m["role"] == "system" and "deepseek-v4-pro" in m["content"] for m in messages)
         return _chat_upstream_ok(**kwargs)
 
     with patch(_UPSTREAM_CHAT, side_effect=fake_post):
@@ -220,13 +220,13 @@ def test_llm_strategy_direct_forward_non_stream(client, created_user) -> None:
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": "你好"}],
             },
         )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["model"] == "human-gateway"
+    assert body["model"] == "deepseek-v4-pro"
     assert body["choices"][0]["message"]["content"] == "上游转发回答"
 
 
@@ -255,7 +255,7 @@ def test_llm_strategy_direct_forward_stream(client, created_user) -> None:
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "stream": True,
                 "messages": [{"role": "user", "content": "hi"}],
             },
@@ -288,7 +288,7 @@ def test_llm_strategy_upstream_failure_returns_500(client, created_user) -> None
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
@@ -317,7 +317,7 @@ def test_llm_strategy_task_state_transitions(client, created_user) -> None:
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
@@ -333,7 +333,7 @@ def test_llm_strategy_task_state_transitions(client, created_user) -> None:
 
 
 def _make_task(api_key_id: int, user_id: int) -> int:
-    payload = {"model": "human-gateway", "messages": [{"role": "user", "content": "hi"}]}
+    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     with database.SessionLocal() as session:
@@ -486,14 +486,14 @@ def test_cross_protocol_forward_chat_to_anthropic(client, created_user) -> None:
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )
     assert resp.status_code == 200, resp.text
     # 响应仍是调用方协议（Chat），model 为 Fake Model
     body = resp.json()
-    assert body["model"] == "human-gateway"
+    assert body["model"] == "deepseek-v4-pro"
     assert body["choices"][0]["message"]["content"] == "跨协议转发回答"
     row = _latest_task(int(key["id"]))
     assert row.state is TaskState.COMPLETED
@@ -521,7 +521,7 @@ def test_cross_protocol_forward_rejects_unequivalent_field(client, created_user)
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": "hi"}],
                 "response_format": {"type": "json_object"},
             },
@@ -583,7 +583,7 @@ def test_forward_upstream_tool_calls_recorded_not_executed(client, created_user)
             "/v1/chat/completions",
             headers=_bearer(key["plaintext"]),
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": "hi"}],
             },
         )

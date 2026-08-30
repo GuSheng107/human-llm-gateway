@@ -46,7 +46,7 @@ def _make_fallback_task(client, user_headers, api_key_id: int, user_id: int) -> 
             "llm_config_id": int(cfg["id"]),
         },
     ).json()
-    payload = {"model": "human-gateway", "messages": [{"role": "user", "content": "hi"}]}
+    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     with database.SessionLocal() as session:

@@ -138,8 +138,8 @@ export function ModelsPage() {
         title="模型目录"
         description={
           isAdmin
-            ? "管理员维护全局系统模型，也可治理用户私有模型与分组。"
-            : "系统 Fake Model 全局可见，私有模型只有你自己可见并可被调用。"
+            ? "维护系统模型与分组"
+            : "系统模型所有人都能用，你自己建的模型只有你能用"
         }
         actions={
           <>
@@ -211,7 +211,7 @@ export function ModelsPage() {
       <Card>
         <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-700">模型分组</h2>
-          <span className="text-xs text-slate-400">第一层候选集筛选</span>
+          <span className="text-xs text-slate-400">Key 可按分组批量选用模型</span>
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-[720px] w-full text-left text-xs">
@@ -260,7 +260,7 @@ export function ModelsPage() {
       {modelForm && (
         <Modal
           title="新建 Fake Model"
-          description={isAdmin ? "管理员创建的是全局系统模型。" : "普通用户创建的是仅自己可见的私有模型。"}
+          description={isAdmin ? "创建后所有人都能用" : "创建后只有你能用"}
           onClose={() => setModelForm(null)}
         >
           <div className="space-y-4 p-6">
@@ -306,7 +306,7 @@ export function ModelsPage() {
       )}
 
       {groupForm && (
-        <Modal title="新建模型分组" description="分组用于预筛 Key 的候选模型集合。" onClose={() => setGroupForm(null)}>
+        <Modal title="新建模型分组" description="把常用模型归成一组，方便 Key 一起选用" onClose={() => setGroupForm(null)}>
           <div className="space-y-4 p-6">
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-slate-600">分组名称</span>
@@ -348,7 +348,7 @@ export function ModelsPage() {
       {editingGroup && (
         <Modal
           title={`分组成员 · ${editingGroup.name}`}
-          description="只能选择当前用户可见的模型；提交后原子替换。"
+          description="勾选组内模型，保存后替换。"
           onClose={() => setEditingGroup(null)}
         >
           <div className="max-h-80 space-y-2 overflow-y-auto p-6">

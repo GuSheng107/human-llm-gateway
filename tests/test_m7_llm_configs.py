@@ -386,7 +386,7 @@ def test_delete_when_active_task_references_returns_409(client, created_user, cr
     from app.repositories.models import RequestTask
 
     payload = {
-        "model": "human-gateway",
+        "model": "deepseek-v4-pro",
         "messages": [{"role": "user", "content": "x"}],
     }
     raw = json.dumps(payload).encode()

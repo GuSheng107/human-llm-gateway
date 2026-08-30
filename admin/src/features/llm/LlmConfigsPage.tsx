@@ -212,7 +212,7 @@ export function LlmConfigsPage() {
     <div className="space-y-5">
       <PageHeader
         title="LLM 管理"
-        description="维护真实 LLM 配置：协议、Base URL、模型、超时与自定义 Header。"
+        description="配置转发用的真实 LLM：协议、地址、模型、超时与自定义 Header"
       />
 
       <Card>
@@ -347,7 +347,7 @@ export function LlmConfigsPage() {
       {form && (
         <Modal
           title={form.id ? "编辑 LLM 配置" : "新建 LLM 配置"}
-          description="Secret 与自定义 Header 仅在写入时记录，列表和详情不回显。"
+          description="密钥与自定义 Header 只写不读，保存后不再展示。"
           onClose={() => setForm(null)}
         >
           <div className="space-y-4 p-6">
@@ -484,7 +484,7 @@ export function LlmConfigsPage() {
                 checked={form.enabled}
                 onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
               />
-              启用（停用后无法发起测试与转发）
+              启用（停用后不能测试和转发）
             </label>
 
             {formError && (

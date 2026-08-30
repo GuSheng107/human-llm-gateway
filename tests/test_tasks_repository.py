@@ -68,7 +68,7 @@ def _make_task(session, user: User, key: ApiKey, state: TaskState) -> RequestTas
         owner_user_id=user.id,
         api_key_id=key.id,
         api_key_prefix_snapshot="prefix",
-        requested_model="human-gateway",
+        requested_model="deepseek-v4-pro",
         protocol=InferenceProtocol.OPENAI_CHAT,
         raw_payload_json="{}",
         normalized_request_json="{}",

@@ -460,7 +460,7 @@ def _seed_key_and_task(
             owner_user_id=owner_user_id,
             api_key_id=key.id,
             api_key_prefix_snapshot=key.key_prefix,
-            requested_model="human-gateway",
+            requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json='{"messages":[{"role":"user","content":"你好"}]}',
             normalized_request_json='{"messages":[{"role":"user","content":"你好"}],"tools":[]}',

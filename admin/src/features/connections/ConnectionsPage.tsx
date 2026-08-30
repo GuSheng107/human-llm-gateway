@@ -123,11 +123,7 @@ export function ConnectionsPage() {
     <div className="space-y-5">
       <PageHeader
         title="连接 IM"
-        description={
-          isAdmin
-            ? "管理员可查看、检查、启停和删除全部连接，但不能创建或绑定。"
-            : "创建并管理自己的 IM 连接；一个连接可被多个 API Key 选择。"
-        }
+        description={isAdmin ? "查看、检查、启停和删除全部连接" : "创建并管理自己的 IM 连接"}
         actions={
           !isAdmin && (
             <Button onClick={() => setEditing(null)} disabled={platforms.length === 0}>
@@ -238,7 +234,7 @@ export function ConnectionsPage() {
       )}
 
       {health && (
-        <Modal title="连接健康" description="数据库持久状态 + 运行时瞬时状态" onClose={() => setHealth(null)}>
+        <Modal title="连接健康" description="保存的状态与当前运行情况" onClose={() => setHealth(null)}>
           <div className="space-y-3 p-6 text-xs text-slate-600">
             <div className="flex items-center justify-between rounded-md border border-slate-200 px-3 py-2">
               <span>状态</span>

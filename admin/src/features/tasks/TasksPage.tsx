@@ -64,7 +64,7 @@ export function TasksPage() {
     <div className="space-y-5">
       <PageHeader
         title="任务工作台"
-        description={isAdmin ? "全局任务监控（脱敏视图，只读）" : "处理你的人工任务并提交回复"}
+        description={isAdmin ? "全部任务（只读）" : "处理你的人工任务并提交回复"}
       />
 
       <Card>

@@ -26,7 +26,7 @@ def _make_task(
     llm_config_id: int | None = None,
 ) -> int:
     """经编排服务创建任务；先改 Key 快照源（delivery/strategy/connection）再建任务。"""
-    payload = {"model": "human-gateway", "messages": [{"role": "user", "content": "hi"}]}
+    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": "hi"}]}
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     from sqlalchemy import update as sa_update

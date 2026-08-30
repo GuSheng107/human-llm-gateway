@@ -46,7 +46,7 @@ def _make_waiting_task(
     content: str = "hello",
 ) -> int:
     """直接经编排服务创建一个 WAITING_HUMAN 任务并返回其 id。"""
-    payload = {"model": "human-gateway", "messages": [{"role": "user", "content": content}]}
+    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": content}]}
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     service = InferenceService()
@@ -620,7 +620,7 @@ def test_task_list_filter_by_state(client, created_user, created_key) -> None:
 def test_task_list_search_by_model(client, created_user, created_key) -> None:
     _make_waiting_task(created_key.id, created_user.user_id)
     resp = client.get(
-        "/api/tasks?search=human-gateway",
+        "/api/tasks?search=deepseek-v4-pro",
         headers=created_user.headers,
     )
     assert resp.status_code == 200

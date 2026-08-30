@@ -55,7 +55,7 @@ export function ForcePasswordPage() {
             !
           </div>
           <h1 className="text-xl font-semibold text-slate-800">首次登录需要修改密码</h1>
-          <p className="mt-2 text-xs leading-5 text-slate-400">当前会话仅允许修改密码。</p>
+          <p className="mt-2 text-xs leading-5 text-slate-400">改完即可进入控制台。</p>
         </div>
         <form onSubmit={submit} className="space-y-4">
           <FormField label="当前临时密码" required>

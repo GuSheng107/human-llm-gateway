@@ -45,7 +45,7 @@ def test_user_sees_system_models_and_own_private_models(client, admin_headers) -
     headers = _create_user(client, admin_headers, "model-user")
     listed = client.get("/api/fake-models", headers=headers).json()
     model_ids = {item["model_id"] for item in listed["items"]}
-    assert {"human-gateway", "human-gateway-fast"} <= model_ids
+    assert {"deepseek-v4-pro", "deepseek-v4-flash"} <= model_ids
 
     private = _model(client, headers, "my-private-model", display_name="私有模型")
     assert private["scope"] == "private"
@@ -63,10 +63,10 @@ def test_user_sees_system_models_and_own_private_models(client, admin_headers) -
 
 def test_private_model_shadows_system_model_for_owner(client, admin_headers) -> None:
     headers = _create_user(client, admin_headers, "shadow-user")
-    shadow = _model(client, headers, "human-gateway", display_name="我的同名模型")
+    shadow = _model(client, headers, "deepseek-v4-pro", display_name="我的同名模型")
 
     listed = client.get("/api/fake-models", headers=headers).json()
-    matches = [item for item in listed["items"] if item["model_id"] == "human-gateway"]
+    matches = [item for item in listed["items"] if item["model_id"] == "deepseek-v4-pro"]
     assert len(matches) == 1
     assert matches[0]["id"] == shadow["id"]
     assert matches[0]["scope"] == "private"
@@ -79,8 +79,8 @@ def test_private_model_shadows_system_model_for_owner(client, admin_headers) -> 
 
         owner = session.query(User).filter(User.username == "shadow-user").one()
         models = EffectiveModelService().visible_models(session, owner)
-        assert [row.model_id for row in models if row.model_id == "human-gateway"] == [
-            "human-gateway"
+        assert [row.model_id for row in models if row.model_id == "deepseek-v4-pro"] == [
+            "deepseek-v4-pro"
         ]
         assert all(row.scope.value == "private" or row.owner_user_id is None for row in models)
 
@@ -181,10 +181,10 @@ def test_model_group_membership_is_limited_to_visible_models(client, admin_heade
         json={"fake_model_ids": [int(owner_private["id"]), *system_ids]},
     )
     assert updated.status_code == 200
-    assert set(updated.json()["model_ids"]) == {
-        "group-visible",
-        "human-gateway",
-        "human-gateway-fast",
+    assert set(updated.json()["model_ids"]) == {"group-visible"} | {
+        item["model_id"]
+        for item in client.get("/api/fake-models", headers=headers).json()["items"]
+        if item["scope"] == "system"
     }
 
     assert client.delete(f"/api/model-groups/{group['id']}", headers=headers).status_code == 204
@@ -227,7 +227,10 @@ def test_group_ownership_isolation(client, admin_headers) -> None:
     other = _create_user(client, admin_headers, "group-owner-b")
     group = client.post("/api/model-groups", headers=headers, json={"name": "仅自己可见"}).json()
 
-    assert client.get("/api/model-groups", headers=other).json()["total"] == 0
+    # 普通用户能看到公开分组，但看不到他人创建的私有分组。
+    other_groups = client.get("/api/model-groups", headers=other).json()["items"]
+    assert all(item["id"] != group["id"] for item in other_groups)
     assert client.get(f"/api/model-groups/{group['id']}", headers=other).status_code == 404
-    # 管理员治理视图能看到全部分组。
-    assert client.get("/api/model-groups", headers=admin_headers).json()["total"] >= 1
+    # 管理员治理视图能看到全部分组（含他人私有分组）。
+    admin_groups = client.get("/api/model-groups", headers=admin_headers).json()["items"]
+    assert any(item["id"] == group["id"] for item in admin_groups)

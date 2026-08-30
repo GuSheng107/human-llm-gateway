@@ -199,9 +199,11 @@ class ModelGroupService:
     def list_for_user(
         self, session: Session, user: User, *, page: int, page_size: int
     ) -> tuple[list[ModelGroup], int]:
+        """管理员看全部分组；普通用户看自己的分组 + 公开分组。"""
         return self.catalog.list_groups(
             session,
             owner_user_id=None if user.role is UserRole.ADMIN else user.id,
+            include_public=user.role is not UserRole.ADMIN,
             page=page,
             page_size=page_size,
         )

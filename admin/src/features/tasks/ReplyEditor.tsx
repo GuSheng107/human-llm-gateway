@@ -216,7 +216,7 @@ export function ReplyEditor({
   return (
     <Drawer
       title={`撰写回复 · #${task.public_id}`}
-      description="思考、最终文本与假 tool call；提交后不可撤销"
+      description="填写思考、最终文本与假 tool call"
       onClose={onClose}
       width="max-w-2xl"
     >
@@ -333,7 +333,7 @@ export function ReplyEditor({
       {preview && (
         <Modal
           title="确认提交回复"
-          description="首个有效提交成功后不可撤销或覆盖"
+          description="提交前请确认内容无误"
           onClose={() => setPreview(null)}
         >
           <div className="space-y-4 p-6 text-xs">

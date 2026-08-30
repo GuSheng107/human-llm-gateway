@@ -58,7 +58,7 @@ def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hel
     from app.repositories.models import ApiKey, User
     from app.services.inference_service import InferenceService
 
-    payload = {"model": "human-gateway", "messages": [{"role": "user", "content": content}]}
+    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": content}]}
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     with database.SessionLocal() as session:
@@ -261,7 +261,7 @@ def _make_anthropic_waiting_task(
     from app.services.inference_service import InferenceService
 
     payload = {
-        "model": "human-gateway",
+        "model": "deepseek-v4-pro",
         "max_tokens": 256,
         "messages": [{"role": "user", "content": content}],
     }

@@ -35,16 +35,16 @@ def _anthropic_headers(plaintext: str) -> dict[str, str]:
 
 
 def _chat_payload(**extra: Any) -> dict[str, Any]:
-    return {"model": "human-gateway", "messages": [{"role": "user", "content": "hi"}], **extra}
+    return {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": "hi"}], **extra}
 
 
 def _responses_payload(**extra: Any) -> dict[str, Any]:
-    return {"model": "human-gateway", "input": "hi", **extra}
+    return {"model": "deepseek-v4-pro", "input": "hi", **extra}
 
 
 def _anthropic_payload(**extra: Any) -> dict[str, Any]:
     return {
-        "model": "human-gateway",
+        "model": "deepseek-v4-pro",
         "max_tokens": 128,
         "messages": [{"role": "user", "content": "hi"}],
         **extra,
@@ -341,7 +341,7 @@ async def test_chat_happy_nonstream(async_client, created_key) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["object"] == "chat.completion"
-    assert body["model"] == "human-gateway"
+    assert body["model"] == "deepseek-v4-pro"
     assert body["choices"][0]["message"]["content"] == "你好"
     assert body["choices"][0]["finish_reason"] == "stop"
 
@@ -364,7 +364,7 @@ async def test_responses_happy_nonstream(async_client, created_key) -> None:
     body = resp.json()
     assert body["object"] == "response"
     assert body["status"] == "completed"
-    assert body["model"] == "human-gateway"
+    assert body["model"] == "deepseek-v4-pro"
     assert body["id"].startswith("resp_")
     assert body["output"]
 
@@ -387,7 +387,7 @@ async def test_anthropic_happy_nonstream(async_client, created_key) -> None:
     body = resp.json()
     assert body["type"] == "message"
     assert body["role"] == "assistant"
-    assert body["model"] == "human-gateway"
+    assert body["model"] == "deepseek-v4-pro"
     assert body["content"]
     assert body["stop_reason"] == "end_turn"
 

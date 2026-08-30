@@ -56,9 +56,7 @@ export function ConnectionFormModal({
     <Modal
       title={connection ? "编辑连接" : "创建连接"}
       description={
-        connection
-          ? "Secret 留空表示保留原值，提交新值才会替换。"
-          : "按平台要求填写配置，Secret 写入后不再回显。"
+        connection ? "Secret 留空保留原值，填了才替换。" : "Secret 保存后不再显示。"
       }
       onClose={onClose}
     >
@@ -98,7 +96,7 @@ export function ConnectionFormModal({
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
                   {field.label}
                   {field.required && <span className="ml-1 text-danger">*</span>}
-                  {field.secret && <span className="ml-2 text-slate-400">（写入后不回显）</span>}
+                  {field.secret && <span className="ml-2 text-slate-400">（保存后不显示）</span>}
                 </span>
                 <input
                   type={field.secret ? "password" : field.type === "url" ? "url" : "text"}

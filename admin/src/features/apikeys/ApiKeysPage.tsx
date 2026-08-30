@@ -63,6 +63,29 @@ export function ApiKeysPage() {
   const [created, setCreated] = useState<ApiKeyCreated | null>(null);
   const isAdmin = user?.role === "admin";
 
+  // 第一层候选集：选了分组就收窄为该组成员；未选分组则为全部可见模型。
+  const selectedGroup = groups.find((group) => group.id === form?.model_group_id);
+  const candidateModels = selectedGroup
+    ? models.filter((model) => selectedGroup.model_ids.includes(model.model_id))
+    : models;
+
+  // 切换分组时丢弃已选但不在新候选集内的模型（只能收窄，不能扩张）。
+  const onGroupChange = (groupId: string) => {
+    if (!form) return;
+    const group = groups.find((item) => item.id === groupId);
+    const allowed = group ? new Set(group.model_ids) : null;
+    setForm({
+      ...form,
+      model_group_id: groupId,
+      fake_model_ids: allowed
+        ? form.fake_model_ids.filter((id) => {
+            const model = models.find((item) => Number(item.id) === id);
+            return model ? allowed.has(model.model_id) : false;
+          })
+        : form.fake_model_ids,
+    });
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -181,7 +204,7 @@ export function ApiKeysPage() {
     <div className="space-y-5">
       <PageHeader
         title="API 管理"
-        description="Key 决定请求归属、回复入口、回复策略和对外可用 Fake Model。"
+        description="设置请求的回复入口、回复策略与可用模型"
         actions={
           <Button onClick={openCreate}>
             <Icon name="plus" className="h-4 w-4" />
@@ -223,7 +246,7 @@ export function ApiKeysPage() {
                     {key.fake_model_names.length
                       ? key.fake_model_names.join("、")
                       : key.model_group_id
-                        ? "按分组候选集"
+                        ? "按分组"
                         : "全部可见模型"}
                   </td>
                   <td className="px-4 py-3">
@@ -263,7 +286,7 @@ export function ApiKeysPage() {
       {form && (
         <Modal
           title={form.id ? "编辑 API Key" : "新建 API Key"}
-          description="Secret 只在创建时展示一次；模型选择只能收窄候选集。"
+          description="Secret 只在创建时展示一次，请立即复制保存。"
           onClose={() => setForm(null)}
         >
           <div className="space-y-4 p-6">
@@ -378,7 +401,7 @@ export function ApiKeysPage() {
               </span>
               <select
                 value={form.model_group_id}
-                onChange={(event) => setForm({ ...form, model_group_id: event.target.value })}
+                onChange={(event) => onGroupChange(event.target.value)}
                 className="field-input"
               >
                 <option value="">不限制分组</option>
@@ -392,10 +415,15 @@ export function ApiKeysPage() {
 
             <div className="rounded-md border border-slate-200 bg-slate-50/60 p-4">
               <p className="mb-2 text-xs font-medium text-slate-600">
-                直接选择模型（可选，只收窄不扩张）
+                直接选择模型（可选）
+                {selectedGroup && (
+                  <span className="ml-2 font-normal text-slate-400">
+                    已按「{selectedGroup.name}」筛选，共 {candidateModels.length} 个
+                  </span>
+                )}
               </p>
               <div className="max-h-40 space-y-2 overflow-y-auto">
-                {models.map((model) => (
+                {candidateModels.map((model) => (
                   <label key={model.id} className="flex items-center gap-3 text-xs text-slate-600">
                     <input
                       type="checkbox"

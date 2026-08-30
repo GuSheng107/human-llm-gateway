@@ -183,7 +183,7 @@ def test_disabled_or_deleted_key_blocks_new_requests_but_admitted_task_continues
             owner_user_id=user_id,
             api_key_id=key_id,
             api_key_prefix_snapshot=created["key_prefix"],
-            requested_model="human-gateway",
+            requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json="{}",
             normalized_request_json="{}",
@@ -275,7 +275,7 @@ def test_v1_models_requires_api_key_auth(client, admin_headers) -> None:
     body = ok.json()
     assert body["object"] == "list"
     model_ids = {item["id"] for item in body["data"]}
-    assert {"human-gateway", "human-gateway-fast"} <= model_ids
+    assert {"deepseek-v4-pro", "deepseek-v4-flash"} <= model_ids
     for item in body["data"]:
         assert item["object"] == "model"
         assert item["owned_by"]
@@ -299,7 +299,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
     client.put(
         f"/api/model-groups/{group['id']}/models",
         headers=headers,
-        json={"fake_model_ids": [by_id["human-gateway"], by_id["narrow-private"]]},
+        json={"fake_model_ids": [by_id["deepseek-v4-pro"], by_id["narrow-private"]]},
     )
 
     grouped_key = client.post(
@@ -310,7 +310,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
     models = client.get(
         "/v1/models", headers={"Authorization": f"Bearer {grouped_key['plaintext']}"}
     ).json()
-    assert {item["id"] for item in models["data"]} == {"human-gateway", "narrow-private"}
+    assert {item["id"] for item in models["data"]} == {"deepseek-v4-pro", "narrow-private"}
 
     # Key 显式选择只能收窄，不能扩张出分组之外的模型。
     outside = client.post(
@@ -319,7 +319,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
         json={
             "name": "outside-group",
             "model_group_id": int(group["id"]),
-            "fake_model_ids": [by_id["human-gateway-fast"]],
+            "fake_model_ids": [by_id["deepseek-v4-flash"]],
         },
     )
     assert outside.status_code == 400
@@ -330,13 +330,13 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
         json={
             "name": "selected",
             "model_group_id": int(group["id"]),
-            "fake_model_ids": [by_id["human-gateway"]],
+            "fake_model_ids": [by_id["deepseek-v4-pro"]],
         },
     ).json()
     models = client.get(
         "/v1/models", headers={"Authorization": f"Bearer {selected['plaintext']}"}
     ).json()
-    assert [item["id"] for item in models["data"]] == ["human-gateway"]
+    assert [item["id"] for item in models["data"]] == ["deepseek-v4-pro"]
 
     # 空集合 = 全部候选模型。
     cleared = client.patch(
@@ -348,7 +348,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
     models = client.get(
         "/v1/models", headers={"Authorization": f"Bearer {selected['plaintext']}"}
     ).json()
-    assert {item["id"] for item in models["data"]} == {"human-gateway", "narrow-private"}
+    assert {item["id"] for item in models["data"]} == {"deepseek-v4-pro", "narrow-private"}
 
 
 def test_disabled_model_disappears_from_catalog_and_resolve(client, admin_headers) -> None:
@@ -357,21 +357,21 @@ def test_disabled_model_disappears_from_catalog_and_resolve(client, admin_header
     plaintext = created["plaintext"]
 
     listed = client.get("/api/fake-models", headers=headers).json()["items"]
-    target = next(item for item in listed if item["model_id"] == "human-gateway-fast")
+    target = next(item for item in listed if item["model_id"] == "deepseek-v4-flash")
 
     with database.SessionLocal() as session:
         key = session.get(ApiKey, int(created["id"]))
         service = EffectiveModelService()
-        assert service.resolve(session, key, "human-gateway-fast") is not None
+        assert service.resolve(session, key, "deepseek-v4-flash") is not None
         assert service.resolve(session, key, "does-not-exist") is None
 
     client.patch(f"/api/fake-models/{target['id']}", headers=admin_headers, json={"enabled": False})
     models = client.get("/v1/models", headers={"Authorization": f"Bearer {plaintext}"}).json()
-    assert "human-gateway-fast" not in {item["id"] for item in models["data"]}
+    assert "deepseek-v4-flash" not in {item["id"] for item in models["data"]}
 
     with database.SessionLocal() as session:
         key = session.get(ApiKey, int(created["id"]))
-        assert EffectiveModelService().resolve(session, key, "human-gateway-fast") is None
+        assert EffectiveModelService().resolve(session, key, "deepseek-v4-flash") is None
 
 
 def test_key_selection_must_come_from_visible_candidates(client, admin_headers) -> None:
@@ -402,7 +402,7 @@ def test_deleted_model_or_group_keep_history_task_snapshot(client, admin_headers
             owner_user_id=user_id,
             api_key_id=int(created["id"]),
             api_key_prefix_snapshot=created["key_prefix"],
-            requested_model="human-gateway",
+            requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json="{}",
             normalized_request_json="{}",
@@ -415,7 +415,7 @@ def test_deleted_model_or_group_keep_history_task_snapshot(client, admin_headers
         session.commit()
 
     listed = client.get("/api/fake-models", headers=headers).json()["items"]
-    target = next(item for item in listed if item["model_id"] == "human-gateway")
+    target = next(item for item in listed if item["model_id"] == "deepseek-v4-pro")
     assert (
         client.delete(f"/api/fake-models/{target['id']}", headers=admin_headers).status_code == 204
     )
@@ -423,7 +423,7 @@ def test_deleted_model_or_group_keep_history_task_snapshot(client, admin_headers
     with database.SessionLocal() as session:
         task = session.query(RequestTask).filter(RequestTask.public_id == "task_snapshot").one()
         assert task.state is TaskState.WAITING_HUMAN
-        assert task.requested_model == "human-gateway"
+        assert task.requested_model == "deepseek-v4-pro"
 
 
 def test_effective_model_query_is_shared_between_catalog_and_admission(

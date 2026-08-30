@@ -61,7 +61,7 @@ def _task(task_id: int) -> RequestTask:
 @pytest.mark.asyncio
 async def test_chat_stream_normal_completion(async_client, created_user, created_key) -> None:
     request_payload = {
-        "model": "human-gateway",
+        "model": "deepseek-v4-pro",
         "stream": True,
         "messages": [{"role": "user", "content": "hi"}],
     }
@@ -116,7 +116,7 @@ async def test_chat_stream_midstream_error_raises_api_error(
     )
     with pytest.raises(APIError) as exc:
         stream = await sdk.chat.completions.create(
-            model="human-gateway", messages=[{"role": "user", "content": "hi"}], stream=True
+            model="deepseek-v4-pro", messages=[{"role": "user", "content": "hi"}], stream=True
         )
         async for _chunk in stream:
             pass
@@ -172,7 +172,7 @@ async def test_chat_stream_caller_disconnected_cancels_task(
             "/v1/chat/completions",
             headers={"Authorization": f"Bearer {created_key.plaintext}"},
             json={
-                "model": "human-gateway",
+                "model": "deepseek-v4-pro",
                 "stream": True,
                 "messages": [{"role": "user", "content": "hi"}],
             },

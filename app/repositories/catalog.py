@@ -18,12 +18,71 @@ from ..domain.enums import FakeModelScope
 from .models import ApiKeyFakeModel, FakeModel, ModelGroup, ModelGroupItem
 
 # 默认系统 Fake Model 种子（全新数据库初始化时写入一次）。
-DEFAULT_SYSTEM_MODELS: list[dict] = [
-    {"model_id": "human-gateway", "display_name": "Human Gateway", "owned_by": "human-llm-gateway"},
+#
+# 按母公司划分：分组是第一层候选集，模型选择只能在分组内收窄。
+# 模型一律为 system scope（owner_user_id 为空），因此对所有用户可见可用；
+# 分组挂在管理员名下仅因为 model_groups.owner_user_id 非空约束，不影响模型可见性。
+DEFAULT_MODEL_GROUPS: list[dict] = [
     {
-        "model_id": "human-gateway-fast",
-        "display_name": "Human Gateway (Fast)",
-        "owned_by": "human-llm-gateway",
+        "name": "DeepSeek",
+        "owned_by": "deepseek",
+        "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+    },
+    {
+        "name": "OpenAI",
+        "owned_by": "openai",
+        "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
+    },
+    {
+        "name": "Claude",
+        "owned_by": "claude",
+        "models": [
+            "claude-fable-5",
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-haiku-4-5",
+        ],
+    },
+    {
+        "name": "Kimi",
+        "owned_by": "kimi",
+        "models": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"],
+    },
+    {
+        "name": "MiniMax",
+        "owned_by": "minimax",
+        "models": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+    },
+    {
+        "name": "Grok",
+        "owned_by": "grok",
+        "models": ["grok-4.6", "grok-4.5", "grok-4.3"],
+    },
+    {
+        "name": "Qwen",
+        "owned_by": "qwen",
+        "models": [
+            "qwen3.8-max",
+            "qwen3.8-flash",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.7-flash",
+        ],
+    },
+    {
+        "name": "GLM",
+        "owned_by": "glm",
+        "models": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-4.7"],
+    },
+    {
+        "name": "Gemini",
+        "owned_by": "gemini",
+        "models": [
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+        ],
     },
 ]
 
@@ -137,17 +196,37 @@ class FakeModelRepository:
             return None
         return row
 
+    def find_group_by_name(
+        self, session: Session, owner_user_id: int, name: str
+    ) -> ModelGroup | None:
+        return session.execute(
+            select(ModelGroup).where(
+                ModelGroup.owner_user_id == owner_user_id,
+                ModelGroup.name == name,
+                ModelGroup.deleted_at.is_(None),
+            )
+        ).scalar_one_or_none()
+
     def list_groups(
         self,
         session: Session,
         *,
         owner_user_id: int | None = None,
+        include_public: bool = False,
         page: int,
         page_size: int,
     ) -> tuple[list[ModelGroup], int]:
         filters = [ModelGroup.deleted_at.is_(None)]
         if owner_user_id is not None:
-            filters.append(ModelGroup.owner_user_id == owner_user_id)
+            if include_public:
+                filters.append(
+                    or_(
+                        ModelGroup.owner_user_id == owner_user_id,
+                        ModelGroup.is_public.is_(True),
+                    )
+                )
+            else:
+                filters.append(ModelGroup.owner_user_id == owner_user_id)
         total = session.scalar(select(func.count()).select_from(ModelGroup).where(*filters)) or 0
         rows = list(
             session.scalars(
@@ -256,14 +335,30 @@ class FakeModelRepository:
         return row
 
     def seed_default_system_models(self, session: Session, admin_id: int) -> None:
-        """幂等写入默认系统模型；已存在的 model_id 不覆盖。"""
-        for spec in DEFAULT_SYSTEM_MODELS:
-            existing = self.find_system_by_model_id(session, spec["model_id"])
-            if existing is None:
-                self.create_system_model(
-                    session,
-                    model_id=spec["model_id"],
-                    display_name=spec["display_name"],
-                    owned_by=spec["owned_by"],
-                    created_by_user_id=admin_id,
-                )
+        """幂等写入默认系统模型与按母公司划分的分组。
+
+        模型为 system scope（对所有用户可见可用）；分组挂在管理员名下，
+        仅因为 owner_user_id 非空约束。已存在的模型/分组不覆盖，分组内
+        成员仅在分组为空时写入，避免重启冲掉管理员的调整。
+        """
+        for spec in DEFAULT_MODEL_GROUPS:
+            group = self.find_group_by_name(session, admin_id, spec["name"])
+            if group is None:
+                group = ModelGroup(owner_user_id=admin_id, name=spec["name"], is_public=True)
+                self.add_group(session, group)
+                session.flush()
+            model_pks: list[int] = []
+            for model_id in spec["models"]:
+                model = self.find_system_by_model_id(session, model_id)
+                if model is None:
+                    model = self.create_system_model(
+                        session,
+                        model_id=model_id,
+                        display_name=model_id,
+                        owned_by=spec["owned_by"],
+                        created_by_user_id=admin_id,
+                    )
+                    session.flush()
+                model_pks.append(model.id)
+            if not self.group_items(session, group.id):
+                self.replace_group_items(session, group.id, model_pks)

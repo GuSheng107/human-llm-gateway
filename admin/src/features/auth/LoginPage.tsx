@@ -304,14 +304,14 @@ export function LoginPage() {
         <Modal title="忘记密码" onClose={() => setShowForgot(false)} width="max-w-md">
           <div className="space-y-4 px-6 pb-6 pt-2 text-sm leading-6 text-slate-600">
             <p>
-              本系统不提供自助找回密码入口。请联系系统管理员，在后台
+              请联系管理员，在后台
               <span className="mx-1 rounded bg-primary-faint px-1.5 py-0.5 text-xs text-primary">
                 系统设置 · 用户管理
               </span>
               中为你的账号重置密码。
             </p>
             <p className="text-xs leading-5 text-slate-400">
-              重置后你将获得一个临时密码，使用它登录管理台后需立即设置新密码。为保护账号安全，请勿通过本页面之外的渠道透露验证码信息。
+              重置后你会拿到一个临时密码，用它登录后需要立即设置新密码。
             </p>
           </div>
         </Modal>
