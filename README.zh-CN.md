@@ -5,7 +5,6 @@
 # Human LLM Gateway
 
 **对外是真 LLM API，对内由你（或你的真实 LLM）亲自回复。**
-**A real LLM API on the outside — answered by *you* (or your own real LLM) on the inside.**
 
 [![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.12+-3776AB?logo=python&logoColor=white)](pyproject.toml)
@@ -15,18 +14,17 @@
 [![Tests](https://img.shields.io/badge/tests-415%20passed-brightgreen)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg)]()
 
-**English** | [简体中文](README.zh-CN.md)
+[English](README.md) | **简体中文**
 
 ---
 
 一次部署，把「你在 IM 里敲的字」变成「标准 LLM API 响应」。
-Drop it in, and what you type in your IM becomes a standard LLM API response.
 
 </div>
 
 ---
 
-## ✨ 这是什么 / What is this
+## ✨ 这是什么
 
 你是否想让某个工具调用「GPT-5」，但回复其实由**你自己**写？
 或者你已经订阅了真实 LLM，想让它的输出**带上你自定义的身份**？
@@ -48,11 +46,7 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 - **真实 LLM 配置**是你的私有上游——可以直转、可以生成草稿给你改、也可以在人工超时后兜底
 - 调用方看到的响应里，`model` 永远是它请求的那个 Fake Model，永远不会暴露你的真实上游
 
-Ever wanted a tool to call "GPT-5" — but the answer is actually written by **you**? Or wished your real LLM's output carried **your custom identity**?
-
-This is a self-hostable **LLM identity gateway**: Fake Models are just public identities, decoupled from your private real-LLM upstreams. Callers get protocol-perfect responses branded with the Fake Model they asked for — never a hint of what's behind.
-
-## 🚀 核心特性 / Features
+## 🚀 核心特性
 
 <table>
 <tr><td width="50%" valign="top">
@@ -88,7 +82,7 @@ This is a self-hostable **LLM identity gateway**: Fake Models are just public id
 - 页面上下文双层脱敏（封闭 schema + 正则擦洗）
 - 请求体 8MiB / 1MiB 上限，流式字节/时长预算
 
-### 🧰 工具沙箱（M12）
+### 🧰 工具沙箱
 - 管理员白名单，用户显式确认执行
 - 进程级隔离：临时目录 + 清零环境 + 超时 + 输出截断
 - 调用方 tool call 永不自动执行
@@ -96,7 +90,7 @@ This is a self-hostable **LLM identity gateway**: Fake Models are just public id
 </td></tr>
 </table>
 
-## 🏗️ 架构 / Architecture
+## 🏗️ 架构
 
 ```
                     ┌────────────────────────────────────────────┐
@@ -118,28 +112,28 @@ This is a self-hostable **LLM identity gateway**: Fake Models are just public id
                            └────────────────────────────────┘
 ```
 
-**技术栈 / Stack**：Python 3.12 · FastAPI · SQLAlchemy · Pydantic v2 · Argon2id · AES-256-GCM · React 19 · TypeScript strict · Vite · Tailwind CSS 4 · SSE
+**技术栈**：Python 3.12 · FastAPI · SQLAlchemy · Pydantic v2 · Argon2id · AES-256-GCM · React 19 · TypeScript strict · Vite · Tailwind CSS 4 · SSE
 
-## 📦 快速开始 / Quick Start
+## 📦 快速开始
 
-### 环境要求 / Prerequisites
+### 环境要求
 
 - Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
 
-### 三步启动 / Three Steps
+### 三步启动
 
 ```bash
-# 1. 克隆 / Clone
+# 1. 克隆
 git clone https://github.com/GuSheng107/human-llm-gateway.git
 cd human-llm-gateway
 
-# 2. 生成密钥并配置 / Generate secret & configure
+# 2. 生成密钥并配置
 python -c "import secrets; print(f'APP_SECRET={secrets.token_urlsafe(32)}')" >> .env
 echo "ADMIN_USERNAME=admin" >> .env
 echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
 
-# 3. 启动 / Run
+# 3. 启动
 uv sync --locked
 uv run uvicorn app.api:app --reload        # 后端 http://127.0.0.1:8000
 cd admin && npm ci && npm run dev          # 前端 http://127.0.0.1:5173
@@ -147,16 +141,13 @@ cd admin && npm ci && npm run dev          # 前端 http://127.0.0.1:5173
 
 首次启动自动建库并写入默认系统模型。用 `.env` 中的管理员登录，改密后即可签发邀请码、创建用户。
 
-First run auto-creates the database and seeds default system models. Log in with your admin, change the password, then start issuing invitations.
-
-### 五分钟体验 / Five-Minute Tour
+### 五分钟体验
 
 ```bash
 # ① 管理台创建 API Key（选一个 Fake Model，比如 deepseek-v4-pro）
-#    Create an API key in the console, pick a Fake Model (e.g. deepseek-v4-pro)
 
-# ② 像调用 OpenAI 一样调用它 / Call it like OpenAI
-export OPENAI_API_KEY="hlg_xxxx"   # 网关签发的 Key / gateway-issued key
+# ② 像调用 OpenAI 一样调用它
+export OPENAI_API_KEY="hlg_xxxx"   # 网关签发的 Key
 export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 
 python -c "
@@ -171,12 +162,10 @@ for chunk in stream:
     print(chunk.choices[0].delta.content or '', end='')
 "
 # ③ 同时打开 Web 任务工作台——任务正在等你人工回复
-#    Meanwhile the task is waiting for YOUR answer in the web console
-# ④ 回复提交后，调用方收到伪流式输出；你再调 /v1/models 看目录
-#    After you submit, the caller receives the (pseudo-)streamed reply
+# ④ 回复提交后，调用方收到伪流式输出
 ```
 
-## 🗺️ 里程碑 / Roadmap
+## 🗺️ 里程碑
 
 | 阶段 | 内容 | 状态 |
 |---|---|---|
@@ -193,12 +182,12 @@ for chunk in stream:
 | M11 | 发布验收 | ⏳ |
 | M12 | 隔离工具沙箱 | ✅ |
 
-完整计划见 [ROADMAP](docs/ROADMAP.md)（中文）。测试：**415 passed**（后端）+ 22（前端）。
+完整计划见 [ROADMAP](docs/ROADMAP.md)。测试：**415 passed**（后端）+ 22（前端）。
 
-## 🤝 参与贡献 / Contributing
+## 🤝 参与贡献
 
 ```bash
-# 质量门禁（提交前必须全绿）/ Quality gates — must pass before commit
+# 质量门禁（提交前必须全绿）
 uv lock --check
 uv run --locked ruff format --check app tests
 uv run --locked ruff check app tests
@@ -208,12 +197,11 @@ cd admin && npm ci && npm run build && npm test
 
 开发规范见 [AGENTS.md](AGENTS.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
-## 📄 许可证 / License
+## 📄 许可证
 
 [AGPL-3.0](LICENSE) © Human LLM Gateway Contributors
 
 > 任何修改版通过网络提供服务时，必须向远程交互用户提供获取对应源码的机会。
-> Modified versions offered over a network must offer corresponding source to remote users.
 
 ## ⭐ Star History
 
@@ -224,8 +212,7 @@ cd admin && npm ci && npm run build && npm test
 <div align="center">
 
 **如果这个项目对你有帮助，请点一个 Star ⭐**
-**If this project helps you, please consider giving it a star ⭐**
 
-[报告问题 Report Issues](https://github.com/GuSheng107/human-llm-gateway/issues) · [功能讨论 Discussions](https://github.com/GuSheng107/human-llm-gateway/discussions)
+[报告问题](https://github.com/GuSheng107/human-llm-gateway/issues) · [功能讨论](https://github.com/GuSheng107/human-llm-gateway/discussions)
 
 </div>

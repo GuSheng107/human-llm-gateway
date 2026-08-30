@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" width="120" height="120">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <!-- 圆角背景 -->
+  <rect x="4" y="4" width="112" height="112" rx="24" fill="url(#bg)"/>
+  <!-- 网关节点（左上） -->
+  <circle cx="34" cy="34" r="9" fill="#ffffff" opacity="0.95"/>
+  <!-- 调用方节点（右下） -->
+  <circle cx="86" cy="86" r="9" fill="#ffffff" opacity="0.95"/>
+  <!-- 人形节点（中心，代表"人"在回路里） -->
+  <circle cx="60" cy="52" r="12" fill="#ffffff"/>
+  <path d="M40 84 a20 16 0 0 1 40 0 z" fill="#ffffff"/>
+  <!-- 连线：左上 -> 中心 -> 右下 -->
+  <path d="M42 42 L52 50" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
+  <path d="M68 58 L78 78" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.7"/>
+  <!-- 对话气泡点缀（人形右侧） -->
+  <path d="M72 40 h14 a4 4 0 0 1 4 4 v8 a4 4 0 0 1 -4 4 h-10 l-4 4 v-4 h-0 a4 4 0 0 1 -4 -4 v-8 a4 4 0 0 1 4 -4 z" fill="#ffffff" opacity="0.55"/>
+  <circle cx="79" cy="48" r="1.6" fill="#2563eb"/>
+  <circle cx="84" cy="48" r="1.6" fill="#2563eb"/>
+  <circle cx="89" cy="48" r="1.6" fill="#2563eb"/>
+</svg>
