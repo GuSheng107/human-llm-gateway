@@ -4,7 +4,6 @@
 
 # Human LLM Gateway
 
-**对外是真 LLM API，对内由你（或你的真实 LLM）亲自回复。**
 **A real LLM API on the outside — answered by *you* (or your own real LLM) on the inside.**
 
 [![License](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
@@ -19,188 +18,179 @@
 
 ---
 
-一次部署，把「你在 IM 里敲的字」变成「标准 LLM API 响应」。
-Drop it in, and what you type in your IM becomes a standard LLM API response.
+Drop it in, and what you type in your chat becomes a standard LLM API response.
 
 </div>
 
 ---
 
-## ✨ 这是什么 / What is this
-
-你是否想让某个工具调用「GPT-5」，但回复其实由**你自己**写？
-或者你已经订阅了真实 LLM，想让它的输出**带上你自定义的身份**？
-
-Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
-
-```
-调用方（SDK / 应用）                    你的网关                        回复来源
-┌──────────────────┐   协议兼容请求   ┌──────────────────┐   ① 人工   ┌─────────────┐
-│ openai SDK       │ ──────────────► │  Human LLM       │ ◄────────── │ 你，在 Web  │
-│ anthropic SDK    │                 │  Gateway         │             │ 或 IM 里回复 │
-│ 任何兼容客户端     │ ◄────────────── │                  │   ② LLM    ├─────────────┤
-│                  │   Fake Model 响应 │                  │ ─────────► │ 你的真实    │
-└──────────────────┘                 └──────────────────┘   ③ 混合    │ LLM 配置    │
-                                                                      └─────────────┘
-```
-
-- **Fake Model** 只是对外身份（如 `gpt-5`）——**不绑定任何真实上游**
-- **真实 LLM 配置**是你的私有上游——可以直转、可以生成草稿给你改、也可以在人工超时后兜底
-- 调用方看到的响应里，`model` 永远是它请求的那个 Fake Model，永远不会暴露你的真实上游
+## ✨ What is this
 
 Ever wanted a tool to call "GPT-5" — but the answer is actually written by **you**? Or wished your real LLM's output carried **your custom identity**?
 
-This is a self-hostable **LLM identity gateway**: Fake Models are just public identities, decoupled from your private real-LLM upstreams. Callers get protocol-perfect responses branded with the Fake Model they asked for — never a hint of what's behind.
+Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
-## 🚀 核心特性 / Features
+```
+   Caller (SDK / app)                 Your gateway                   Who answers
+┌──────────────────┐  protocol-  ┌──────────────────┐   ① human  ┌──────────────────┐
+│ openai SDK       │  compatible │  Human LLM       │ ◄───────── │ you, replying in │
+│ anthropic SDK    │ ──────────► │  Gateway         │            │ the web console  │
+│ any client       │ ◄────────── │                  │   ② LLM   ├──────────────────┤
+│                  │  Fake Model │                  │ ────────► │ your private     │
+└──────────────────┘  response   └──────────────────┘   ③ both   │ LLM upstream     │
+                                                                             └──────────────────┘
+```
+
+- **Fake Models** are public identities only (e.g. `gpt-5`) — **never bound to any real upstream**
+- **Your real LLM configs** stay private — forward directly, generate editable drafts for you, or take over after a human timeout
+- Responses always carry the Fake Model the caller asked for; your real upstream is never revealed
+
+## 🚀 Features
 
 <table>
 <tr><td width="50%" valign="top">
 
-### 🎭 身份伪装
-- Fake Model 目录：系统级 + 用户私有
-- `/v1/models` 按 Key 计算有效集合
-- 响应 `model` 字段永远改写为 Fake Model
+### 🎭 Identity Masquerading
+- Fake Model catalog: system-wide + per-user private
+- `/v1/models` computes the effective set per API key
+- Response `model` field always rewritten to the Fake Model
 
-### 📡 三协议兼容
+### 📡 Three Protocols
 - OpenAI Chat Completions
-- OpenAI Responses（含 `previous_response_id` 链式展开）
-- Anthropic Messages（`x-api-key` / `anthropic-version`）
-- SSE 流式 + 伪流式输出
+- OpenAI Responses (incl. `previous_response_id` chain expansion)
+- Anthropic Messages (`x-api-key` / `anthropic-version`)
+- SSE streaming + pseudo-streaming output
 
-### 👤 人工回复闭环
-- Web 任务工作台：完整原始请求 + 时间线 + 草稿
-- IM 投递：微信 iLink / 企微 / Webhook / WebSocket / HTTP 轮询
-- IM DSL：`::: reasoning` / `::: tool` 围栏，与 Web 编辑器共享结构
-- 首个有效提交获胜，不可撤销
+### 👤 Human-in-the-Loop
+- Web task console: full raw request, timeline, drafts
+- IM delivery: WeCom, webhook, WebSocket, HTTP polling
+- IM DSL: `::: reasoning` / `::: tool` fences, shared structure with the web editor
+- First valid submission wins — irrevocable
 
 </td><td width="50%" valign="top">
 
-### 🤖 真实 LLM 编排
-- 用户级 LLM 配置（OpenAI 兼容 / Anthropic，密钥加密存储）
-- 三种策略：`human` / `llm` 直转 / `human_fallback_llm` 超时兜底
-- 跨协议字段矩阵：等价转换或明确 400，绝不静默丢弃
-- 上游流式接收 → 完整落库 → 伪流式输出
+### 🤖 Real-LLM Orchestration
+- Per-user LLM configs (OpenAI-compatible / Anthropic, secrets encrypted at rest)
+- Three strategies: `human` / `llm` direct forward / `human_fallback_llm` on timeout
+- Cross-protocol field matrix: convert or explicitly 400 — never silently dropped
+- Upstream streaming → full persistence → pseudo-streamed output
 
-### 🛡️ 安全纵深
-- SSRF 分档防护（云元数据无条件拒 + 私有段开关）
-- Secret 加密（HKDF + AES-GCM envelope），永不回显
-- 页面上下文双层脱敏（封闭 schema + 正则擦洗）
-- 请求体 8MiB / 1MiB 上限，流式字节/时长预算
+### 🛡️ Defense in Depth
+- Tiered SSRF protection (cloud metadata always blocked + private-range switch)
+- Secret encryption (HKDF + AES-GCM envelope), never echoed back
+- Two-layer page-context redaction (closed schema + pattern scrubbing)
+- 8 MiB / 1 MiB request caps, stream byte/duration budgets
 
-### 🧰 工具沙箱（M12）
-- 管理员白名单，用户显式确认执行
-- 进程级隔离：临时目录 + 清零环境 + 超时 + 输出截断
-- 调用方 tool call 永不自动执行
+### 🧰 Tool Sandbox
+- Admin-maintained whitelist with explicit user confirmation
+- Process-level isolation: temp dir + empty env + timeout + output caps
+- Caller-declared tool calls are never auto-executed
 
 </td></tr>
 </table>
 
-## 🏗️ 架构 / Architecture
+## 🏗️ Architecture
 
 ```
                     ┌────────────────────────────────────────────┐
                     │                admin/ (React 19)           │
-                    │   登录 · 工作台 · 任务 · 连接 · Key · 模型   │
-                    │      LLM 配置 · 日志 · 工具 · 小助手         │
+                    │   login · console · tasks · keys · models  │
+                    │      LLM configs · logs · tools · chat     │
                     └────────────────────┬───────────────────────┘
                                          │ /api/*
-┌──────────────┐  /v1/*  ┌───────────────▼────────────────┐  上游   ┌─────────────┐
-│ 调用方 SDK     │ ──────► │  app/api/ (FastAPI)            │ ──────► │ 你的真实 LLM │
-│ openai/anth.  │ ◄────── │  协议解析 · 准入 · 转发 · 渲染     │         │ (可选)       │
-└──────────────┘  响应     │                                │         └─────────────┘
-                           │  app/services/  用例编排          │  投递   ┌─────────────┐
-┌──────────────┐  /conn.  │  app/repositories/  持久化        │ ──────► │ 你的 IM     │
-│ 你的 IM 客户端 │ ──────► │  app/connectors/  IM 连接器       │  ◄────── │ 微信/企微/…  │
-└──────────────┘  回复DSL  │  app/protocols/  三协议适配        │   回复   └─────────────┘
-                           │  app/domain/  枚举/状态机/纯规则    │
-                           │  app/core/  安全/配置/日志          │
-                           └────────────────────────────────┘
+┌──────────────┐  /v1/*  ┌───────────────▼────────────────┐  upstream ┌─────────────┐
+│ caller SDK   │ ──────► │  app/api/ (FastAPI)            │ ────────► │ your real   │
+│ openai/anth. │ ◄────── │  parse · admit · forward ·     │           │ LLM         │
+└──────────────┘  reply  │  render                        │           │ (optional)  │
+                          │  app/services/      use cases │           └─────────────┘
+┌──────────────┐  /conn. │  app/repositories/  persistence│  delivery ┌─────────────┐
+│ your IM      │ ──────► │  app/connectors/    IM         │ ────────► │ your IM     │
+│ client       │ ◄────── │  app/protocols/     3 protocols│ ◄──────── │ WeChat/…    │
+└──────────────┘  DSL    │  app/domain/        pure rules │   reply   └─────────────┘
+                          │  app/core/          security  │
+                          └────────────────────────────────┘
 ```
 
-**技术栈 / Stack**：Python 3.12 · FastAPI · SQLAlchemy · Pydantic v2 · Argon2id · AES-256-GCM · React 19 · TypeScript strict · Vite · Tailwind CSS 4 · SSE
+**Stack**: Python 3.12 · FastAPI · SQLAlchemy · Pydantic v2 · Argon2id · AES-256-GCM · React 19 · TypeScript strict · Vite · Tailwind CSS 4 · SSE
 
-## 📦 快速开始 / Quick Start
+## 📦 Quick Start
 
-### 环境要求 / Prerequisites
+### Prerequisites
 
-- Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)
+- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
 
-### 三步启动 / Three Steps
+### Three Steps
 
 ```bash
-# 1. Clone / 克隆
+# 1. Clone
 git clone https://github.com/GuSheng107/human-llm-gateway.git
 cd human-llm-gateway
 
-# 2. Configure / 生成密钥并配置
+# 2. Configure
 python -c "import secrets; print(f'APP_SECRET={secrets.token_urlsafe(32)}')" >> .env
 echo "ADMIN_USERNAME=admin" >> .env
 echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
 
-# 3. Build the frontend, then run the server (single port)
-#    构建前端静态资源，然后启动后端（后端直接托管 SPA，单端口访问）
+# 3. Build the frontend, then run the server (single port —
+#    the backend serves the built SPA itself)
 uv sync --locked
 (cd admin && npm ci && npm run build)
 uv run uvicorn app.api:app --host 0.0.0.0 --port 8000
 ```
 
-打开 / Open **http://127.0.0.1:8000** — 管理台与 API 同端口。首次启动自动建库并写入默认系统模型，用 `.env` 中的管理员登录，改密后即可签发邀请码、创建用户。
+Open **http://127.0.0.1:8000** — the console and the API share one port. The first run auto-creates the database and seeds default system models. Log in with your admin account, change the password, and start issuing invitations.
 
-> 前端开发热更新（可选）/ Frontend hot-reload (optional):
-> `cd admin && npm run dev` → http://127.0.0.1:5173（`/api`、`/v1` 自动代理到 8000）
+> Frontend hot-reload for development (optional):
+> `cd admin && npm run dev` → http://127.0.0.1:5173 (`/api` and `/v1` are proxied to port 8000)
 
-### 五分钟体验 / Five-Minute Tour
+### Five-Minute Tour
 
 ```bash
-# ① 管理台创建 API Key（选一个 Fake Model，比如 deepseek-v4-pro）
-#    Create an API key in the console, pick a Fake Model (e.g. deepseek-v4-pro)
+# ① Create an API key in the console, pick a Fake Model (e.g. deepseek-v4-pro)
 
-# ② 像调用 OpenAI 一样调用它 / Call it like OpenAI
-export OPENAI_API_KEY="hlg_xxxx"   # 网关签发的 Key / gateway-issued key
+# ② Call it just like OpenAI
+export OPENAI_API_KEY="hlg_xxxx"   # gateway-issued key
 export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 
 python -c "
 from openai import OpenAI
 client = OpenAI()
 stream = client.chat.completions.create(
-    model='deepseek-v4-pro',          # Fake Model
-    messages=[{'role': 'user', 'content': '你好'}],
+    model='deepseek-v4-pro',          # a Fake Model
+    messages=[{'role': 'user', 'content': 'Hello!'}],
     stream=True,
 )
 for chunk in stream:
     print(chunk.choices[0].delta.content or '', end='')
 "
-# ③ 同时打开 Web 任务工作台——任务正在等你人工回复
-#    Meanwhile the task is waiting for YOUR answer in the web console
-# ④ 回复提交后，调用方收到伪流式输出；你再调 /v1/models 看目录
-#    After you submit, the caller receives the (pseudo-)streamed reply
+# ③ Meanwhile, open the web console — the task is waiting for YOUR answer
+# ④ Once you submit your reply, the caller receives the (pseudo-)streamed output
 ```
 
-## 🗺️ 里程碑 / Roadmap
+## 🗺️ Roadmap
 
-| 阶段 | 内容 | 状态 |
+| Stage | Scope | Status |
 |---|---|---|
-| M0–M1 | 结构收口 · 产品/架构/API/数据库/UI 规范 | ✅ |
-| M2 | 领域模型与数据库原子重建（20 张目标表） | ✅ |
-| M3 | 用户 · 邀请码 · 权限闭环 | ✅ |
-| M4 | IM 连接与任务投递（5 平台连接器） | ✅ |
-| M5 | Fake Model 目录 · 分组 · API Key · 并发准入 | ✅ |
-| M6 | 三协议契约 · 任务工作台 · 人工提交闭环 | ✅ |
-| M7 | LLM 配置 · 草稿生成 · 自动转发 · 跨协议矩阵 · 流式 | ✅ |
-| M8 | 全局 Web 小助手（上下文脱敏） | ✅ |
-| M9 | 控制台统计 · 日志审计 · 体验收口 | ✅ |
-| M10 | 部署运维（Docker/CI/readyz/metrics/备份） | ⏳ |
-| M11 | 发布验收 | ⏳ |
-| M12 | 隔离工具沙箱 | ✅ |
+| M0–M1 | Structure baseline · product/arch/API/DB/UI specs | ✅ |
+| M2 | Atomic domain-model & database rebuild (20 tables) | ✅ |
+| M3 | Users · invitations · permission loop | ✅ |
+| M4 | IM connections & task delivery (5 connector platforms) | ✅ |
+| M5 | Fake Model catalog · groups · API keys · admission control | ✅ |
+| M6 | Three-protocol contracts · task console · human reply loop | ✅ |
+| M7 | LLM configs · draft generation · auto-forwarding · cross-protocol matrix · streaming | ✅ |
+| M8 | Global web assistant (context redaction) | ✅ |
+| M9 | Dashboard stats · log auditing · UX polish | ✅ |
+| M10 | Deployment & ops (Docker/CI/readyz/metrics/backup) | ⏳ |
+| M11 | Release acceptance | ⏳ |
+| M12 | Isolated tool sandbox | ✅ |
 
-完整计划见 [ROADMAP](docs/ROADMAP.md)（中文）。测试：**415 passed**（后端）+ 22（前端）。
+Full plan in [ROADMAP](docs/ROADMAP.md) (Chinese). Tests: **415 passed** (backend) + 22 (frontend).
 
-## 🤝 参与贡献 / Contributing
+## 🤝 Contributing
 
 ```bash
-# 质量门禁（提交前必须全绿）/ Quality gates — must pass before commit
+# Quality gates — must pass before every commit
 uv lock --check
 uv run --locked ruff format --check app tests
 uv run --locked ruff check app tests
@@ -208,13 +198,12 @@ uv run --locked python -m pytest -q
 cd admin && npm ci && npm run build && npm test
 ```
 
-开发规范见 [AGENTS.md](AGENTS.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.
 
-## 📄 许可证 / License
+## 📄 License
 
 [AGPL-3.0](LICENSE) © Human LLM Gateway Contributors
 
-> 任何修改版通过网络提供服务时，必须向远程交互用户提供获取对应源码的机会。
 > Modified versions offered over a network must offer corresponding source to remote users.
 
 ## ⭐ Star History
@@ -225,9 +214,8 @@ cd admin && npm ci && npm run build && npm test
 
 <div align="center">
 
-**如果这个项目对你有帮助，请点一个 Star ⭐**
 **If this project helps you, please consider giving it a star ⭐**
 
-[报告问题 Report Issues](https://github.com/GuSheng107/human-llm-gateway/issues) · [功能讨论 Discussions](https://github.com/GuSheng107/human-llm-gateway/discussions)
+[Report Issues](https://github.com/GuSheng107/human-llm-gateway/issues) · [Discussions](https://github.com/GuSheng107/human-llm-gateway/discussions)
 
 </div>
