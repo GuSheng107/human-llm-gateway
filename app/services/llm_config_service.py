@@ -171,6 +171,37 @@ class LlmConfigService:
             raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存在", status_code=404)
         return row
 
+    @staticmethod
+    def get_secret_pair(session: Session, row: LlmConfig) -> tuple[str, dict[str, str]]:
+        """解密配置的 Secret 与自定义 Header（服务层内部共用）。
+
+        不做归属校验（调用方已完成）；Secret 仅在内存使用，不进入响应。
+        """
+        try:
+            secret = decrypt_secret(
+                row.secret_ciphertext, get_settings().app_secret, _LLM_SECRET_PURPOSE
+            )
+        except Exception as exc:
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                "LLM Secret 解密失败，请重新保存配置",
+                status_code=409,
+            ) from exc
+        headers: dict[str, str] = {}
+        if row.headers_ciphertext:
+            try:
+                decoded = decrypt_secret(
+                    row.headers_ciphertext, get_settings().app_secret, _LLM_SECRET_PURPOSE
+                )
+                headers = json.loads(decoded)
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise DomainError(
+                    DomainErrorCode.CONFLICT,
+                    "LLM 自定义 Header 解密失败，请重新保存配置",
+                    status_code=409,
+                ) from exc
+        return secret, headers
+
     def get_owned_with_secret(
         self, session: Session, config_id: int, user: User
     ) -> tuple[LlmConfig, str, dict[str, str]]:

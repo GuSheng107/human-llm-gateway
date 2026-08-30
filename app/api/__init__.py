@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .account import router as account_router
 from .api_keys import router as api_keys_router
+from .assistant import router as assistant_router
 from .auth import router as auth_router
 from .connections import platforms_router
 from .connections import router as connections_router
@@ -74,6 +75,7 @@ def create_app() -> FastAPI:
     app.include_router(tasks_router)
     app.include_router(v1_models_router)
     app.include_router(llm_configs_router)
+    app.include_router(assistant_router)
     app.include_router(inference_router)
 
     @app.get("/healthz")
