@@ -12,6 +12,8 @@ import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { ModelsPage } from "./features/models/ModelsPage";
 import { LlmConfigsPage } from "./features/llm/LlmConfigsPage";
 import { InvitationsPage } from "./features/invitations/InvitationsPage";
+import { AssistantPanel } from "./features/assistant/AssistantPanel";
+import { AssistantProvider } from "./features/assistant/AssistantContext";
 import { AccountPage } from "./features/settings/AccountPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { UsersPage } from "./features/users/UsersPage";
@@ -79,6 +81,15 @@ function ForbiddenPage() {
   );
 }
 
+function AuthedShell() {
+  return (
+    <AssistantProvider>
+      <AppShell />
+      <AssistantPanel />
+    </AssistantProvider>
+  );
+}
+
 export default function App() {
   const routeElements: Record<AppRouteId, ReactNode> = {
     console: <DashboardPage />,
@@ -122,7 +133,7 @@ export default function App() {
         <Route
           element={
             <RequireFullAuth>
-              <AppShell />
+              <AuthedShell />
             </RequireFullAuth>
           }
         >

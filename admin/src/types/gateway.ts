@@ -254,3 +254,50 @@ export interface LlmConfigTestResult {
   http_status: number | null;
   last_tested_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// Web 小助手（docs/API_CONTRACT.md §10）
+// ---------------------------------------------------------------------------
+
+export type AssistantRole = "system" | "user" | "assistant";
+
+export interface AssistantToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface AssistantUnsavedEdit {
+  reasoning: string | null;
+  final_text: string | null;
+  tool_calls: AssistantToolCall[];
+}
+
+export interface AssistantPageContext {
+  route: string;
+  feature: string;
+  resource: Record<string, string>;
+  unsaved_edit: AssistantUnsavedEdit | null;
+  context_version: number;
+}
+
+export interface AssistantMessage {
+  id: string;
+  role: AssistantRole;
+  text: string;
+  page_context: AssistantPageContext | null;
+  upstream_metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface AssistantSession {
+  id: string;
+  title: string;
+  llm_config_id: string | null;
+  last_message_at: string | null;
+  created_at: string;
+}
+
+export interface AssistantSessionDetail extends AssistantSession {
+  messages: AssistantMessage[];
+}

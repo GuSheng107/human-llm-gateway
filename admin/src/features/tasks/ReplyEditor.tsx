@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { saveDraft, submitReply, updateDraft } from "../../api/tasks";
 import { Card } from "../../components/data-display/Card";
 import { Drawer } from "../../components/feedback/Drawer";
@@ -9,6 +9,7 @@ import { FormField } from "../../components/form/FormField";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type { ReplyDraft, TaskDetail, ToolCall } from "../../types/gateway";
+import { registerEditBridge } from "../assistant/bridge";
 import { isEmptyDraft, parseReply, serializeReply } from "./dsl";
 
 interface ToolCallEditor {
@@ -114,6 +115,46 @@ export function ReplyEditor({
     () => (liveDraft ? serializeReply(liveDraft) : ""),
     [liveDraft],
   );
+
+  // 编辑器桥：全局助手读取未提交草稿（发送时快照）与覆盖写入（用户确认后）。
+  const liveDraftRef = useRef<ReplyDraft | null>(liveDraft);
+  liveDraftRef.current = liveDraft;
+  useEffect(() => {
+    registerEditBridge({
+      getDraft: () => {
+        const draft = liveDraftRef.current;
+        if (!draft) return null;
+        return {
+          reasoning: draft.reasoning,
+          final_text: draft.final_text,
+          tool_calls: draft.tool_calls,
+        };
+      },
+      getResource: () => ({
+        task_id: task.id,
+        public_id: task.public_id,
+        state: task.state,
+        model: task.fake_model_name,
+        protocol: task.protocol,
+        strategy: task.reply_strategy,
+        delivery: task.delivery_mode,
+      }),
+      apply: (draft) => {
+        setReasoning(draft.reasoning ?? "");
+        setFinalText(draft.final_text ?? "");
+        setToolCalls(
+          draft.tool_calls.length > 0
+            ? draft.tool_calls.map((call) => ({
+                id: call.id,
+                name: call.name,
+                argumentsText: JSON.stringify(call.arguments, null, 2),
+              }))
+            : [{ id: "", name: "", argumentsText: "{}" }],
+        );
+      },
+    });
+    return () => registerEditBridge(null);
+  }, [task.id, task.public_id, task.state, task.fake_model_name, task.protocol, task.reply_strategy, task.delivery_mode]);
 
   const updateCall = (index: number, patch: Partial<ToolCallEditor>) => {
     setToolCalls((prev) => prev.map((call, i) => (i === index ? { ...call, ...patch } : call)));
