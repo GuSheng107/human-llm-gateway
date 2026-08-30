@@ -13,6 +13,7 @@ import { ModelsPage } from "./features/models/ModelsPage";
 import { LlmConfigsPage } from "./features/llm/LlmConfigsPage";
 import { InvitationsPage } from "./features/invitations/InvitationsPage";
 import { LogsPage } from "./features/logs/LogsPage";
+import { ToolsPage } from "./features/tools/ToolsPage";
 import { AssistantPanel } from "./features/assistant/AssistantPanel";
 import { AssistantProvider } from "./features/assistant/AssistantContext";
 import { AccountPage } from "./features/settings/AccountPage";
@@ -99,6 +100,7 @@ export default function App() {
     apiKeys: <ApiKeysPage />,
     models: <ModelsPage />,
     llmConfigs: <LlmConfigsPage />,
+    tools: <ToolsPage />,
     logs: <LogsPage />,
     invitations: <InvitationsPage />,
     users: <UsersPage />,

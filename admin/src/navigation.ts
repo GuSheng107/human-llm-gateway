@@ -7,6 +7,7 @@ export type AppRouteId =
   | "apiKeys"
   | "models"
   | "llmConfigs"
+  | "tools"
   | "logs"
   | "invitations"
   | "users"
@@ -80,6 +81,13 @@ export const NAVIGATION: NavigationGroup[] = [
         description: "真实 LLM 配置与连通性测试",
         icon: "gateway",
         capability: "model.manage",
+      },
+      {
+        id: "tools",
+        path: "/tools",
+        label: "工具沙箱",
+        description: "服务端工具白名单与隔离执行",
+        icon: "code",
       },
     ],
   },

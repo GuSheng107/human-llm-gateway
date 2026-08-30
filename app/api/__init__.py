@@ -30,6 +30,7 @@ from .limits import BodySizeLimitMiddleware
 from .llm_configs import router as llm_configs_router
 from .logs import router as logs_router
 from .tasks import router as tasks_router
+from .tools import router as tools_router
 from .users import router as users_router
 from .v1_models import router as v1_models_router
 
@@ -78,6 +79,7 @@ def create_app() -> FastAPI:
     app.include_router(llm_configs_router)
     app.include_router(assistant_router)
     app.include_router(logs_router)
+    app.include_router(tools_router)
     app.include_router(inference_router)
 
     @app.get("/healthz")

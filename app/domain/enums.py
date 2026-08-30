@@ -126,6 +126,16 @@ class ActorType(StrEnum):
     CALLER = "caller"
 
 
+class ToolExecutionState(StrEnum):
+    """工具沙箱执行状态（M12）。"""
+
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    LIMIT_EXCEEDED = "limit_exceeded"
+
+
 class AuditResult(StrEnum):
     SUCCESS = "success"
     DENIED = "denied"
@@ -170,3 +180,8 @@ class AuditAction(StrEnum):
     API_KEY_UPDATED = "api_key.updated"
     API_KEY_DELETED = "api_key.deleted"
     TASK_REPLY_SUBMITTED = "task.reply_submitted"
+    TOOL_WHITELIST_CREATED = "tool_whitelist.created"
+    TOOL_WHITELIST_UPDATED = "tool_whitelist.updated"
+    TOOL_WHITELIST_DELETED = "tool_whitelist.deleted"
+    TOOL_EXECUTED = "tool.executed"
+    TOOL_EXECUTION_DENIED = "tool.execution_denied"
