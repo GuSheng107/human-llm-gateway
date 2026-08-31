@@ -53,3 +53,10 @@ export async function changePassword(
     body: JSON.stringify({ current_password, new_password }),
   });
 }
+
+export async function changePasswordForced(new_password: string): Promise<CurrentUser> {
+  return api<CurrentUser>("/api/account/password/forced", {
+    method: "POST",
+    body: JSON.stringify({ new_password }),
+  });
+}

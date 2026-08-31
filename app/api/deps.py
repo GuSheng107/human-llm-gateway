@@ -20,6 +20,7 @@ _RESTRICTED_SESSION_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
         ("GET", "/api/auth/me"),
         ("POST", "/api/auth/logout"),
         ("POST", "/api/account/password"),
+        ("POST", "/api/account/password/forced"),
     }
 )
 

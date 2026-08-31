@@ -47,6 +47,19 @@ class AuthSessionRepository:
         )
         return result.rowcount
 
+    def revoke_all_except(self, session: Session, user_id: int, token_hash: str) -> int:
+        """撤销除当前会话外的全部会话（强制改密后保留本次登录）。"""
+        result = session.execute(
+            update(AuthSession)
+            .where(
+                AuthSession.user_id == user_id,
+                AuthSession.revoked_at.is_(None),
+                AuthSession.token_hash != token_hash,
+            )
+            .values(revoked_at=_now())
+        )
+        return result.rowcount
+
     def revoke_all_for_user(self, session: Session, user_id: int) -> int:
         result = session.execute(
             update(AuthSession)

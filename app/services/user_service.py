@@ -270,6 +270,34 @@ class UserService:
         )
         session.flush()
 
+    def set_password(
+        self,
+        session: Session,
+        user: User,
+        *,
+        new_password: str,
+        keep_token_hash: str,
+    ) -> None:
+        """强制改密：不校验旧密码，设置新哈希并撤销其余会话。"""
+        problems = password_problems(new_password, user.username)
+        if problems:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED, "; ".join(problems), status_code=400
+            )
+        user.password_hash = hash_password(normalize_password(new_password))
+        user.must_change_password = False
+        self.sessions.revoke_all_except(session, user.id, keep_token_hash)
+        self.audit.add(
+            session,
+            action=AuditAction.USER_PASSWORD_CHANGED,
+            resource_type="user",
+            resource_id=str(user.id),
+            actor_user_id=user.id,
+            owner_user_id=user.id,
+            metadata={"fields": ["password_hash", "must_change_password"]},
+        )
+        session.flush()
+
     def reset_password(
         self,
         session: Session,

@@ -61,6 +61,8 @@ export function RegisterPage() {
         captcha_token: captchaToken,
         captcha_code: captchaCode,
       });
+      // 预填登录页账号：与"记住用户名"共用同一 localStorage 语义。
+      localStorage.setItem("hlg_remembered_username", form.username.trim());
       notify("注册成功，请登录");
       navigate("/login", { replace: true });
     } catch (caught) {

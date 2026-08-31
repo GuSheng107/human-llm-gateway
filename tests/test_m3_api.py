@@ -314,6 +314,52 @@ def test_admin_constraints_reset_and_audit_redaction(client, admin_headers) -> N
         assert "Initial-Reset-User6!" not in encoded
 
 
+def test_forced_password_change_skips_current_password(client, admin_headers) -> None:
+    created = client.post(
+        "/api/users",
+        headers=admin_headers,
+        json={
+            "username": "forced-user",
+            "display_name": "Forced User",
+            "password": None,
+        },
+    ).json()
+    temp = created["temporary_password"]
+    assert temp
+    _login_body, user_headers = _login(client, "forced-user", temp)
+    assert _login_body["must_change_password"] is True
+
+    # 受限会话使用 forced 端点：无需旧密码，撤销其他会话。
+    forced = client.post(
+        "/api/account/password/forced",
+        headers=user_headers,
+        json={"new_password": "Forced-New-Pass7!"},
+    )
+    assert forced.status_code == 200
+    assert forced.json()["must_change_password"] is False
+    assert client.get("/api/auth/me", headers=user_headers).status_code == 200
+
+    # 完整会话不可使用 forced 端点。
+    again = client.post(
+        "/api/account/password/forced",
+        headers=user_headers,
+        json={"new_password": "Forced-Again-Pass8!"},
+    )
+    assert again.status_code == 403
+
+    # 新密码可以直接登录；旧密码失效。
+    rejected = client.post(
+        "/api/auth/login",
+        json={
+            "username": "forced-user",
+            "password": temp,
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    assert rejected.status_code == 401
+
+
 def test_username_length_is_bounded_at_schema_boundary(client, admin_headers) -> None:
     # 模式上限 64，超过应在边界返回 422 而非落入服务层。
     too_long = "a" * 65

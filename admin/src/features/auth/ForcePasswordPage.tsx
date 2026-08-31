@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { changePassword } from "../../api/auth";
+import { changePasswordForced } from "../../api/auth";
 import { FormField } from "../../components/form/FormField";
 import { PasswordInput } from "../../components/form/PasswordInput";
 import { PasswordStrength, passwordValid } from "../../components/form/PasswordStrength";
@@ -11,7 +11,6 @@ import { useAuth } from "./AuthContext";
 export function ForcePasswordPage() {
   const { setUser, logout } = useAuth();
   const navigate = useNavigate();
-  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
@@ -33,7 +32,7 @@ export function ForcePasswordPage() {
     setSubmitting(true);
     setError("");
     try {
-      const user = await changePassword(currentPassword, newPassword);
+      const user = await changePasswordForced(newPassword);
       setUser(user);
       navigate("/console", { replace: true });
     } catch (caught) {
@@ -58,14 +57,6 @@ export function ForcePasswordPage() {
           <p className="mt-2 text-xs leading-5 text-slate-400">改完即可进入控制台。</p>
         </div>
         <form onSubmit={submit} className="space-y-4">
-          <FormField label="当前临时密码" required>
-            <PasswordInput
-              autoComplete="current-password"
-              required
-              value={currentPassword}
-              onChange={(event) => setCurrentPassword(event.target.value)}
-            />
-          </FormField>
           <FormField
             label="新密码"
             required
