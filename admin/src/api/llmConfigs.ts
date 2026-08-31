@@ -1,7 +1,9 @@
 import { api } from "./client";
 import type { LlmConfig, LlmConfigTestResult, Page } from "../types/gateway";
 
-export type LlmProtocol = "openai_compatible" | "anthropic";
+export type LlmProtocol = "openai_chat" | "openai_responses" | "anthropic_messages";
+export type ThinkingMode = "model_default" | "enabled" | "disabled";
+export type ThinkingLevel = "low" | "medium" | "high";
 
 export interface LlmConfigHeaderInput {
   name: string;
@@ -17,6 +19,17 @@ export interface LlmConfigPayload {
   timeout_seconds: number;
   headers?: LlmConfigHeaderInput[];
   enabled?: boolean;
+  default_temperature?: number | null;
+  default_top_p?: number | null;
+  default_top_k?: number | null;
+  max_output_tokens?: number | null;
+  context_window_input?: number | null;
+  context_window_output?: number | null;
+  max_tool_call_rounds?: number;
+  supports_image_input?: boolean;
+  thinking_mode?: ThinkingMode;
+  thinking_level?: ThinkingLevel | null;
+  extra_body?: Record<string, unknown>;
 }
 
 export interface LlmConfigUpdatePayload {
@@ -28,6 +41,17 @@ export interface LlmConfigUpdatePayload {
   timeout_seconds?: number;
   headers?: LlmConfigHeaderInput[];
   enabled?: boolean;
+  default_temperature?: number | null;
+  default_top_p?: number | null;
+  default_top_k?: number | null;
+  max_output_tokens?: number | null;
+  context_window_input?: number | null;
+  context_window_output?: number | null;
+  max_tool_call_rounds?: number;
+  supports_image_input?: boolean;
+  thinking_mode?: ThinkingMode;
+  thinking_level?: ThinkingLevel | null;
+  extra_body?: Record<string, unknown>;
 }
 
 export function listLlmConfigs(page: number, search = ""): Promise<Page<LlmConfig>> {

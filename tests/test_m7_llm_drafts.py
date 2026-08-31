@@ -26,7 +26,7 @@ import pytest
 def _llm_body(
     *,
     name: str = "primary",
-    protocol: str = "openai_compatible",
+    protocol: str = "openai_chat",
     base_url: str = "https://api.example.com/v1",
     api_key: str = "sk-llm-test",
     model: str = "gpt-4o-mini",
@@ -83,7 +83,7 @@ def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hel
 # ----------------------------------------------------------------------
 
 
-def test_generate_chat_with_openai_compatible_llm(client, created_user, created_key) -> None:
+def test_generate_chat_with_openai_chat_llm(client, created_user, created_key) -> None:
     task_id = _make_waiting_task(
         client, created_key.id, created_user.user_id, content="hello world"
     )
@@ -291,7 +291,7 @@ def test_generate_anthropic_with_anthropic_llm(client, created_user, created_key
         created_user.headers,
         _llm_body(
             name="claude-upstream",
-            protocol="anthropic",
+            protocol="anthropic_messages",
             base_url="https://api.anthropic.com",
             model="claude-3-5-sonnet",
         ),
@@ -342,7 +342,7 @@ def test_cross_protocol_generation_chat_to_anthropic(client, created_user, creat
         created_user.headers,
         _llm_body(
             name="anthropic-cross",
-            protocol="anthropic",
+            protocol="anthropic_messages",
             base_url="https://api.anthropic.com",
             model="claude-3-5-sonnet",
         ),
@@ -396,7 +396,7 @@ def test_cross_protocol_generation_rejects_unequivalent_fields(
         created_user.headers,
         _llm_body(
             name="anthropic-strict",
-            protocol="anthropic",
+            protocol="anthropic_messages",
             base_url="https://api.anthropic.com",
             model="claude-3-5-sonnet",
         ),

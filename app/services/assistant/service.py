@@ -28,6 +28,7 @@ from ...repositories.models import (
 )
 from .. import llm_upstream
 from ..llm_config_service import LlmConfigService
+from ..llm_draft_service import _apply_config
 from .redaction import build_page_context, log_redaction, redact_text
 
 # 会话消息历史上限（送上游时截断到最近 N 条，防 token 爆炸）。
@@ -119,6 +120,8 @@ class AssistantService:
     ) -> AssistantMessage:
         """发送 user 消息并同步取回 LLM 回复；两步在同一事务落库。"""
         begin_immediate_if_sqlite(session)
+        owner_id = user.id
+        assistant_session_id = session_row.id
         cleaned_text = (text or "").strip()
         if not cleaned_text:
             raise DomainError(DomainErrorCode.VALIDATION_FAILED, "消息不能为空", status_code=400)
@@ -171,6 +174,9 @@ class AssistantService:
         session.add(user_message)
         session.flush()
         log_redaction(f"session:{session_row.id}:msg:{user_message.id}", redaction_hits)
+        # 用户消息先独立持久化，随后释放 SQLite 写锁再调用慢上游；上游失败时
+        # 也保留这条消息，便于用户重试，而不会锁住全站写请求。
+        session.commit()
 
         # LLM 回复：同步调用（第一阶段无流式）；失败时 user 消息仍保留，
         # 错误透传给前端（不吞消息）。历史（含刚写入的干净 user 消息）
@@ -183,14 +189,22 @@ class AssistantService:
             context_json=context_json,
             session_id=session_row.id,
         )
+        begin_immediate_if_sqlite(session)
+        current_session = session.get(AssistantSession, assistant_session_id, with_for_update=True)
+        if (
+            current_session is None
+            or current_session.deleted_at is not None
+            or current_session.owner_user_id != owner_id
+        ):
+            raise DomainError(DomainErrorCode.NOT_FOUND, "会话不存在", status_code=404)
         reply_message = AssistantMessage(
-            session_id=session_row.id,
+            session_id=assistant_session_id,
             role=AssistantRole.ASSISTANT,
             content_json=json.dumps({"text": reply_text}, ensure_ascii=False),
             upstream_metadata_json=json.dumps(metadata, ensure_ascii=False),
         )
         session.add(reply_message)
-        session_row.last_message_at = utc_now()
+        current_session.last_message_at = utc_now()
         session.flush()
         return reply_message
 
@@ -280,30 +294,60 @@ class AssistantService:
                 f"{messages[-1]['content']}\n\n[Page context snapshot]\n{context_json}"
             )
 
-        body: dict[str, Any] = {
-            "model": cfg.real_model,
-            "messages": messages,
-        }
-        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
+        protocol = cfg.protocol
+        base_url = cfg.base_url
+        timeout_seconds = cfg.timeout_seconds
+        real_model = cfg.real_model
+        if protocol is LLMProtocol.OPENAI_CHAT:
+            request_body: dict[str, Any] = {
+                "model": real_model,
+                "messages": messages,
+            }
+        elif protocol is LLMProtocol.OPENAI_RESPONSES:
+            request_body = {
+                "model": real_model,
+                "instructions": messages[0]["content"],
+                "input": [
+                    {
+                        "role": message["role"],
+                        "content": [{"type": "input_text", "text": message["content"]}],
+                    }
+                    for message in messages[1:]
+                ],
+            }
+        else:
+            request_body = {
+                "model": real_model,
+                "max_tokens": 2048,
+                "messages": [m for m in messages if m["role"] != "system"],
+                **({"system": messages[0]["content"]} if messages else {}),
+            }
+        _apply_config(request_body, cfg)
+        # 历史与配置均已复制到局部变量；网络 I/O 前结束读取事务。
+        session.rollback()
+        if protocol is LLMProtocol.OPENAI_CHAT:
             upstream = await llm_upstream.post_chat_completions(
-                base_url=cfg.base_url,
+                base_url=base_url,
                 api_key=secret,
-                request_body=body,
+                request_body=request_body,
                 extra_headers=headers,
-                timeout_seconds=cfg.timeout_seconds,
+                timeout_seconds=timeout_seconds,
+            )
+        elif protocol is LLMProtocol.OPENAI_RESPONSES:
+            upstream = await llm_upstream.post_responses(
+                base_url=base_url,
+                api_key=secret,
+                request_body=request_body,
+                extra_headers=headers,
+                timeout_seconds=timeout_seconds,
             )
         else:
             upstream = await llm_upstream.post_anthropic_messages(
-                base_url=cfg.base_url,
+                base_url=base_url,
                 api_key=secret,
-                request_body={
-                    "model": cfg.real_model,
-                    "max_tokens": 2048,
-                    "messages": [m for m in messages if m["role"] != "system"],
-                    **({"system": messages[0]["content"]} if messages else {}),
-                },
+                request_body=request_body,
                 extra_headers=headers,
-                timeout_seconds=cfg.timeout_seconds,
+                timeout_seconds=timeout_seconds,
             )
         reply_text, finish = self._extract_reply(upstream)
         usage = upstream.get("usage") or {}
@@ -326,6 +370,17 @@ class AssistantService:
                 content if isinstance(content, str) else str(content),
                 choices[0].get("finish_reason") or "stop",
             )
+        output = upstream.get("output")
+        if isinstance(output, list):
+            parts: list[str] = []
+            for item in output:
+                if not isinstance(item, dict) or item.get("type") != "message":
+                    continue
+                for block in item.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "output_text":
+                        parts.append(str(block.get("text") or ""))
+            if parts:
+                return "".join(parts), upstream.get("status") or "completed"
         content = upstream.get("content")
         if isinstance(content, list):
             parts = [

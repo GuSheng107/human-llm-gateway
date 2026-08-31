@@ -99,6 +99,23 @@ def _chat_headers(api_key: str, extra: dict[str, str]) -> dict[str, str]:
     return headers
 
 
+def _responses_url(base_url: str) -> str:
+    """OpenAI Responses endpoint：与 chat 相同的 base_url 归一规则（去掉路径尾 "/v1" 后追加 /responses）。
+
+    用户填到 /v1（或不带 v1 的裸 host）均可，这里统一拼 /responses。
+    """
+    cleaned = base_url.rstrip("/")
+    cleaned = cleaned.removesuffix("/chat/completions").removesuffix("/responses")
+    return cleaned + "/responses"
+
+
+def _chat_completions_url(base_url: str) -> str:
+    """接受 API base URL 或完整端点，且不重复拼接路径。"""
+    cleaned = base_url.rstrip("/")
+    cleaned = cleaned.removesuffix("/responses").removesuffix("/chat/completions")
+    return cleaned + "/chat/completions"
+
+
 def _anthropic_messages_url(base_url: str) -> str:
     """Anthropic messages endpoint：兼容已归一（含 /v1）与裸 host 两种形态。
 
@@ -106,6 +123,8 @@ def _anthropic_messages_url(base_url: str) -> str:
     在此防御性补齐，避免旧数据升级后 404。
     """
     cleaned = base_url.rstrip("/")
+    if cleaned.endswith("/v1/messages"):
+        return cleaned
     if cleaned.endswith("/v1"):
         return cleaned + "/messages"
     return cleaned + "/v1/messages"
@@ -132,7 +151,7 @@ async def post_chat_completions(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     await _precheck_ssrf(base_url)
-    url = base_url.rstrip("/") + "/chat/completions"
+    url = _chat_completions_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             resp = await client.post(
@@ -203,6 +222,37 @@ class _StreamBudget:
             raise _raise_timeout()
 
 
+async def post_responses(
+    *,
+    base_url: str,
+    api_key: str,
+    request_body: dict[str, Any],
+    extra_headers: dict[str, str],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    """OpenAI Responses：POST {base_url}/responses。"""
+    await _precheck_ssrf(base_url)
+    url = _responses_url(base_url)
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            resp = await client.post(
+                url, headers=_chat_headers(api_key, extra_headers), json=request_body
+            )
+    except httpx.TimeoutException as exc:
+        raise _raise_timeout() from exc
+    except httpx.RequestError as exc:
+        raise _raise_network() from exc
+    if resp.status_code >= 400:
+        raise _raise_upstream(resp.status_code)
+    raw = resp.content
+    if len(raw) > LLM_MAX_RESPONSE_BYTES:
+        raise _raise_too_large("体积")
+    try:
+        return json.loads(raw)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise _raise_bad_json() from exc
+
+
 async def stream_chat_completions(
     *,
     base_url: str,
@@ -214,7 +264,7 @@ async def stream_chat_completions(
     """流式 Chat Completions：解析 delta.content / reasoning_content /
     tool_calls 增量并归一为 UpstreamChunk。"""
     await _precheck_ssrf(base_url)
-    url = base_url.rstrip("/") + "/chat/completions"
+    url = _chat_completions_url(base_url)
     body = {**request_body, "stream": True}
     budget = _StreamBudget()
     client = httpx.AsyncClient(timeout=timeout_seconds)
@@ -233,6 +283,69 @@ async def stream_chat_completions(
         raise _raise_network() from exc
     finally:
         await client.aclose()
+
+
+async def stream_responses(
+    *,
+    base_url: str,
+    api_key: str,
+    request_body: dict[str, Any],
+    extra_headers: dict[str, str],
+    timeout_seconds: float,
+) -> AsyncIterator[UpstreamChunk]:
+    """流式 OpenAI Responses：解析 response.output_text.delta /
+    response.reasoning_summary_text.delta / response.function_call_* 事件。"""
+    await _precheck_ssrf(base_url)
+    url = _responses_url(base_url)
+    body = {**request_body, "stream": True}
+    budget = _StreamBudget()
+    client = httpx.AsyncClient(timeout=timeout_seconds)
+    try:
+        async with client.stream(
+            "POST", url, headers=_chat_headers(api_key, extra_headers), json=body
+        ) as resp:
+            if resp.status_code >= 400:
+                await resp.aread()
+                raise _raise_upstream(resp.status_code)
+            async for chunk in _iter_sse_data(resp, budget):
+                parsed = _parse_responses_event(chunk)
+                if parsed is not None:
+                    yield parsed
+    except httpx.TimeoutException as exc:
+        raise _raise_timeout() from exc
+    except httpx.RequestError as exc:
+        raise _raise_network() from exc
+    finally:
+        await client.aclose()
+
+
+def _parse_responses_event(payload: dict[str, Any]) -> UpstreamChunk | None:
+    """Responses SSE 事件归一；仅处理主流增量事件，其余忽略。"""
+    event_type = payload.get("type") or ""
+    if event_type == "response.output_text.delta":
+        return UpstreamChunk(text=payload.get("delta") or "")
+    if event_type in ("response.reasoning_summary_text.delta", "response.reasoning.delta"):
+        return UpstreamChunk(reasoning=payload.get("delta") or "")
+    if event_type == "response.function_call_arguments.delta":
+        # 参数增量无需消费：response.output_item.done 携带完整 arguments。
+        return None
+    if event_type == "response.output_item.done":
+        item = payload.get("item") or {}
+        if item.get("type") == "function_call":
+            arguments = item.get("arguments")
+            try:
+                parsed_args = json.loads(arguments) if isinstance(arguments, str) else {}
+            except ValueError:
+                parsed_args = {}
+            return UpstreamChunk(
+                tool_call={
+                    "id": item.get("id", ""),
+                    "name": item.get("name", ""),
+                    "arguments": parsed_args,
+                }
+            )
+        return None
+    return None
 
 
 async def stream_anthropic_messages(

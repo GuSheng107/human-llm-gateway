@@ -4,7 +4,7 @@
 """
 
 # 数据库 Schema 版本：与代码不一致时启动失败，不执行迁移。
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 加密契约（详见 docs/DATABASE.md §2.4）
 SECRET_ENVELOPE_PREFIX = "hlg1"

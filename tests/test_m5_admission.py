@@ -40,7 +40,7 @@ def _prepare(sessions) -> tuple[int, list[int]]:
         config = LlmConfig(
             owner_user_id=owner_id,
             name="upstream",
-            protocol="openai_compatible",
+            protocol="openai_chat",
             base_url="https://example.test/v1",
             real_model="gpt-admission",
             secret_ciphertext=secret,

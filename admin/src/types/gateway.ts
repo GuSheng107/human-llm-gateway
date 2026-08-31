@@ -242,7 +242,7 @@ export interface LlmConfigHeader {
 export interface LlmConfig {
   id: string;
   name: string;
-  protocol: "openai_compatible" | "anthropic";
+  protocol: "openai_chat" | "openai_responses" | "anthropic_messages";
   base_url: string;
   base_url_host: string;
   real_model: string;
@@ -250,6 +250,17 @@ export interface LlmConfig {
   is_enabled: boolean;
   api_key_set: boolean;
   headers: LlmConfigHeader[];
+  default_temperature: number | null;
+  default_top_p: number | null;
+  default_top_k: number | null;
+  max_output_tokens: number | null;
+  context_window_input: number | null;
+  context_window_output: number | null;
+  max_tool_call_rounds: number;
+  supports_image_input: boolean;
+  thinking_mode: "model_default" | "enabled" | "disabled";
+  thinking_level: "low" | "medium" | "high" | null;
+  extra_body: Record<string, unknown>;
   last_tested_at: string | null;
   last_test_result: string | null;
   created_at: string;

@@ -32,8 +32,31 @@ class ConnectionState(StrEnum):
 
 
 class LLMProtocol(StrEnum):
-    OPENAI_COMPATIBLE = "openai_compatible"
-    ANTHROPIC = "anthropic"
+    """LLM 配置的上游协议编码（转发编码层，不等于客户端协议）。
+
+    openai_chat      -> {base_url}/chat/completions
+    openai_responses -> {base_url}/responses（支持 reasoning.effort）
+    anthropic        -> {base_url}/v1/messages
+    客户端协议（chat/responses/messages）与转发协议任意组合（cross 矩阵）。
+    """
+
+    OPENAI_CHAT = "openai_chat"
+    OPENAI_RESPONSES = "openai_responses"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+
+
+class ThinkingMode(StrEnum):
+    MODEL_DEFAULT = "model_default"
+    ENABLED = "enabled"
+    DISABLED = "disabled"
+
+
+class ThinkingLevel(StrEnum):
+    """仅 OpenAI Responses 上游支持（reasoning.effort）。"""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
 
 
 class FakeModelScope(StrEnum):

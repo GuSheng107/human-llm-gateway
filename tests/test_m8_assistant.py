@@ -25,7 +25,7 @@ _UPSTREAM_ANTHROPIC = "app.services.llm_upstream.post_anthropic_messages"
 def _llm_body(name: str = "assistant-cfg") -> dict[str, Any]:
     return {
         "name": name,
-        "protocol": "openai_compatible",
+        "protocol": "openai_chat",
         "base_url": "https://api.example.com/v1",
         "api_key": "sk-assistant",
         "model": "gpt-4o-mini",
@@ -405,7 +405,7 @@ def test_anthropic_config_reply_extracted(client, created_user) -> None:
         headers=created_user.headers,
         json={
             "name": "assistant-anthropic",
-            "protocol": "anthropic",
+            "protocol": "anthropic_messages",
             "base_url": "https://api.anthropic.com",
             "api_key": "sk-ant",
             "model": "claude-3-5-sonnet",

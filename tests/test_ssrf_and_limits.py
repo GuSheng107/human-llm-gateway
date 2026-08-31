@@ -138,7 +138,7 @@ def test_domain_to_public_allowed(monkeypatch) -> None:
 def _config_body(base_url: str) -> dict[str, Any]:
     return {
         "name": "ssrf-probe",
-        "protocol": "openai_compatible",
+        "protocol": "openai_chat",
         "base_url": base_url,
         "api_key": "sk",
         "model": "gpt-4o-mini",
@@ -235,9 +235,9 @@ def test_post_chat_completions_prechecks_before_request() -> None:
 def test_connectivity_test_returns_blocked_for_private() -> None:
     import asyncio
 
-    from app.services.llm_test_service import test_openai_compatible
+    from app.services.llm_test_service import test_openai_chat
 
-    outcome = asyncio.run(test_openai_compatible(base_url="http://10.0.0.5/v1", api_key="sk"))
+    outcome = asyncio.run(test_openai_chat(base_url="http://10.0.0.5/v1", api_key="sk"))
     assert outcome.success is False
     assert outcome.reason_code == "blocked"
 

@@ -2,7 +2,7 @@
 
 按 LLM 协议分流调用真实 endpoint（仅连通性测试，不保存任何响应正文）：
 
-- `openai_compatible`：GET {base_url}/models，使用 `Authorization: Bearer <api_key>`。
+- `openai_chat`：GET {base_url}/models，使用 `Authorization: Bearer <api_key>`。
 - `anthropic`：POST {base_url}/v1/messages，使用 `Authorization: x-api-key` 与
   `anthropic-version: 2023-06-01`，最小请求体（max_tokens=1, messages=[user "."]）。
 
@@ -56,7 +56,7 @@ async def _ssrf_precheck(base_url: str) -> ConnTestOutcome | None:
     return None
 
 
-async def test_openai_compatible(
+async def test_openai_chat(
     *,
     base_url: str,
     api_key: str,
@@ -129,6 +129,40 @@ async def test_anthropic(
     )
 
 
+async def test_openai_responses(
+    *,
+    base_url: str,
+    api_key: str,
+    real_model: str,
+    extra_headers: dict[str, str] | None = None,
+    timeout_seconds: float = LLM_CONNECT_TEST_TIMEOUT_SECONDS,
+) -> ConnTestOutcome:
+    """OpenAI Responses 无列表端点；用最小真实请求度量连通性。"""
+    blocked = await _ssrf_precheck(base_url)
+    if blocked is not None:
+        return blocked
+    url = base_url.rstrip("/") + "/responses"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
+    body = {"model": real_model, "input": "ping", "max_output_tokens": 4}
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.post(url, headers=headers, json=body)
+    except httpx.TimeoutException:
+        return ConnTestOutcome(False, "timeout", "连接超时", None)
+    except httpx.RequestError as exc:
+        return ConnTestOutcome(False, "network_error", f"网络错误: {exc.__class__.__name__}", None)
+    if 200 <= response.status_code < 300:
+        return ConnTestOutcome(True, "ok", "ok", response.status_code)
+    return ConnTestOutcome(
+        False,
+        "upstream_error",
+        f"上游返回 {response.status_code}",
+        response.status_code,
+    )
+
+
 async def run_connectivity_test(
     *,
     protocol: LLMProtocol,
@@ -138,13 +172,20 @@ async def run_connectivity_test(
     extra_headers: dict[str, str] | None = None,
 ) -> ConnTestOutcome:
     """按协议分发；统一超时上限 10s（独立于配置 timeout_seconds）。"""
-    if protocol is LLMProtocol.OPENAI_COMPATIBLE:
-        return await test_openai_compatible(
+    if protocol is LLMProtocol.OPENAI_CHAT:
+        return await test_openai_chat(
             base_url=base_url,
             api_key=api_key,
             extra_headers=extra_headers,
         )
-    if protocol is LLMProtocol.ANTHROPIC:
+    if protocol is LLMProtocol.OPENAI_RESPONSES:
+        return await test_openai_responses(
+            base_url=base_url,
+            api_key=api_key,
+            real_model=real_model,
+            extra_headers=extra_headers,
+        )
+    if protocol is LLMProtocol.ANTHROPIC_MESSAGES:
         return await test_anthropic(
             base_url=base_url,
             api_key=api_key,

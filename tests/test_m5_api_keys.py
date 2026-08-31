@@ -245,7 +245,7 @@ def _llm_config_id(owner_user_id: int) -> int:
         config = LlmConfig(
             owner_user_id=owner_user_id,
             name=f"upstream-{owner_user_id}",
-            protocol="openai_compatible",
+            protocol="openai_chat",
             base_url="https://example.test/v1",
             real_model="gpt-test",
             secret_ciphertext=secret,

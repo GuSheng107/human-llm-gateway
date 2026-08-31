@@ -6,7 +6,7 @@ from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from ..core.db import begin_immediate_if_sqlite, get_db
+from ..core.db import get_db
 from ..domain.enums import UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.models import User
@@ -24,9 +24,6 @@ _RESTRICTED_SESSION_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
-_WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
-
-
 def require_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),
@@ -34,9 +31,6 @@ def require_current_user(
 ) -> User:
     if not credentials or credentials.scheme.lower() != "bearer":
         raise DomainError(DomainErrorCode.UNAUTHORIZED, "登录已失效", status_code=401)
-    # 写方法在 token 查询前取得写锁，避免 WAL 下延迟事务升级写锁触发 SQLITE_BUSY_SNAPSHOT。
-    if request.method in _WRITE_METHODS:
-        begin_immediate_if_sqlite(db)
     user = AuthService().get_user_by_token(db, credentials.credentials)
     if user is None:
         raise DomainError(DomainErrorCode.UNAUTHORIZED, "登录已失效", status_code=401)

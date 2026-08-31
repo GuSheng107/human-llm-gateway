@@ -443,16 +443,12 @@ dependencies = [
     { name = "wecom-aibot-sdk" },
 ]
 
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-]
-
 [package.dev-dependencies]
 dev = [
     { name = "openai" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -464,21 +460,22 @@ requires-dist = [
     { name = "openilink-sdk-python", git = "https://github.com/openilink/openilink-sdk-python.git" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<9" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.25,<1" },
     { name = "python-multipart", specifier = ">=0.0.20,<1" },
     { name = "qrcode", specifier = ">=8.2" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.9,<1" },
     { name = "sqlalchemy", specifier = ">=2.0,<3" },
     { name = "sse-starlette", specifier = ">=3.4.8" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
     { name = "websockets", specifier = ">=17.1" },
     { name = "wecom-aibot-sdk", specifier = ">=1.0.6,<2" },
 ]
-provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "openai", specifier = "==3.6.0" }]
+dev = [
+    { name = "openai", specifier = "==3.6.0" },
+    { name = "pytest", specifier = ">=8.3,<9" },
+    { name = "pytest-asyncio", specifier = ">=0.25,<1" },
+    { name = "ruff", specifier = ">=0.9,<1" },
+]
 
 [[package]]
 name = "idna"

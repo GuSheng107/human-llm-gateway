@@ -102,7 +102,7 @@ def _make_llm_config(client, user_headers, name: str) -> int:
         headers=user_headers,
         json={
             "name": name,
-            "protocol": "openai_compatible",
+            "protocol": "openai_chat",
             "base_url": "https://api.example.com/v1",
             "api_key": "sk",
             "model": "gpt-4o-mini",

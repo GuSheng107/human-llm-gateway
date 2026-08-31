@@ -359,7 +359,11 @@ export function TaskDetailDrawer({
                     <span>
                       <span className="block font-medium text-slate-700">{cfg.name}</span>
                       <span className="text-xs text-slate-400">
-                        {cfg.protocol === "anthropic" ? "Anthropic" : "OpenAI 兼容"}
+                        {cfg.protocol === "anthropic_messages"
+                          ? "Anthropic"
+                          : cfg.protocol === "openai_responses"
+                            ? "OpenAI Responses"
+                            : "OpenAI Chat"}
                         {" · "}
                         {cfg.real_model}
                       </span>

@@ -8,6 +8,7 @@ LLM Secret 和自定义 Header 整体按 Secret 处理：服务端加密落库�
 from __future__ import annotations
 
 import json
+from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlparse
 
@@ -31,6 +32,8 @@ from ..core.security import decrypt_secret, encrypt_secret
 from ..domain.enums import (
     AuditAction,
     LLMProtocol,
+    ThinkingLevel,
+    ThinkingMode,
     UserRole,
 )
 from ..domain.errors import DomainError, DomainErrorCode
@@ -70,12 +73,12 @@ def _normalize_base_url(raw: str, protocol: LLMProtocol | None = None) -> str:
             DomainErrorCode.VALIDATION_FAILED, "base_url 必须包含主机", status_code=400
         )
     cleaned = value.rstrip("/")
-    if protocol is LLMProtocol.ANTHROPIC:
+    if protocol is LLMProtocol.ANTHROPIC_MESSAGES:
         # path 为空或已是 /v1（或 /v1/ 结尾已 rstrip）时补齐/保持；
         # 其他自定义 path（代理场景）原样保留。
         path = parsed.path.rstrip("/")
-        if path == "" or path == "/v1":
-            return f"{cleaned}/v1" if path == "" else cleaned
+        if path == "":
+            cleaned = f"{cleaned}/v1"
     # SSRF 分档校验：云元数据无条件拒；私有段受配置开关控制。
     # 域名走 getaddrinfo 全量解析（含 rebinding fail-closed）。
     from ..core.ssrf import SsrfViolation, validate_base_url
@@ -254,12 +257,38 @@ class LlmConfigService:
         timeout_seconds: int,
         headers: dict[str, str] | None = None,
         enabled: bool = True,
+        default_temperature: Decimal | None = None,
+        default_top_p: Decimal | None = None,
+        default_top_k: int | None = None,
+        max_output_tokens: int | None = None,
+        context_window_input: int | None = None,
+        context_window_output: int | None = None,
+        max_tool_call_rounds: int = 16,
+        supports_image_input: bool = False,
+        thinking_mode: ThinkingMode = ThinkingMode.MODEL_DEFAULT,
+        thinking_level: ThinkingLevel | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> LlmConfig:
         begin_immediate_if_sqlite(session)
         self._validate_name(name)
         normalized_url = _normalize_base_url(base_url, protocol)
         self._validate_model(model)
         self._validate_timeout(timeout_seconds)
+        self._validate_sampling(
+            temperature=default_temperature,
+            top_p=default_top_p,
+            top_k=default_top_k,
+            max_output_tokens=max_output_tokens,
+            context_window_input=context_window_input,
+            context_window_output=context_window_output,
+            max_tool_call_rounds=max_tool_call_rounds,
+        )
+        self._validate_thinking(protocol, thinking_mode, thinking_level)
+        normalized_extra = extra_body or {}
+        if not isinstance(normalized_extra, dict):
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED, "extra_body 必须是 JSON 对象", status_code=400
+            )
         normalized_headers = _normalize_headers(headers)
         if not api_key:
             raise DomainError(
@@ -294,6 +323,17 @@ class LlmConfigService:
                 if normalized_headers
                 else None
             ),
+            default_temperature=default_temperature,
+            default_top_p=default_top_p,
+            default_top_k=default_top_k,
+            max_output_tokens=max_output_tokens,
+            context_window_input=context_window_input,
+            context_window_output=context_window_output,
+            max_tool_call_rounds=max_tool_call_rounds,
+            supports_image_input=supports_image_input,
+            thinking_mode=thinking_mode,
+            thinking_level=thinking_level,
+            extra_body=normalized_extra,
         )
         self.repo.add(session, row)
         try:
@@ -420,6 +460,93 @@ class LlmConfigService:
                 row.headers_ciphertext = None
             changed.append("headers")
 
+        # ---- 采样参数（None 表示清空，缺省 key 表示保留）----
+        for field_name in (
+            "default_temperature",
+            "default_top_p",
+            "default_top_k",
+            "max_output_tokens",
+            "context_window_input",
+            "context_window_output",
+            "max_tool_call_rounds",
+        ):
+            if field_name not in fields:
+                continue
+            value = fields[field_name]
+            if field_name.startswith("default_") and field_name != "default_top_k":
+                value = self._coerce_decimal(value, field_name)
+            elif value is not None and value != "":
+                value = int(value)
+                if value < 1:
+                    raise DomainError(
+                        DomainErrorCode.VALIDATION_FAILED,
+                        f"{field_name} 必须为正整数",
+                        status_code=400,
+                    )
+            else:
+                value = None
+            if getattr(row, field_name) != value:
+                setattr(row, field_name, value)
+                changed.append(field_name)
+
+        if "supports_image_input" in fields and fields["supports_image_input"] is not None:
+            new_value = bool(fields["supports_image_input"])
+            if new_value != row.supports_image_input:
+                row.supports_image_input = new_value
+                changed.append("supports_image_input")
+
+        if "thinking_mode" in fields and fields["thinking_mode"] is not None:
+            try:
+                new_mode = ThinkingMode(fields["thinking_mode"])
+            except ValueError as exc:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    f"不支持的思考模式: {fields['thinking_mode']}",
+                    status_code=400,
+                ) from exc
+            if new_mode != row.thinking_mode:
+                row.thinking_mode = new_mode
+                changed.append("thinking_mode")
+
+        if "thinking_level" in fields:
+            try:
+                new_level = (
+                    ThinkingLevel(fields["thinking_level"]) if fields["thinking_level"] else None
+                )
+            except ValueError as exc:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    f"不支持的思考等级: {fields['thinking_level']}",
+                    status_code=400,
+                ) from exc
+            if new_level != row.thinking_level:
+                row.thinking_level = new_level
+                changed.append("thinking_level")
+
+        if "extra_body" in fields and fields["extra_body"] is not None:
+            new_extra = fields["extra_body"]
+            if not isinstance(new_extra, dict):
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    "extra_body 必须是 JSON 对象",
+                    status_code=400,
+                )
+            if new_extra != row.extra_body:
+                row.extra_body = new_extra
+                changed.append("extra_body")
+
+        # 采样区间 + 思考等级联动校验（协议可能同请求切换，以行终态为准）。
+        self._validate_sampling(
+            temperature=row.default_temperature,
+            top_p=row.default_top_p,
+            top_k=row.default_top_k,
+            max_output_tokens=row.max_output_tokens,
+            context_window_input=row.context_window_input,
+            context_window_output=row.context_window_output,
+            max_tool_call_rounds=row.max_tool_call_rounds,
+        )
+        self._validate_thinking(row.protocol, row.thinking_mode, row.thinking_level)
+
         try:
             session.flush()
         except IntegrityError as exc:
@@ -501,6 +628,69 @@ class LlmConfigService:
                 f"timeout_seconds 必须在 {LLM_TIMEOUT_MIN_SECONDS} 到 {LLM_TIMEOUT_MAX_SECONDS} 之间",
                 status_code=400,
             )
+
+    @staticmethod
+    def _validate_sampling(
+        *,
+        temperature: Decimal | None,
+        top_p: Decimal | None,
+        top_k: int | None,
+        max_output_tokens: int | None,
+        context_window_input: int | None,
+        context_window_output: int | None,
+        max_tool_call_rounds: int | None,
+    ) -> None:
+        def bad(field: str, message: str) -> DomainError:
+            return DomainError(
+                DomainErrorCode.VALIDATION_FAILED, f"{field}: {message}", status_code=400
+            )
+
+        if temperature is not None and not (0 <= temperature <= 2):
+            raise bad("temperature", "必须在 0.00-2.00")
+        if top_p is not None and not (0 <= top_p <= 1):
+            raise bad("top_p", "必须在 0.00-1.00")
+        if top_k is not None and not (1 <= top_k <= 100):
+            raise bad("top_k", "必须在 1-100")
+        for field_name, value in (
+            ("max_output_tokens", max_output_tokens),
+            ("context_window_input", context_window_input),
+            ("context_window_output", context_window_output),
+            ("max_tool_call_rounds", max_tool_call_rounds),
+        ):
+            if value is not None and value < 1:
+                raise bad(field_name, "必须为正整数")
+
+    @staticmethod
+    def _validate_thinking(
+        protocol: LLMProtocol, mode: ThinkingMode, level: ThinkingLevel | None
+    ) -> None:
+        if level is not None and protocol is not LLMProtocol.OPENAI_RESPONSES:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "思考等级仅支持 OpenAI Responses 协议",
+                status_code=400,
+            )
+        if (
+            protocol is LLMProtocol.OPENAI_RESPONSES
+            and mode is ThinkingMode.ENABLED
+            and level is None
+        ):
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "开启思考模式时必须指定思考等级",
+                status_code=400,
+            )
+
+    @staticmethod
+    def _coerce_decimal(value: Any, field: str) -> Decimal | None:
+        if value is None or value == "":
+            return None
+        try:
+            return Decimal(str(value))
+        except InvalidOperation as exc:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED, f"{field} 必须是数字", status_code=400
+            ) from exc
 
 
 def default_timeout_seconds() -> int:

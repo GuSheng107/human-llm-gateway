@@ -1,6 +1,6 @@
 """跨协议字段转换矩阵（docs/API_CONTRACT.md §12.6，M7-D）。
 
-把任务的规范化请求转换为目标 LLM 协议（openai_compatible / anthropic）的
+把任务的规范化请求转换为目标 LLM 协议（openai_chat / anthropic）的
 请求体。每个字段只有四种处理：透传、等价转换、网关消费、拒绝 400；
 禁止"忽略""尽量转换"或塞进 metadata。
 
@@ -511,6 +511,16 @@ _ANTHROPIC_ALLOWED = {
     "text",
     "service_tier",
 }
+_RESPONSES_ALLOWED = {
+    "temperature",
+    "top_p",
+    "stop",
+    "max_output_tokens",
+    "user",
+    "metadata",
+    "parallel_tool_calls",
+    "reasoning",
+}
 
 
 def to_chat_request(normalized: dict[str, Any], real_model: str) -> dict[str, Any]:
@@ -585,4 +595,42 @@ def to_anthropic_request(normalized: dict[str, Any], real_model: str) -> dict[st
     if stop is not None:
         body["stop_sequences"] = stop
     body.update(_metadata_to_anthropic(normalized))
+    return body
+
+
+def to_responses_request(normalized: dict[str, Any], real_model: str) -> dict[str, Any]:
+    """规范化请求 -> OpenAI Responses 请求体（跨协议严格矩阵）。
+
+    input 用消息项数组：{role, content:[{type:"input_text", text}]}。
+    reasoning effort 仅由 LLM 配置决定，不进跨协议矩阵。
+    """
+    _reject_cross_protocol_extras(normalized, _RESPONSES_ALLOWED)
+    options = _extract_options(normalized)
+    if options.get("reasoning") is not None:
+        raise _unsupported("reasoning", "thinking 由 LLM 配置控制，不支持请求级透传")
+    input_items: list[dict[str, Any]] = []
+    instructions = normalized.get("instructions")
+    if isinstance(instructions, str) and instructions.strip():
+        input_items.append(
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": f"[system] {instructions}"}],
+            }
+        )
+    for item in _context_to_chat_messages(normalized):
+        role = item.get("role")
+        if role not in {"user", "assistant", "system"}:
+            continue
+        text = item.get("content") if isinstance(item.get("content"), str) else str(item.get("content") or "")
+        input_items.append(
+            {"role": role, "content": [{"type": "input_text", "text": text}]}
+        )
+    body: dict[str, Any] = {"model": real_model, "input": input_items}
+    tools = _tools_to_chat(normalized)
+    if tools:
+        body["tools"] = tools
+    body.update(_sample_params(normalized))
+    limit = _output_limit(normalized)
+    if limit is not None:
+        body["max_output_tokens"] = limit
     return body

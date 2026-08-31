@@ -32,7 +32,7 @@ def _bearer(plaintext: str) -> dict[str, str]:
 def _create_body(
     *,
     name: str = "default",
-    protocol: str = "openai_compatible",
+    protocol: str = "openai_chat",
     base_url: str = "https://api.example.com/v1",
     api_key: str = "sk-test-123",
     model: str = "gpt-4o-mini",
@@ -68,7 +68,7 @@ def test_create_returns_view_without_secret(client, created_user) -> None:
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["name"] == "default"
-    assert body["protocol"] == "openai_compatible"
+    assert body["protocol"] == "openai_chat"
     assert body["base_url"] == "https://api.example.com/v1"
     assert body["real_model"] == "gpt-4o-mini"
     assert body["is_enabled"] is True
@@ -149,14 +149,14 @@ def test_create_anthropic_protocol(client, created_user) -> None:
         headers=created_user.headers,
         json=_create_body(
             name="claude",
-            protocol="anthropic",
+            protocol="anthropic_messages",
             base_url="https://api.anthropic.com",
             api_key="sk-ant-test",
             model="claude-3-5-sonnet",
         ),
     )
     assert resp.status_code == 201
-    assert resp.json()["protocol"] == "anthropic"
+    assert resp.json()["protocol"] == "anthropic_messages"
 
 
 def test_get_returns_redacted_view(client, created_user) -> None:

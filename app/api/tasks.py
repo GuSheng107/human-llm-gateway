@@ -440,7 +440,7 @@ async def generate_draft(
 ) -> DraftView:
     """调用用户选定 LLM 配置生成持久化草稿（M7-B）。
 
-    仅同协议：Chat/Responses 任务必须选 openai_compatible；Anthropic 任务
+    仅同协议：Chat/Responses 任务必须选 openai_chat；Anthropic 任务
     必须选 anthropic。跨协议生成在后续阶段（字段矩阵）开放。
     """
     from ..services.llm_draft_service import LlmDraftService

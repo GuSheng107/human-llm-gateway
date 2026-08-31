@@ -7,6 +7,8 @@ Secret 与自定义 Header 整体不回显：列表与详情只返回"是否设�
 
 from __future__ import annotations
 
+from decimal import Decimal
+from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Query, Response
@@ -21,7 +23,7 @@ from ..core.constants import (
 )
 from ..core.db import get_db
 from ..core.time import iso_utc
-from ..domain.enums import LLMProtocol, UserRole
+from ..domain.enums import LLMProtocol, ThinkingLevel, ThinkingMode, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.models import LlmConfig, User
 from ..services.llm_config_service import LlmConfigService
@@ -53,6 +55,17 @@ class LlmConfigCreate(StrictModel):
     timeout_seconds: int = Field(default=LLM_TIMEOUT_DEFAULT_SECONDS, ge=5, le=600)
     headers: list[LlmConfigHeaderSpec] = Field(default_factory=list)
     enabled: bool = True
+    default_temperature: float | None = Field(default=None, ge=0, le=2)
+    default_top_p: float | None = Field(default=None, ge=0, le=1)
+    default_top_k: int | None = Field(default=None, ge=1, le=100)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    context_window_input: int | None = Field(default=None, ge=1)
+    context_window_output: int | None = Field(default=None, ge=1)
+    max_tool_call_rounds: int = Field(default=16, ge=1, le=500)
+    supports_image_input: bool = False
+    thinking_mode: str = "model_default"
+    thinking_level: str | None = None
+    extra_body: dict[str, Any] = Field(default_factory=dict)
 
 
 class LlmConfigUpdate(StrictModel):
@@ -65,6 +78,17 @@ class LlmConfigUpdate(StrictModel):
     timeout_seconds: int | None = Field(default=None, ge=5, le=600)
     headers: list[LlmConfigHeaderSpec] | None = None
     enabled: bool | None = None
+    default_temperature: float | None = Field(default=None, ge=0, le=2)
+    default_top_p: float | None = Field(default=None, ge=0, le=1)
+    default_top_k: int | None = Field(default=None, ge=1, le=100)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    context_window_input: int | None = Field(default=None, ge=1)
+    context_window_output: int | None = Field(default=None, ge=1)
+    max_tool_call_rounds: int | None = Field(default=None, ge=1, le=500)
+    supports_image_input: bool | None = None
+    thinking_mode: str | None = None
+    thinking_level: str | None = None
+    extra_body: dict[str, Any] | None = None
 
 
 # ----------------------------------------------------------------------
@@ -88,6 +112,17 @@ class LlmConfigView(BaseModel):
     is_enabled: bool
     api_key_set: bool
     headers: list[LlmConfigHeaderView]
+    default_temperature: float | None
+    default_top_p: float | None
+    default_top_k: int | None
+    max_output_tokens: int | None
+    context_window_input: int | None
+    context_window_output: int | None
+    max_tool_call_rounds: int
+    supports_image_input: bool
+    thinking_mode: str
+    thinking_level: str | None
+    extra_body: dict[str, Any]
     last_tested_at: str | None
     last_test_result: str | None
     created_at: str
@@ -120,6 +155,26 @@ def _headers_from_specs(specs: list[LlmConfigHeaderSpec] | None) -> dict[str, st
     if not specs:
         return {}
     return {item.name: item.value for item in specs}
+
+
+def _thinking_mode(value: str) -> ThinkingMode:
+    try:
+        return ThinkingMode(value)
+    except ValueError as exc:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED, f"不支持的思考模式: {value}", status_code=400
+        ) from exc
+
+
+def _thinking_level(value: str | None) -> ThinkingLevel | None:
+    if value is None:
+        return None
+    try:
+        return ThinkingLevel(value)
+    except ValueError as exc:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED, f"不支持的思考等级: {value}", status_code=400
+        ) from exc
 
 
 def _view(
@@ -160,6 +215,17 @@ def _view(
         is_enabled=row.is_enabled,
         api_key_set=bool(row.secret_ciphertext),
         headers=[LlmConfigHeaderView(name=n, value_set=True) for n in header_names],
+        default_temperature=float(row.default_temperature) if row.default_temperature is not None else None,
+        default_top_p=float(row.default_top_p) if row.default_top_p is not None else None,
+        default_top_k=row.default_top_k,
+        max_output_tokens=row.max_output_tokens,
+        context_window_input=row.context_window_input,
+        context_window_output=row.context_window_output,
+        max_tool_call_rounds=row.max_tool_call_rounds,
+        supports_image_input=row.supports_image_input,
+        thinking_mode=row.thinking_mode.value,
+        thinking_level=row.thinking_level.value if row.thinking_level else None,
+        extra_body=row.extra_body or {},
         last_tested_at=iso_utc(row.last_tested_at),
         last_test_result=row.last_test_result,
         created_at=iso_utc(row.created_at) or "",
@@ -211,6 +277,23 @@ def create_llm_config(
         timeout_seconds=payload.timeout_seconds,
         headers=_headers_from_specs(payload.headers),
         enabled=payload.enabled,
+        default_temperature=(
+            Decimal(str(payload.default_temperature))
+            if payload.default_temperature is not None
+            else None
+        ),
+        default_top_p=(
+            Decimal(str(payload.default_top_p)) if payload.default_top_p is not None else None
+        ),
+        default_top_k=payload.default_top_k,
+        max_output_tokens=payload.max_output_tokens,
+        context_window_input=payload.context_window_input,
+        context_window_output=payload.context_window_output,
+        max_tool_call_rounds=payload.max_tool_call_rounds,
+        supports_image_input=payload.supports_image_input,
+        thinking_mode=_thinking_mode(payload.thinking_mode),
+        thinking_level=_thinking_level(payload.thinking_level),
+        extra_body=payload.extra_body,
     )
     db.commit()
     db.refresh(row)

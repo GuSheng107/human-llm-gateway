@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
@@ -15,8 +16,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
-from ..core.time import iso_utc
-from ..domain.enums import UserRole
+from ..core.time import iso_utc, utc_now
+from ..domain.enums import TaskState, UserRole
 from ..domain.tasks import TERMINAL_STATES
 from ..repositories.models import (
     ApiKey,
@@ -104,11 +105,36 @@ class RecentTask(BaseModel):
     protocol: str
     state: str
     created_at: str
+    human_deadline_at: str | None = None
+
+
+class DailyTaskPoint(BaseModel):
+    date: str
+    count: int
+
+
+class ProtocolCount(BaseModel):
+    protocol: str
+    count: int
+
+
+class ConnectionHealth(BaseModel):
+    id: str
+    name: str
+    platform: str
+    state: str
+    retry_count: int
+    last_error: str | None
 
 
 class DashboardResponse(BaseModel):
     stats: DashboardStats
     recent_tasks: list[RecentTask]
+    daily_tasks: list[DailyTaskPoint]
+    protocol_counts: list[ProtocolCount]
+    urgent_tasks: list[RecentTask]
+    problem_tasks: list[RecentTask]
+    connection_health: list[ConnectionHealth]
 
 
 # ----------------------------------------------------------------------
@@ -266,25 +292,103 @@ def dashboard(
         stats.total_api_keys = _count(db, ApiKey)
         stats.total_connections = _count(db, ImConnection)
 
+    scope = [] if is_admin else [RequestTask.owner_user_id == user.id]
     recent_rows = list(
         db.scalars(
             select(RequestTask)
-            .where(RequestTask.owner_user_id == user.id if not is_admin else True)
+            .where(*scope)
             .order_by(RequestTask.id.desc())
             .limit(8)
         )
     )
+    start_day = (utc_now() - timedelta(days=6)).date()
+    daily_counts = {
+        str(day): int(count)
+        for day, count in db.execute(
+            select(func.date(RequestTask.created_at), func.count())
+            .where(*scope, RequestTask.created_at >= utc_now() - timedelta(days=7))
+            .group_by(func.date(RequestTask.created_at))
+        )
+    }
+    protocol_counts = [
+        ProtocolCount(protocol=protocol.value, count=int(count))
+        for protocol, count in db.execute(
+            select(RequestTask.protocol, func.count())
+            .where(*scope)
+            .group_by(RequestTask.protocol)
+        )
+    ]
+    urgent_rows = list(
+        db.scalars(
+            select(RequestTask)
+            .where(
+                *scope,
+                RequestTask.state.not_in(list(TERMINAL_STATES)),
+                RequestTask.human_deadline_at.is_not(None),
+            )
+            .order_by(RequestTask.human_deadline_at.asc())
+            .limit(5)
+        )
+    )
+    problem_rows = list(
+        db.scalars(
+            select(RequestTask)
+            .where(
+                *scope,
+                RequestTask.state.in_(
+                    [TaskState.FAILED, TaskState.TIMED_OUT, TaskState.CANCELLED]
+                ),
+            )
+            .order_by(RequestTask.id.desc())
+            .limit(5)
+        )
+    )
+
+    def recent_task(row: RequestTask) -> RecentTask:
+        return RecentTask(
+            id=str(row.id),
+            public_id=row.public_id,
+            model=row.requested_model,
+            protocol=row.protocol.value,
+            state=row.state.value,
+            created_at=iso_utc(row.created_at) or "",
+            human_deadline_at=iso_utc(row.human_deadline_at),
+        )
+
+    connections: list[ConnectionHealth] = []
+    if is_admin:
+        connection_rows = list(
+            db.scalars(
+                select(ImConnection)
+                .where(ImConnection.deleted_at.is_(None))
+                .order_by(ImConnection.state.asc(), ImConnection.id.desc())
+                .limit(8)
+            )
+        )
+        connections = [
+            ConnectionHealth(
+                id=str(row.id),
+                name=row.name,
+                platform=row.platform,
+                state=row.state.value,
+                retry_count=row.retry_count,
+                last_error=row.last_error_message or row.last_error_code,
+            )
+            for row in connection_rows
+        ]
+
     return DashboardResponse(
         stats=stats,
-        recent_tasks=[
-            RecentTask(
-                id=str(row.id),
-                public_id=row.public_id,
-                model=row.requested_model,
-                protocol=row.protocol.value,
-                state=row.state.value,
-                created_at=iso_utc(row.created_at) or "",
+        recent_tasks=[recent_task(row) for row in recent_rows],
+        daily_tasks=[
+            DailyTaskPoint(
+                date=(start_day + timedelta(days=offset)).isoformat(),
+                count=daily_counts.get((start_day + timedelta(days=offset)).isoformat(), 0),
             )
-            for row in recent_rows
+            for offset in range(7)
         ],
+        protocol_counts=protocol_counts,
+        urgent_tasks=[recent_task(row) for row in urgent_rows],
+        problem_tasks=[recent_task(row) for row in problem_rows],
+        connection_health=connections,
     )

@@ -48,11 +48,36 @@ export interface DashboardRecentTask {
   protocol: string;
   state: string;
   created_at: string;
+  human_deadline_at: string | null;
+}
+
+export interface DashboardDailyTask {
+  date: string;
+  count: number;
+}
+
+export interface DashboardProtocolCount {
+  protocol: string;
+  count: number;
+}
+
+export interface DashboardConnectionHealth {
+  id: string;
+  name: string;
+  platform: string;
+  state: string;
+  retry_count: number;
+  last_error: string | null;
 }
 
 export interface DashboardData {
   stats: DashboardStats;
   recent_tasks: DashboardRecentTask[];
+  daily_tasks: DashboardDailyTask[];
+  protocol_counts: DashboardProtocolCount[];
+  urgent_tasks: DashboardRecentTask[];
+  problem_tasks: DashboardRecentTask[];
+  connection_health: DashboardConnectionHealth[];
 }
 
 export interface AuditLogQuery {

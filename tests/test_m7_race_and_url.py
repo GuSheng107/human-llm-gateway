@@ -25,7 +25,7 @@ from app.services.inference_service import InferenceService
 def _llm_body(name: str = "primary") -> dict[str, Any]:
     return {
         "name": name,
-        "protocol": "openai_compatible",
+        "protocol": "openai_chat",
         "base_url": "https://api.example.com/v1",
         "api_key": "sk",
         "model": "gpt-4o-mini",
@@ -144,7 +144,7 @@ def test_anthropic_base_url_bare_host_gets_v1(client, created_user) -> None:
         headers=created_user.headers,
         json={
             "name": "anthropic-bare",
-            "protocol": "anthropic",
+            "protocol": "anthropic_messages",
             "base_url": "https://api.anthropic.com",
             "api_key": "sk-ant",
             "model": "claude-3-5-sonnet",
@@ -161,7 +161,7 @@ def test_anthropic_base_url_with_v1_kept(client, created_user) -> None:
         headers=created_user.headers,
         json={
             "name": "anthropic-v1",
-            "protocol": "anthropic",
+            "protocol": "anthropic_messages",
             "base_url": "https://api.anthropic.com/v1/",
             "api_key": "sk-ant",
             "model": "claude-3-5-sonnet",
@@ -178,7 +178,7 @@ def test_anthropic_custom_proxy_path_preserved(client, created_user) -> None:
         headers=created_user.headers,
         json={
             "name": "anthropic-proxy",
-            "protocol": "anthropic",
+            "protocol": "anthropic_messages",
             "base_url": "https://proxy.internal/anthropic",
             "api_key": "sk-ant",
             "model": "claude-3-5-sonnet",
@@ -197,7 +197,7 @@ def test_openai_base_url_not_normalized(client, created_user) -> None:
         headers=created_user.headers,
         json={
             "name": "openai-raw",
-            "protocol": "openai_compatible",
+            "protocol": "openai_chat",
             "base_url": "https://api.example.com/v1",
             "api_key": "sk",
             "model": "gpt-4o-mini",
@@ -215,7 +215,7 @@ def test_protocol_switch_renormalizes_existing_base_url(client, created_user) ->
         headers=created_user.headers,
         json={
             "name": "switch-me",
-            "protocol": "openai_compatible",
+            "protocol": "openai_chat",
             "base_url": "https://api.example.com",
             "api_key": "sk",
             "model": "gpt-4o-mini",
@@ -225,7 +225,7 @@ def test_protocol_switch_renormalizes_existing_base_url(client, created_user) ->
     resp = client.patch(
         f"/api/llm-configs/{created['id']}",
         headers=created_user.headers,
-        json={"protocol": "anthropic"},
+        json={"protocol": "anthropic_messages"},
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["base_url"] == "https://api.example.com/v1"

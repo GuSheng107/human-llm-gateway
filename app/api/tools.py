@@ -73,12 +73,12 @@ class ToolView(BaseModel):
 
     @classmethod
     def from_row(cls, row: ToolWhitelist, *, admin_view: bool) -> ToolView:
-        schema = None
-        if admin_view:
-            try:
-                schema = json.loads(row.arguments_schema_json)
-            except (ValueError, TypeError):
-                schema = None
+        # 参数 Schema 是调用工具所必需的公开契约；只有命令模板属于管理员机密。
+        # 普通用户拿不到 Schema 会导致参数化工具在前端根本无法填写。
+        try:
+            schema = json.loads(row.arguments_schema_json)
+        except (ValueError, TypeError):
+            schema = None
         return cls(
             id=str(row.id),
             name=row.name,

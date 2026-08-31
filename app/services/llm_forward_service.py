@@ -5,7 +5,7 @@
 - `human_fallback_llm` 策略：人工等待超时后通过 claim_fallback 原子声明
   一次转发权（WAITING_HUMAN -> FORWARDING_LLM），失败即终态 TIMED_OUT，
   不重试。
-- 仅同协议转发（Chat/Responses -> openai_compatible；Anthropic -> anthropic）；
+- 仅同协议转发（Chat/Responses -> openai_chat；Anthropic -> anthropic）；
   跨协议返回 400 `unsupported_parameter`（完整字段矩阵见 docs/API_CONTRACT.md
   §12.6，跨协议转换在后续阶段逐项开放）。
 - 身份 system 指令：从 Fake Model description 派生，追加在调用方已有
@@ -38,18 +38,20 @@ from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
 from . import llm_upstream
 from .llm_draft_service import (
+    _apply_config,
     _build_anthropic_request,
     _build_chat_request,
     _decrypt_config,
     _parse_anthropic_response,
     _parse_chat_response,
+    _parse_responses_response,
 )
 
-# Inference protocol -> 允许的 LLM 协议（与 M7-B 生成一致：仅同协议）。
+# Inference protocol -> 允许的 LLM 协议（chat 与 responses 上游结果解析统一）。
 _INFERENCE_TO_LLM: dict[InferenceProtocol, LLMProtocol] = {
-    InferenceProtocol.OPENAI_CHAT: LLMProtocol.OPENAI_COMPATIBLE,
-    InferenceProtocol.OPENAI_RESPONSES: LLMProtocol.OPENAI_COMPATIBLE,
-    InferenceProtocol.ANTHROPIC_MESSAGES: LLMProtocol.ANTHROPIC,
+    InferenceProtocol.OPENAI_CHAT: LLMProtocol.OPENAI_CHAT,
+    InferenceProtocol.OPENAI_RESPONSES: LLMProtocol.OPENAI_RESPONSES,
+    InferenceProtocol.ANTHROPIC_MESSAGES: LLMProtocol.ANTHROPIC_MESSAGES,
 }
 
 # 身份指令兜底（Fake Model 无 description 时）。
@@ -75,7 +77,10 @@ def _inject_identity_chat(body: dict[str, Any], identity: str) -> dict[str, Any]
     messages = list(body.get("messages") or [])
     for index, message in enumerate(messages):
         if message.get("role") == "system":
-            merged = {"role": "system", "content": f"{message.get('content') or ''}\n\n{identity}"}
+            merged = {
+                **message,
+                "content": f"{message.get('content') or ''}\n\n{identity}",
+            }
             messages[index] = merged
             return {**body, "messages": messages}
     messages.insert(0, {"role": "system", "content": identity})
@@ -239,20 +244,57 @@ class LlmForwardService:
 
         expected = _INFERENCE_TO_LLM.get(task.protocol)
         identity = identity_system_message(fake_model, task.requested_model)
-        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
-            if expected is LLMProtocol.OPENAI_COMPATIBLE:
-                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized)
+        if expected is cfg.protocol:
+            try:
+                raw_body = json.loads(task.raw_payload_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw_body = None
+            if isinstance(raw_body, dict) and not (
+                cfg.protocol is LLMProtocol.OPENAI_RESPONSES
+                and raw_body.get("previous_response_id") is not None
+            ):
+                body = dict(raw_body)
+                body["model"] = cfg.real_model
+                _apply_config(body, cfg)
+                if cfg.protocol is LLMProtocol.OPENAI_CHAT:
+                    return _inject_identity_chat(body, identity)
+                if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                    existing = body.get("instructions")
+                    body["instructions"] = (
+                        f"{existing}\n\n{identity}"
+                        if isinstance(existing, str) and existing
+                        else identity
+                    )
+                    return body
+                return _inject_identity_anthropic(body, identity)
+        if cfg.protocol is LLMProtocol.OPENAI_CHAT:
+            if expected in (LLMProtocol.OPENAI_CHAT, LLMProtocol.OPENAI_RESPONSES):
+                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized, cfg=cfg)
             else:
                 body = cross.to_chat_request(normalized, cfg.real_model)
+                _apply_config(body, cfg)
             return _inject_identity_chat(body, identity)
-        if expected is LLMProtocol.ANTHROPIC:
+        if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+            body = cross.to_responses_request(normalized, cfg.real_model)
+            _apply_config(body, cfg)
+            # Responses 原生支持 instructions；身份指令追加，保留调用方内容。
+            existing = body.get("instructions")
+            body["instructions"] = (
+                f"{existing}\n\n{identity}"
+                if isinstance(existing, str) and existing
+                else identity
+            )
+            return body
+        if expected is LLMProtocol.ANTHROPIC_MESSAGES:
             body = _build_anthropic_request(
                 real_model=cfg.real_model,
                 normalized=normalized,
                 max_tokens=int(normalized.get("max_tokens") or LLM_DEFAULT_MAX_TOKENS),
+                cfg=cfg,
             )
         else:
             body = cross.to_anthropic_request(normalized, cfg.real_model)
+            _apply_config(body, cfg)
         return _inject_identity_anthropic(body, identity)
 
     async def _call_upstream(
@@ -268,7 +310,7 @@ class LlmForwardService:
         except (ValueError, json.JSONDecodeError):
             normalized = {}
         body = self.build_upstream_request(task, cfg, fake_model, normalized)
-        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
+        if cfg.protocol is LLMProtocol.OPENAI_CHAT:
             upstream = await llm_upstream.post_chat_completions(
                 base_url=cfg.base_url,
                 api_key=secret,
@@ -277,6 +319,15 @@ class LlmForwardService:
                 timeout_seconds=cfg.timeout_seconds,
             )
             return _parse_chat_response(upstream)
+        if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+            upstream = await llm_upstream.post_responses(
+                base_url=cfg.base_url,
+                api_key=secret,
+                request_body=body,
+                extra_headers=headers,
+                timeout_seconds=cfg.timeout_seconds,
+            )
+            return _parse_responses_response(upstream)
         upstream = await llm_upstream.post_anthropic_messages(
             base_url=cfg.base_url,
             api_key=secret,
@@ -303,8 +354,17 @@ class LlmForwardService:
             normalized = {}
         body = self.build_upstream_request(task, cfg, fake_model, normalized)
         chunks: list[UpstreamChunk] = []
-        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
+        if cfg.protocol is LLMProtocol.OPENAI_CHAT:
             async for chunk in llm_upstream.stream_chat_completions(
+                base_url=cfg.base_url,
+                api_key=secret,
+                request_body=body,
+                extra_headers=headers,
+                timeout_seconds=cfg.timeout_seconds,
+            ):
+                chunks.append(chunk)
+        elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+            async for chunk in llm_upstream.stream_responses(
                 base_url=cfg.base_url,
                 api_key=secret,
                 request_body=body,

@@ -9,6 +9,8 @@ import {
   type LlmConfigPayload,
   type LlmConfigUpdatePayload,
   type LlmProtocol,
+  type ThinkingLevel,
+  type ThinkingMode,
 } from "../../api/llmConfigs";
 import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
@@ -25,8 +27,15 @@ import { useAuth } from "../auth/AuthContext";
 const PAGE_SIZE = 20;
 
 const PROTOCOL_LABEL: Record<LlmProtocol, string> = {
-  openai_compatible: "OpenAI 兼容",
-  anthropic: "Anthropic",
+  openai_chat: "OpenAI Chat Completions",
+  openai_responses: "OpenAI Responses",
+  anthropic_messages: "Anthropic Messages",
+};
+
+const BASE_URL_PLACEHOLDER: Record<LlmProtocol, string> = {
+  openai_chat: "https://api.openai.com/v1",
+  openai_responses: "https://api.openai.com/v1",
+  anthropic_messages: "https://api.anthropic.com/v1",
 };
 
 interface LlmFormState {
@@ -39,18 +48,46 @@ interface LlmFormState {
   timeout_seconds: number;
   headers: LlmConfigHeaderInput[];
   enabled: boolean;
+  full_url: boolean;
+  default_temperature: string;
+  default_top_p: string;
+  default_top_k: string;
+  max_output_tokens: string;
+  context_window_input: string;
+  context_window_output: string;
+  max_tool_call_rounds: number;
+  supports_image_input: boolean;
+  thinking_mode: ThinkingMode;
+  thinking_level: ThinkingLevel | "";
+  extra_body_text: string;
 }
 
 const blankForm = (): LlmFormState => ({
   name: "",
-  protocol: "openai_compatible",
+  protocol: "openai_chat",
   base_url: "",
   api_key: "",
   model: "",
   timeout_seconds: 120,
   headers: [],
   enabled: true,
+  full_url: false,
+  default_temperature: "",
+  default_top_p: "",
+  default_top_k: "",
+  max_output_tokens: "",
+  context_window_input: "",
+  context_window_output: "",
+  max_tool_call_rounds: 16,
+  supports_image_input: false,
+  thinking_mode: "model_default",
+  thinking_level: "",
+  extra_body_text: "{}",
 });
+
+function optionalNumber(value: string): number | null {
+  return value.trim() ? Number(value) : null;
+}
 
 export function LlmConfigsPage() {
   const { user } = useAuth();
@@ -113,11 +150,73 @@ export function LlmConfigsPage() {
       timeout_seconds: cfg.timeout_seconds,
       headers: cfg.headers.map((header) => ({ name: header.name, value: "" })),
       enabled: cfg.is_enabled,
+      full_url: /\/(chat\/completions|responses|messages)\/?$/.test(cfg.base_url),
+      default_temperature: cfg.default_temperature?.toString() ?? "",
+      default_top_p: cfg.default_top_p?.toString() ?? "",
+      default_top_k: cfg.default_top_k?.toString() ?? "",
+      max_output_tokens: cfg.max_output_tokens?.toString() ?? "",
+      context_window_input: cfg.context_window_input?.toString() ?? "",
+      context_window_output: cfg.context_window_output?.toString() ?? "",
+      max_tool_call_rounds: cfg.max_tool_call_rounds,
+      supports_image_input: cfg.supports_image_input,
+      thinking_mode: cfg.thinking_mode,
+      thinking_level: cfg.thinking_level ?? "",
+      extra_body_text: JSON.stringify(cfg.extra_body ?? {}, null, 2),
     });
   };
 
   const submit = async () => {
     if (!form) return;
+    const temperature = optionalNumber(form.default_temperature);
+    const topP = optionalNumber(form.default_top_p);
+    const topK = optionalNumber(form.default_top_k);
+    if (temperature !== null && (temperature < 0 || temperature > 2)) {
+      setFormError("Temperature 必须在 0 到 2 之间");
+      return;
+    }
+    if (topP !== null && (topP < 0 || topP > 1)) {
+      setFormError("Top P 必须在 0 到 1 之间");
+      return;
+    }
+    if (topK !== null && (!Number.isInteger(topK) || topK < 1 || topK > 100)) {
+      setFormError("Top K 必须是 1 到 100 的整数");
+      return;
+    }
+    if (
+      form.protocol === "openai_responses" &&
+      form.thinking_mode === "enabled" &&
+      !form.thinking_level
+    ) {
+      setFormError("OpenAI Responses 开启思考模式时请选择思考等级");
+      return;
+    }
+    let extraBody: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(form.extra_body_text || "{}");
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        throw new Error("Extra Body 必须是 JSON 对象");
+      }
+      extraBody = parsed as Record<string, unknown>;
+    } catch (caught) {
+      setFormError(caught instanceof Error ? caught.message : "Extra Body 不是合法 JSON");
+      return;
+    }
+    const advanced = {
+      default_temperature: temperature,
+      default_top_p: topP,
+      default_top_k: topK,
+      max_output_tokens: optionalNumber(form.max_output_tokens),
+      context_window_input: optionalNumber(form.context_window_input),
+      context_window_output: optionalNumber(form.context_window_output),
+      max_tool_call_rounds: form.max_tool_call_rounds,
+      supports_image_input: form.supports_image_input,
+      thinking_mode: form.thinking_mode,
+      thinking_level:
+        form.protocol === "openai_responses" && form.thinking_mode === "enabled"
+          ? form.thinking_level || null
+          : null,
+      extra_body: extraBody,
+    };
     const payload: LlmConfigPayload | LlmConfigUpdatePayload = form.id
       ? {
           ...(form.name.trim() ? { name: form.name.trim() } : {}),
@@ -127,6 +226,7 @@ export function LlmConfigsPage() {
           timeout_seconds: form.timeout_seconds,
           headers: form.headers,
           enabled: form.enabled,
+          ...advanced,
           ...(form.api_key.trim() ? { api_key: form.api_key } : {}),
         }
       : {
@@ -138,6 +238,7 @@ export function LlmConfigsPage() {
           timeout_seconds: form.timeout_seconds,
           headers: form.headers,
           enabled: form.enabled,
+          ...advanced,
         };
     setSaving(true);
     setFormError("");
@@ -350,8 +451,9 @@ export function LlmConfigsPage() {
           title={form.id ? "编辑 LLM 配置" : "新建 LLM 配置"}
           description="密钥与自定义 Header 只写不读，保存后不再展示。"
           onClose={() => setForm(null)}
+          width="max-w-3xl"
         >
-          <div className="space-y-4 p-6">
+          <div className="max-h-[82vh] space-y-4 overflow-y-auto p-6">
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-slate-600">名称</span>
               <input
@@ -367,14 +469,28 @@ export function LlmConfigsPage() {
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">协议</span>
                 <select
                   value={form.protocol}
-                  onChange={(event) =>
-                    setForm({ ...form, protocol: event.target.value as LlmProtocol })
-                  }
+                  onChange={(event) => {
+                    const protocol = event.target.value as LlmProtocol;
+                    setForm({
+                      ...form,
+                      protocol,
+                      thinking_level: protocol === "openai_responses" ? form.thinking_level : "",
+                    });
+                  }}
                   className="field-input"
                 >
-                  <option value="openai_compatible">OpenAI 兼容</option>
-                  <option value="anthropic">Anthropic</option>
+                  <option value="openai_chat">OpenAI Chat Completions 格式</option>
+                  <option value="openai_responses">OpenAI Responses 格式</option>
+                  <option value="anthropic_messages">Anthropic Messages 格式</option>
                 </select>
+                <label className="mt-2 flex items-center gap-2 text-[11px] text-slate-500">
+                  <input
+                    type="checkbox"
+                    checked={form.full_url}
+                    onChange={(event) => setForm({ ...form, full_url: event.target.checked })}
+                  />
+                  直接填写完整端点 URL
+                </label>
               </label>
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
@@ -395,13 +511,23 @@ export function LlmConfigsPage() {
 
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                Base URL（http/https）
+                {form.full_url ? "完整请求 URL" : "API Base URL"}
               </span>
               <input
                 value={form.base_url}
                 onChange={(event) => setForm({ ...form, base_url: event.target.value })}
                 className="field-input font-mono"
-                placeholder="https://api.example.com/v1"
+                placeholder={
+                  form.full_url
+                    ? `${BASE_URL_PLACEHOLDER[form.protocol]}/${
+                        form.protocol === "openai_chat"
+                          ? "chat/completions"
+                          : form.protocol === "openai_responses"
+                            ? "responses"
+                            : "messages"
+                      }`
+                    : BASE_URL_PLACEHOLDER[form.protocol]
+                }
               />
             </label>
 
@@ -436,6 +562,186 @@ export function LlmConfigsPage() {
                 />
               </label>
             </div>
+
+            <details open className="rounded-lg border border-slate-200 bg-slate-50/50">
+              <summary className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-slate-700">
+                高级配置
+              </summary>
+              <div className="space-y-5 border-t border-slate-200 p-4">
+                <section>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-medium text-slate-600">上下文窗口（Token）</p>
+                    <div className="flex flex-wrap gap-1">
+                      {[
+                        ["128K", 131072],
+                        ["256K", 262144],
+                        ["512K", 524288],
+                        ["1M", 1048576],
+                      ].map(([label, value]) => (
+                        <button
+                          key={label}
+                          type="button"
+                          onClick={() =>
+                            setForm({ ...form, context_window_input: String(value) })
+                          }
+                          className="rounded border border-slate-200 bg-white px-2 py-1 text-[11px] text-slate-500 hover:border-primary/40 hover:text-primary"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    <label className="block text-[11px] text-slate-500">
+                      输入窗口
+                      <input
+                        type="number"
+                        min={1}
+                        value={form.context_window_input}
+                        onChange={(event) =>
+                          setForm({ ...form, context_window_input: event.target.value })
+                        }
+                        className="field-input mt-1"
+                        placeholder="留空跟随模型"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-500">
+                      输出窗口
+                      <input
+                        type="number"
+                        min={1}
+                        value={form.context_window_output}
+                        onChange={(event) =>
+                          setForm({ ...form, context_window_output: event.target.value })
+                        }
+                        className="field-input mt-1"
+                        placeholder="留空跟随模型"
+                      />
+                    </label>
+                    <label className="block text-[11px] text-slate-500">
+                      单次最大输出
+                      <input
+                        type="number"
+                        min={1}
+                        value={form.max_output_tokens}
+                        onChange={(event) =>
+                          setForm({ ...form, max_output_tokens: event.target.value })
+                        }
+                        className="field-input mt-1"
+                        placeholder="留空不覆盖"
+                      />
+                    </label>
+                  </div>
+                </section>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block text-xs font-medium text-slate-600">
+                    工具调用最大轮数
+                    <input
+                      type="number"
+                      min={1}
+                      max={500}
+                      value={form.max_tool_call_rounds}
+                      onChange={(event) =>
+                        setForm({ ...form, max_tool_call_rounds: Number(event.target.value) })
+                      }
+                      className="field-input mt-1.5"
+                    />
+                  </label>
+                  <label className="block text-xs font-medium text-slate-600">
+                    图片输入
+                    <select
+                      value={form.supports_image_input ? "yes" : "no"}
+                      onChange={(event) =>
+                        setForm({ ...form, supports_image_input: event.target.value === "yes" })
+                      }
+                      className="field-input mt-1.5"
+                    >
+                      <option value="no">不支持</option>
+                      <option value="yes">支持</option>
+                    </select>
+                  </label>
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="block text-xs font-medium text-slate-600">
+                    思考模式
+                    <select
+                      value={form.thinking_mode}
+                      onChange={(event) =>
+                        setForm({
+                          ...form,
+                          thinking_mode: event.target.value as ThinkingMode,
+                          thinking_level:
+                            event.target.value === "enabled" ? form.thinking_level : "",
+                        })
+                      }
+                      className="field-input mt-1.5"
+                    >
+                      <option value="model_default">跟随模型默认</option>
+                      <option value="enabled">开启</option>
+                      <option value="disabled">关闭</option>
+                    </select>
+                  </label>
+                  {form.protocol === "openai_responses" && form.thinking_mode === "enabled" ? (
+                    <label className="block text-xs font-medium text-slate-600">
+                      思考等级
+                      <select
+                        value={form.thinking_level}
+                        onChange={(event) =>
+                          setForm({ ...form, thinking_level: event.target.value as ThinkingLevel })
+                        }
+                        className="field-input mt-1.5"
+                      >
+                        <option value="">请选择</option>
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                      </select>
+                    </label>
+                  ) : (
+                    <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-2 text-[11px] leading-5 text-slate-400">
+                      思考等级只适用于 OpenAI Responses；其他格式由上游模型决定。
+                    </div>
+                  )}
+                </div>
+
+                <section>
+                  <p className="mb-2 text-xs font-medium text-slate-600">默认采样参数</p>
+                  <div className="grid gap-3 sm:grid-cols-3">
+                    {[
+                      ["Temperature", "default_temperature", "0-2"],
+                      ["Top P", "default_top_p", "0-1"],
+                      ["Top K", "default_top_k", "1-100"],
+                    ].map(([label, key, placeholder]) => (
+                      <label key={key} className="block text-[11px] text-slate-500">
+                        {label}
+                        <input
+                          type="number"
+                          step={key === "default_top_k" ? 1 : 0.01}
+                          value={form[key as keyof Pick<LlmFormState, "default_temperature" | "default_top_p" | "default_top_k">]}
+                          onChange={(event) =>
+                            setForm({ ...form, [key]: event.target.value })
+                          }
+                          className="field-input mt-1"
+                          placeholder={placeholder}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                </section>
+
+                <label className="block text-xs font-medium text-slate-600">
+                  Extra Body（JSON 对象）
+                  <textarea
+                    value={form.extra_body_text}
+                    onChange={(event) => setForm({ ...form, extra_body_text: event.target.value })}
+                    className="field-input mt-1.5 min-h-28 font-mono text-[11px]"
+                    spellCheck={false}
+                  />
+                </label>
+              </div>
+            </details>
 
             <div className="rounded-md border border-slate-200 bg-slate-50/60 p-4">
               <div className="mb-2 flex items-center justify-between">

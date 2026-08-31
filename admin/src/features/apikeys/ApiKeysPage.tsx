@@ -372,7 +372,13 @@ export function ApiKeysPage() {
                     <option value="">请选择 LLM 配置</option>
                     {llmConfigs.map((cfg) => (
                       <option key={cfg.id} value={cfg.id}>
-                        {cfg.name}（{cfg.protocol === "anthropic" ? "Anthropic" : "OpenAI 兼容"}）
+                        {cfg.name}（
+                        {cfg.protocol === "anthropic_messages"
+                          ? "Anthropic"
+                          : cfg.protocol === "openai_responses"
+                            ? "OpenAI Responses"
+                            : "OpenAI Chat"}
+                        ）
                       </option>
                     ))}
                   </select>

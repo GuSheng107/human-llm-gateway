@@ -40,7 +40,7 @@ _UPSTREAM_ANTHROPIC = "app.services.llm_upstream.post_anthropic_messages"
 def _llm_body(
     *,
     name: str = "primary",
-    protocol: str = "openai_compatible",
+    protocol: str = "openai_chat",
     enabled: bool = True,
 ) -> dict[str, Any]:
     return {
@@ -48,11 +48,11 @@ def _llm_body(
         "protocol": protocol,
         "base_url": (
             "https://api.example.com/v1"
-            if protocol == "openai_compatible"
+            if protocol == "openai_chat"
             else "https://api.anthropic.com"
         ),
         "api_key": "sk-llm-test",
-        "model": "gpt-4o-mini" if protocol == "openai_compatible" else "claude-3-5-sonnet",
+        "model": "gpt-4o-mini" if protocol == "openai_chat" else "claude-3-5-sonnet",
         "timeout_seconds": 60,
         "enabled": enabled,
     }
@@ -462,7 +462,7 @@ def test_cross_protocol_forward_chat_to_anthropic(client, created_user) -> None:
     cfg = _create_llm_config(
         client,
         created_user.headers,
-        _llm_body(name="anthro-cross", protocol="anthropic"),
+        _llm_body(name="anthro-cross", protocol="anthropic_messages"),
     )
     key = _create_strategy_key(
         client,
@@ -504,7 +504,7 @@ def test_cross_protocol_forward_rejects_unequivalent_field(client, created_user)
     cfg = _create_llm_config(
         client,
         created_user.headers,
-        _llm_body(name="anthro-strict", protocol="anthropic"),
+        _llm_body(name="anthro-strict", protocol="anthropic_messages"),
     )
     key = _create_strategy_key(
         client,
@@ -533,12 +533,14 @@ def test_cross_protocol_forward_rejects_unequivalent_field(client, created_user)
 
 
 def test_inference_to_llm_protocol_mapping() -> None:
-    """协议映射表：Chat/Responses -> openai_compatible；Anthropic -> anthropic。"""
+    """协议映射表：Chat/Responses -> openai_chat；Anthropic -> anthropic。"""
     from app.services.llm_forward_service import _INFERENCE_TO_LLM
 
-    assert _INFERENCE_TO_LLM[InferenceProtocol.OPENAI_CHAT].value == "openai_compatible"
-    assert _INFERENCE_TO_LLM[InferenceProtocol.OPENAI_RESPONSES].value == "openai_compatible"
-    assert _INFERENCE_TO_LLM[InferenceProtocol.ANTHROPIC_MESSAGES].value == "anthropic"
+    assert _INFERENCE_TO_LLM[InferenceProtocol.OPENAI_CHAT].value == "openai_chat"
+    assert _INFERENCE_TO_LLM[InferenceProtocol.OPENAI_RESPONSES].value == "openai_responses"
+    assert (
+        _INFERENCE_TO_LLM[InferenceProtocol.ANTHROPIC_MESSAGES].value == "anthropic_messages"
+    )
 
 
 # ----------------------------------------------------------------------

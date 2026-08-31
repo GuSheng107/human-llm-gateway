@@ -1,7 +1,7 @@
 """LLM 草稿生成服务（M7-B）。
 
 任务工作台中用户选择 LLM 配置生成持久化草稿：
-- 仅同协议：Chat/Responses -> openai_compatible LLM；Anthropic -> Anthropic LLM。
+- 仅同协议：Chat/Responses -> openai_chat LLM；Anthropic -> Anthropic LLM。
   跨协议转换在 M7-C 字段矩阵中实现，本阶段不开放。
 - 使用配置的 base_url / api_key / 自定义 Header 调上游最小请求（非流式）。
 - 上游响应解析为 ReplyDraft 后落库为 source=llm 的活动草稿，用户继续编辑后提交。
@@ -30,24 +30,54 @@ from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft
 from ..protocols import cross
 from ..repositories.llm_configs import LlmConfigRepository
-from ..repositories.models import (
-    LlmConfig,
-    RequestTask,
-    TaskDraft,
-    User,
-)
+from ..repositories.models import LlmConfig, RequestTask, TaskDraft, User
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
 from . import llm_upstream
+
+# ---------------------------------------------------------------------------
+# 配置参数应用（采样默认 / extra_body / 思考模式）
+# 说明：extra_body 与请求字段冲突时以请求体为准（setdefault 语义）。
+# ---------------------------------------------------------------------------
+
+
+def _apply_config(body: dict[str, Any], cfg: LlmConfig) -> dict[str, Any]:
+    """把 LlmConfig 的 default_* / extra_body / thinking 应用到请求体。
+
+    规则：
+    1. extra_body 先用 setdefault 写入（请求体已显式提供的字段优先）；
+    2. default_temperature / default_top_p / default_top_k 同理；
+    3. 最大输出字段按目标协议写入（请求未带同义字段时）；
+    4. 思考模式：OPENAI_RESPONSES 时 thinking_level -> reasoning.effort；
+       其他协议 thinking_level 已在入库时拒绝，此处对 mode 兜底忽略。
+    """
+    for key, value in (cfg.extra_body or {}).items():
+        body.setdefault(key, value)
+    if cfg.default_temperature is not None:
+        body.setdefault("temperature", float(cfg.default_temperature))
+    if cfg.default_top_p is not None:
+        body.setdefault("top_p", float(cfg.default_top_p))
+    if cfg.default_top_k is not None and cfg.protocol is LLMProtocol.ANTHROPIC_MESSAGES:
+        body.setdefault("top_k", cfg.default_top_k)
+    if cfg.max_output_tokens is not None:
+        if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+            body.setdefault("max_output_tokens", cfg.max_output_tokens)
+        elif cfg.protocol is LLMProtocol.ANTHROPIC_MESSAGES:
+            body.setdefault("max_tokens", cfg.max_output_tokens)
+        elif "max_tokens" not in body and "max_completion_tokens" not in body:
+            body["max_completion_tokens"] = cfg.max_output_tokens
+    if cfg.protocol is LLMProtocol.OPENAI_RESPONSES and cfg.thinking_level is not None:
+        body.setdefault("reasoning", {"effort": cfg.thinking_level.value})
+    return body
 
 _LLM_SECRET_PURPOSE = "llm-config"
 
 
 # Inference protocol → 允许的 LLM 协议（M7-B 仅同协议生成）。
 _INFERENCE_TO_LLM: dict[InferenceProtocol, LLMProtocol] = {
-    InferenceProtocol.OPENAI_CHAT: LLMProtocol.OPENAI_COMPATIBLE,
-    InferenceProtocol.OPENAI_RESPONSES: LLMProtocol.OPENAI_COMPATIBLE,
-    InferenceProtocol.ANTHROPIC_MESSAGES: LLMProtocol.ANTHROPIC,
+    InferenceProtocol.OPENAI_CHAT: LLMProtocol.OPENAI_CHAT,
+    InferenceProtocol.OPENAI_RESPONSES: LLMProtocol.OPENAI_RESPONSES,
+    InferenceProtocol.ANTHROPIC_MESSAGES: LLMProtocol.ANTHROPIC_MESSAGES,
 }
 
 
@@ -96,6 +126,7 @@ def _build_chat_request(
     *,
     real_model: str,
     normalized: dict[str, Any],
+    cfg: LlmConfig | None = None,
 ) -> dict[str, Any]:
     """OpenAI Chat Completions 请求体：把规范化 context 直接转 messages。
 
@@ -121,6 +152,8 @@ def _build_chat_request(
         body["tool_choice"] = normalized["tool_choice"]
     for key, value in (normalized.get("options") or {}).items():
         body.setdefault(key, value)
+    if cfg is not None:
+        _apply_config(body, cfg)
     return body
 
 
@@ -129,6 +162,7 @@ def _build_anthropic_request(
     real_model: str,
     normalized: dict[str, Any],
     max_tokens: int,
+    cfg: LlmConfig | None = None,
 ) -> dict[str, Any]:
     """Anthropic Messages 请求体。"""
     context = normalized.get("context") or []
@@ -163,7 +197,59 @@ def _build_anthropic_request(
         body["tools"] = normalized["tools"]
     for key, value in (normalized.get("options") or {}).items():
         body.setdefault(key, value)
+    if cfg is not None:
+        _apply_config(body, cfg)
     return body
+
+
+def _parse_responses_response(payload: dict[str, Any]) -> ReplyDraft:
+    """OpenAI Responses 响应 → ReplyDraft。
+
+    output 数组：message（content[].output_text.text）、reasoning（summary[].text）、
+    function_call（name / arguments JSON）。"""
+    output = payload.get("output")
+    if not isinstance(output, list):
+        raise DomainError(
+            DomainErrorCode.UPSTREAM_ERROR, "上游响应缺少 output", status_code=502
+        )
+    final_parts: list[str] = []
+    reasoning_parts: list[str] = []
+    tool_calls: list[dict[str, Any]] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type == "message":
+            for part in item.get("content") or []:
+                if isinstance(part, dict) and part.get("type") == "output_text":
+                    text = part.get("text") or ""
+                    if text:
+                        final_parts.append(text)
+        elif item_type == "reasoning":
+            for summary in item.get("summary") or []:
+                if isinstance(summary, dict) and summary.get("text"):
+                    reasoning_parts.append(summary["text"])
+        elif item_type == "function_call":
+            arguments = item.get("arguments") or ""
+            if isinstance(arguments, str):
+                try:
+                    arguments_obj = json.loads(arguments)
+                except (ValueError, TypeError):
+                    arguments_obj = {}
+            else:
+                arguments_obj = arguments
+            tool_calls.append(
+                {
+                    "id": item.get("id", ""),
+                    "name": item.get("name", ""),
+                    "arguments": arguments_obj,
+                }
+            )
+    return ReplyDraft(
+        reasoning="".join(reasoning_parts) or None,
+        tool_calls=tool_calls,
+        final_text="".join(final_parts) or None,
+    )
 
 
 def _parse_chat_response(payload: dict[str, Any]) -> ReplyDraft:
@@ -327,7 +413,8 @@ class LlmDraftService:
         owner: User,
         llm_config_id: int,
     ) -> TaskDraft:
-        begin_immediate_if_sqlite(session)
+        task_id = task.id
+        owner_id = owner.id
         # 1. 任务状态校验：仅 waiting_human 可生成
         if task.state is not TaskState.WAITING_HUMAN:
             raise DomainError(
@@ -374,39 +461,79 @@ class LlmDraftService:
             normalized = {}
         # 5. 构造目标协议请求体（同协议直拼；跨协议走 cross 矩阵，§12.6）
         expected_llm_protocol = _INFERENCE_TO_LLM.get(task.protocol)
-        if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
-            if expected_llm_protocol is LLMProtocol.OPENAI_COMPATIBLE:
-                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized)
+        raw_body: dict[str, Any] | None = None
+        if expected_llm_protocol is cfg.protocol:
+            try:
+                decoded_raw = json.loads(task.raw_payload_json)
+                if isinstance(decoded_raw, dict):
+                    raw_body = dict(decoded_raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                raw_body = None
+        # previous_response_id 是网关控制字段；即使上游同为 Responses，也必须
+        # 使用已展开的规范化上下文，不能把本平台代理 ID 透传给上游。
+        if raw_body is not None and not (
+            cfg.protocol is LLMProtocol.OPENAI_RESPONSES
+            and raw_body.get("previous_response_id") is not None
+        ):
+            body = raw_body
+            body["model"] = cfg.real_model
+            body["stream"] = False
+            _apply_config(body, cfg)
+        elif cfg.protocol is LLMProtocol.OPENAI_CHAT:
+            if expected_llm_protocol is LLMProtocol.OPENAI_CHAT:
+                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized, cfg=cfg)
             else:
                 body = cross.to_chat_request(normalized, cfg.real_model)
+                _apply_config(body, cfg)
+        elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+            body = cross.to_responses_request(normalized, cfg.real_model)
+            _apply_config(body, cfg)
         else:
-            if expected_llm_protocol is LLMProtocol.ANTHROPIC:
+            if expected_llm_protocol is LLMProtocol.ANTHROPIC_MESSAGES:
                 body = _build_anthropic_request(
                     real_model=cfg.real_model,
                     normalized=normalized,
                     max_tokens=int(normalized.get("max_tokens") or LLM_DEFAULT_MAX_TOKENS),
+                    cfg=cfg,
                 )
             else:
                 body = cross.to_anthropic_request(normalized, cfg.real_model)
+                _apply_config(body, cfg)
         # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch）
         secret, headers = _decrypt_config(cfg)
+        cfg_id = cfg.id
+        cfg_protocol = cfg.protocol
+        cfg_base_url = cfg.base_url
+        cfg_timeout_seconds = cfg.timeout_seconds
+        # 上游网络 I/O 前结束读取事务，避免 SQLite 在数十秒调用期间持锁。
+        # 上游完成后重新取得写锁并复核任务与草稿状态。
+        session.rollback()
         try:
-            if cfg.protocol is LLMProtocol.OPENAI_COMPATIBLE:
+            if cfg_protocol is LLMProtocol.OPENAI_CHAT:
                 upstream = await llm_upstream.post_chat_completions(
-                    base_url=cfg.base_url,
+                    base_url=cfg_base_url,
                     api_key=secret,
                     request_body=body,
                     extra_headers=headers,
-                    timeout_seconds=cfg.timeout_seconds,
+                    timeout_seconds=cfg_timeout_seconds,
                 )
                 draft = _parse_chat_response(upstream)
-            else:
-                upstream = await llm_upstream.post_anthropic_messages(
-                    base_url=cfg.base_url,
+            elif cfg_protocol is LLMProtocol.OPENAI_RESPONSES:
+                upstream = await llm_upstream.post_responses(
+                    base_url=cfg_base_url,
                     api_key=secret,
                     request_body=body,
                     extra_headers=headers,
-                    timeout_seconds=cfg.timeout_seconds,
+                    timeout_seconds=cfg_timeout_seconds,
+                )
+                draft = _parse_responses_response(upstream)
+            else:
+                upstream = await llm_upstream.post_anthropic_messages(
+                    base_url=cfg_base_url,
+                    api_key=secret,
+                    request_body=body,
+                    extra_headers=headers,
+                    timeout_seconds=cfg_timeout_seconds,
                 )
                 draft = _parse_anthropic_response(upstream)
         except DomainError:
@@ -417,16 +544,50 @@ class LlmDraftService:
                 f"上游响应解析失败: {exc.__class__.__name__}",
                 status_code=502,
             ) from exc
-        # 7. 落库为 LLM 来源草稿
+        # 7. 落库前原子复核；调用期间若人工已回复或生成了草稿，拒绝晚到结果。
+        begin_immediate_if_sqlite(session)
+        current_task = session.get(RequestTask, task_id, with_for_update=True)
+        if (
+            current_task is None
+            or current_task.owner_user_id != owner_id
+            or current_task.state is not TaskState.WAITING_HUMAN
+        ):
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                "任务已结束，不能保存晚到的 LLM 草稿",
+                status_code=409,
+                public_code="task_already_resolved",
+            )
+        current_cfg = self.llm_repo.get(session, cfg_id)
+        if current_cfg is None or current_cfg.owner_user_id != owner_id or not current_cfg.is_enabled:
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                "LLM 配置在调用期间已不可用",
+                status_code=409,
+            )
+        existing = session.execute(
+            sa_select(TaskDraft.id).where(
+                TaskDraft.task_id == task_id,
+                TaskDraft.source == DraftSource.LLM,
+                TaskDraft.state == DraftState.EDITING,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                "已存在未提交的 LLM 草稿，请编辑或删除后重新生成",
+                status_code=409,
+                public_code="llm_draft_exists",
+            )
         tool_calls_payload = [
             {"id": call.id, "name": call.name, "arguments": call.arguments}
             for call in draft.tool_calls
         ]
         row = TaskDraft(
-            task_id=task.id,
-            owner_user_id=owner.id,
+            task_id=task_id,
+            owner_user_id=owner_id,
             source=DraftSource.LLM,
-            source_llm_config_id=cfg.id,
+            source_llm_config_id=cfg_id,
             state=DraftState.EDITING,
             reasoning_text=draft.reasoning,
             tool_calls_json=json.dumps(tool_calls_payload, ensure_ascii=False),
@@ -439,11 +600,11 @@ class LlmDraftService:
             action=AuditAction.LLM_DRAFT_GENERATED,
             resource_type="task_draft",
             resource_id=str(row.id),
-            actor_user_id=owner.id,
-            owner_user_id=owner.id,
+            actor_user_id=owner_id,
+            owner_user_id=owner_id,
             metadata={
-                "task_id": task.id,
-                "llm_config_id": cfg.id,
+                "task_id": task_id,
+                "llm_config_id": cfg_id,
                 "fields": ["reasoning", "tool_calls", "final_text"],
             },
         )

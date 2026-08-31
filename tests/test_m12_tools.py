@@ -101,7 +101,7 @@ def test_user_view_hides_command_template(client, admin_headers, created_user) -
     items = user_view.json()["items"]
     assert items
     assert items[0]["command_template"] is None
-    assert items[0]["arguments_schema"] is None
+    assert items[0]["arguments_schema"]["properties"]["text"]["type"] == "string"
 
 
 def test_tool_update_and_delete(client, admin_headers) -> None:
@@ -316,7 +316,7 @@ def test_protocol_tool_calls_never_execute(client, created_user, created_key) ->
         created_user.headers,
         {
             "name": "auto-probe",
-            "protocol": "openai_compatible",
+            "protocol": "openai_chat",
             "base_url": "https://api.example.com/v1",
             "api_key": "sk",
             "model": "gpt-4o-mini",
