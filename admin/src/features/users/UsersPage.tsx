@@ -94,7 +94,6 @@ export function UsersPage() {
     <div className="space-y-5">
       <PageHeader
         title="用户管理"
-        description="创建普通用户并管理账号状态"
         actions={
           <Button onClick={() => setCreating(true)}>
             <Icon name="plus" className="h-4 w-4" />

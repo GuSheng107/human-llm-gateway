@@ -118,7 +118,7 @@
 | `cached_write_price_per_million` | `Decimal` | NULL | 缓存写价 |
 | `context_window` | `Integer` | NULL | 上下文窗口 token 数 |
 | `max_output_tokens` | `Integer` | NULL | 最大输出 token |
-| `capabilities` | `JSON` (list[str]) | `[]` | 能力标签，enum: `vision` / `tools` / `thinking` / `image_gen` / `audio` / `video` / `streaming` / `function_calling` |
+| `capabilities` | `JSON` (list[str]) | `[]` | 能力标签，enum: `vision` / `tools` / `thinking` / `image_gen` / `audio` / `video` / `streaming`（函数调用与工具调用已统一为 `tools`） |
 | `billing_tier` | `Enum` | `pay_as_you_go` | `pay_as_you_go` / `subscription` / `free` / `dynamic` |
 | `endpoint_type` | `Enum` | `openai_chat` | `openai_chat` / `openai_responses` / `anthropic_messages` |
 | `logo_url` | `String(512)` | NULL | 厂商 logo（外链或 base64） |

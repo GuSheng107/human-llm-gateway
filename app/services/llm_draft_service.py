@@ -19,12 +19,14 @@ from ..core.constants import LLM_DEFAULT_MAX_TOKENS
 from ..core.db import begin_immediate_if_sqlite
 from ..core.security import decrypt_secret
 from ..domain.enums import (
+    ANTHROPIC_THINKING_BUDGETS,
     AuditAction,
     DraftSource,
     DraftState,
     InferenceProtocol,
     LLMProtocol,
     TaskState,
+    ThinkingMode,
 )
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft
@@ -48,8 +50,11 @@ def _apply_config(body: dict[str, Any], cfg: LlmConfig) -> dict[str, Any]:
     1. extra_body 先用 setdefault 写入（请求体已显式提供的字段优先）；
     2. default_temperature / default_top_p / default_top_k 同理；
     3. 最大输出字段按目标协议写入（请求未带同义字段时）；
-    4. 思考模式：OPENAI_RESPONSES 时 thinking_level -> reasoning.effort；
-       其他协议 thinking_level 已在入库时拒绝，此处对 mode 兜底忽略。
+    4. 思考模式（三种上游协议都支持）：
+       - OPENAI_RESPONSES: thinking_level -> reasoning.effort；
+       - OPENAI_CHAT: thinking_level -> reasoning_effort；
+       - ANTHROPIC_MESSAGES: enabled -> thinking.budget_tokens（按等级映射预算），
+         disabled 不写 thinking 字段（模型默认）。
     """
     for key, value in (cfg.extra_body or {}).items():
         body.setdefault(key, value)
@@ -66,8 +71,16 @@ def _apply_config(body: dict[str, Any], cfg: LlmConfig) -> dict[str, Any]:
             body.setdefault("max_tokens", cfg.max_output_tokens)
         elif "max_tokens" not in body and "max_completion_tokens" not in body:
             body["max_completion_tokens"] = cfg.max_output_tokens
-    if cfg.protocol is LLMProtocol.OPENAI_RESPONSES and cfg.thinking_level is not None:
-        body.setdefault("reasoning", {"effort": cfg.thinking_level.value})
+    if cfg.thinking_mode is ThinkingMode.ENABLED and cfg.thinking_level is not None:
+        level = cfg.thinking_level
+        if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+            body.setdefault("reasoning", {"effort": level.value})
+        elif cfg.protocol is LLMProtocol.OPENAI_CHAT:
+            body.setdefault("reasoning_effort", level.value)
+        elif cfg.protocol is LLMProtocol.ANTHROPIC_MESSAGES:
+            budget = ANTHROPIC_THINKING_BUDGETS.get(level)
+            if budget is not None:
+                body.setdefault("thinking", {"type": "enabled", "budget_tokens": budget})
     return body
 
 

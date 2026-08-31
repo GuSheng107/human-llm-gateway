@@ -44,7 +44,12 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
       setRemaining(QR_TTL_SECONDS);
       try {
         const started = await startQrLogin(id);
-        setQrImage(`data:image/png;base64,${started.qrcode_img_content}`);
+        setQrImage(
+          // 后端可能是 PNG bytes（已转 base64）或图片 URL 字符串，两种都支持。
+          started.qrcode_img_content.startsWith("http")
+            ? started.qrcode_img_content
+            : `data:image/png;base64,${started.qrcode_img_content}`,
+        );
         setPhase("wait");
       } catch (caught) {
         setPhase("error");

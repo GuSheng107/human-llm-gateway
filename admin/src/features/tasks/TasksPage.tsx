@@ -102,9 +102,6 @@ export function TasksPage() {
     <div className="space-y-5">
       <PageHeader
         title="任务记录"
-        description={
-          isAdmin ? "全部任务（只读）" : "查看任务记录，回复归属于自己的进行中任务"
-        }
         dismissId="tasks"
       />
 

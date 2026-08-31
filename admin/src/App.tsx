@@ -18,6 +18,7 @@ import { AssistantPanel } from "./features/assistant/AssistantPanel";
 import { AssistantProvider } from "./features/assistant/AssistantContext";
 import { AccountPage } from "./features/settings/AccountPage";
 import { ReplyPage } from "./features/tasks/ReplyPage";
+import { RepliesWorkbenchPage } from "./features/tasks/RepliesWorkbenchPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { UsersPage } from "./features/users/UsersPage";
 import { APP_ROUTES, type AppRouteId } from "./navigation";
@@ -97,6 +98,7 @@ export default function App() {
   const routeElements: Record<AppRouteId, ReactNode> = {
     console: <DashboardPage />,
     tasks: <TasksPage />,
+    replies: <RepliesWorkbenchPage />,
     connections: <ConnectionsPage />,
     apiKeys: <ApiKeysPage />,
     models: <ModelsPage />,

@@ -251,7 +251,12 @@ def test_qr_login_returns_base64_qrcode_and_token_writeback(
         async def poll_login(self):
             return {"status": "confirmed", "bot_token": "bot-token-1"}
 
-    monkeypatch.setattr(ConnectionService, "_ensure_connector", lambda self, row: _FakeConnector())
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
 
     started = client.post(f"/api/im-connections/{created['id']}/login", headers=headers)
     assert started.status_code == 200, started.text
@@ -275,6 +280,46 @@ def test_qr_login_returns_base64_qrcode_and_token_writeback(
         assert row is not None
         decrypted = ConnectionService().decrypt_config(row)
         assert decrypted.get("token") == "bot-token-1"
+
+
+def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:
+    """扫码会话跨请求共享：未先 start 直接 poll 返回 400，而不是未处理 500。"""
+    headers = _create_user(client, admin_headers, "qr-poll-first")
+    created = _create_connection(
+        client, headers, name="ilink-poll", platform="wecom_ilink", config={"token": ""}
+    )
+    resp = client.get(f"/api/im-connections/{created['id']}/login", headers=headers)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "validation_failed"
+
+
+def test_qr_login_connector_error_mapped_to_domain_error(
+    client, admin_headers, monkeypatch
+) -> None:
+    """连接器抛 ConnectorError（如二维码过期/网络失败）映射为 400/401，不泄露 500。"""
+    from app.domain.connections import ERROR_AUTH, ConnectorError
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-err")
+    created = _create_connection(
+        client, headers, name="ilink-err", platform="wecom_ilink", config={"token": ""}
+    )
+
+    class _FailingConnector:
+        async def start_login(self):
+            raise ConnectorError(ERROR_AUTH, "iLink 会话已过期，请重新扫码登录")
+
+    def _fake_login_connector(self, row):
+        connector = _FailingConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+    resp = client.post(f"/api/im-connections/{created['id']}/login", headers=headers)
+    assert resp.status_code == 401, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "validation_failed"
+    assert "会话已过期" in body["error"]["message"]
 
 
 def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:

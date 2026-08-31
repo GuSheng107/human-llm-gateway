@@ -8,18 +8,16 @@ export type Capability =
   | "image_gen"
   | "audio"
   | "video"
-  | "streaming"
-  | "function_calling";
+  | "streaming";
 
 export const CAPABILITY_LABELS: Record<string, string> = {
   vision: "视觉",
-  tools: "工具",
+  tools: "工具调用",
   thinking: "思考",
   image_gen: "绘图",
   audio: "音频",
   video: "视频",
   streaming: "流式",
-  function_calling: "函数调用",
 };
 
 export const ENDPOINT_LABELS: Record<string, string> = {

@@ -316,7 +316,6 @@ export function LlmConfigsPage() {
     <div className="space-y-5">
       <PageHeader
         title="LLM 管理"
-        description="配置转发用的真实 LLM：协议、地址、模型、超时与自定义 Header"
         dismissId="llm-configs"
       />
 
@@ -706,7 +705,7 @@ export function LlmConfigsPage() {
                       <option value="disabled">关闭</option>
                     </select>
                   </label>
-                  {form.protocol === "openai_responses" && form.thinking_mode === "enabled" ? (
+                  {form.thinking_mode === "enabled" ? (
                     <label className="block text-xs font-medium text-slate-600">
                       思考等级
                       <select
@@ -717,14 +716,18 @@ export function LlmConfigsPage() {
                         className="field-input mt-1.5"
                       >
                         <option value="">请选择</option>
+                        <option value="minimal">Minimal</option>
                         <option value="low">Low</option>
                         <option value="medium">Medium</option>
                         <option value="high">High</option>
+                        <option value="xhigh">XHigh</option>
+                        <option value="max">Max</option>
                       </select>
                     </label>
                   ) : (
                     <div className="rounded-md border border-dashed border-slate-200 bg-white px-3 py-2 text-[11px] leading-5 text-slate-400">
-                      思考等级只适用于 OpenAI Responses；其他格式由上游模型决定。
+                      三种上游格式都支持思考模式：OpenAI 两种格式映射 reasoning effort，
+                      Anthropic 按等级映射思考预算。
                     </div>
                   )}
                 </div>

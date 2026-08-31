@@ -78,7 +78,6 @@ export function ModelsPage() {
   const [provider, setProvider] = useState("");
   const [group, setGroup] = useState("");
   const [endpointType, setEndpointType] = useState("");
-  const [tag, setTag] = useState("");
   const [showDisabled, setShowDisabled] = useState(false);
 
   const [view, setView] = useState<ViewMode>(() =>
@@ -117,7 +116,6 @@ export function ModelsPage() {
           provider,
           group_id: group,
           endpoint_type: endpointType,
-          tag,
           include_disabled: showDisabled,
         },
         page,
@@ -136,7 +134,7 @@ export function ModelsPage() {
     } finally {
       if (requestId === pageRequest.current) setPageLoading(false);
     }
-  }, [endpointType, group, page, pageSize, provider, search, showDisabled, tag]);
+  }, [endpointType, group, page, pageSize, provider, search, showDisabled]);
 
   const refresh = useCallback(async () => {
     await Promise.all([loadCatalog(), loadPage()]);
@@ -152,16 +150,6 @@ export function ModelsPage() {
       counter.set(model.owned_by, (counter.get(model.owned_by) ?? 0) + 1);
     }
     return [...counter.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-  }, [models]);
-
-  const tags = useMemo(() => {
-    const counter = new Map<string, number>();
-    for (const model of models) {
-      for (const item of model.tags) {
-        counter.set(item, (counter.get(item) ?? 0) + 1);
-      }
-    }
-    return [...counter.entries()].sort((a, b) => b[1] - a[1]);
   }, [models]);
 
   const loading = pageLoading || (catalogLoading && models.length === 0);
@@ -241,11 +229,6 @@ export function ModelsPage() {
       <PageHeader
         title="模型广场"
         dismissId="models"
-        description={
-          isAdmin
-            ? "维护全站系统模型与模型分组"
-            : "系统模型所有人都能用，你自己建的模型只有你能用"
-        }
         actions={
           <>
             <Button variant="ghost" onClick={() => setGroupsOpen(true)}>
@@ -275,10 +258,6 @@ export function ModelsPage() {
           <div>
             <div className="text-2xl font-bold">{providers.length}</div>
             <div className="text-xs text-white/70">供应商</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold">{tags.length}</div>
-            <div className="text-xs text-white/70">标签</div>
           </div>
           <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-white/80">
             <input
@@ -315,22 +294,16 @@ export function ModelsPage() {
             <h3 className="mb-2 text-xs font-semibold text-slate-700">端点类型</h3>
             {filterChips(
               Object.keys(ENDPOINT_GROUP_LABELS)
-                .filter((key) => key === "" || models.some((model) => model.endpoint_type === key))
-                .map((key) => [
-                  key,
-                  key === "" ? models.length : models.filter((m) => m.endpoint_type === key).length,
-                ] as [string, number]),
+                .filter((key) => key !== "" && models.some((model) => model.endpoint_type === key))
+                .map((key) => [key, models.filter((m) => m.endpoint_type === key).length] as [
+                  string,
+                  number,
+                ]),
               endpointType,
               setEndpointType,
               (value) => ENDPOINT_GROUP_LABELS[value],
             )}
           </Card>
-          {tags.length > 0 && (
-            <Card className="p-4">
-              <h3 className="mb-2 text-xs font-semibold text-slate-700">标签</h3>
-              {filterChips(tags, tag, setTag, (value) => value)}
-            </Card>
-          )}
         </aside>
 
         {/* 右侧主区 */}
@@ -349,7 +322,7 @@ export function ModelsPage() {
                     setSearch(event.target.value);
                   }}
                   className="field-input pl-9"
-                  placeholder="搜索模型 ID、显示名、描述或标签"
+                  placeholder="搜索模型 ID、显示名或描述"
                 />
               </div>
               <div className="flex rounded-md border border-slate-200 p-0.5">
@@ -488,7 +461,6 @@ export function ModelsPage() {
                       <th className="px-4 py-3 font-medium">端点</th>
                       <th className="px-4 py-3 font-medium">上下文</th>
                       <th className="px-4 py-3 font-medium">能力</th>
-                      <th className="px-4 py-3 font-medium">标签</th>
                       <th className="px-4 py-3 font-medium">状态</th>
                       <th className="px-4 py-3 text-right font-medium">操作</th>
                     </tr>
@@ -524,9 +496,6 @@ export function ModelsPage() {
                               </span>
                             ))}
                           </div>
-                        </td>
-                        <td className="max-w-32 truncate px-4 py-3 text-slate-400">
-                          {model.tags.join("、") || "-"}
                         </td>
                         <td className="px-4 py-3">
                           <StatusBadge status={model.is_enabled ? "active" : "inactive"} />

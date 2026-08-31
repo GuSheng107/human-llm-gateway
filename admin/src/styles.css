@@ -46,6 +46,7 @@
   --animate-slide-in-right: slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-slide-in-left: slide-in-left 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-slide-up: slide-up 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-toast-in: toast-in 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
   --animate-float: float 7s ease-in-out infinite;
   --animate-drift: drift 14s ease-in-out infinite;
 
@@ -99,6 +100,18 @@
     to {
       opacity: 1;
       transform: translateY(0);
+    }
+  }
+
+  /* 顶部居中提示（Element Plus Message 风格）：从上方淡入下移。 */
+  @keyframes toast-in {
+    from {
+      opacity: 0;
+      transform: translate(-50%, -12px);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, 0);
     }
   }
 

@@ -3,6 +3,7 @@ import type { Capability } from "./types/auth";
 export type AppRouteId =
   | "console"
   | "tasks"
+  | "replies"
   | "connections"
   | "apiKeys"
   | "models"
@@ -49,6 +50,13 @@ export const NAVIGATION: NavigationGroup[] = [
         label: "任务记录",
         description: "查看全部任务，回复归属于自己的进行中任务",
         icon: "reply",
+      },
+      {
+        id: "replies",
+        path: "/replies",
+        label: "回复工作台",
+        description: "自己的进行中任务，进入独立回复页人工回复",
+        icon: "gateway",
       },
     ],
   },

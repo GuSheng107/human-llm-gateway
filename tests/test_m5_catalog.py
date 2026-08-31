@@ -341,3 +341,24 @@ def test_group_ownership_isolation(client, admin_headers) -> None:
     # 管理员治理视图能看到全部分组（含他人私有分组）。
     admin_groups = client.get("/api/model-groups", headers=admin_headers).json()["items"]
     assert any(item["id"] == group["id"] for item in admin_groups)
+
+
+def test_function_calling_capability_merged_into_tools(client, admin_headers) -> None:
+    """历史 function_calling 归并为 tools；白名单外能力被忽略。"""
+    created = client.post(
+        "/api/fake-models",
+        headers=admin_headers,
+        json={
+            "model_id": "merged-capability",
+            "capabilities": ["tools", "function_calling", "vision", "not-a-capability"],
+        },
+    )
+    assert created.status_code in (200, 201), created.text
+    assert created.json()["capabilities"] == ["tools", "vision"]
+
+    only_legacy = client.post(
+        "/api/fake-models",
+        headers=admin_headers,
+        json={"model_id": "legacy-capability", "capabilities": ["function_calling"]},
+    ).json()
+    assert only_legacy["capabilities"] == ["tools"]

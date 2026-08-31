@@ -664,17 +664,8 @@ class LlmConfigService:
     def _validate_thinking(
         protocol: LLMProtocol, mode: ThinkingMode, level: ThinkingLevel | None
     ) -> None:
-        if level is not None and protocol is not LLMProtocol.OPENAI_RESPONSES:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                "思考等级仅支持 OpenAI Responses 协议",
-                status_code=400,
-            )
-        if (
-            protocol is LLMProtocol.OPENAI_RESPONSES
-            and mode is ThinkingMode.ENABLED
-            and level is None
-        ):
+        # 三种上游协议都支持思考模式与等级（映射见 llm_draft_service._apply_config）。
+        if mode is ThinkingMode.ENABLED and level is None:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
                 "开启思考模式时必须指定思考等级",

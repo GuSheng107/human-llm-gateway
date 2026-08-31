@@ -30,6 +30,7 @@ from ..repositories.system import AuditRepository
 MODEL_ID_PATTERN = re.compile(r"^[\w.\-/]{1,255}$")
 
 # 模型能力标签白名单（超出部分忽略）。
+# 函数调用与工具调用业内已统一为 tool calling，这里只保留 tools 一项。
 ALLOWED_CAPABILITIES = {
     "vision",
     "tools",
@@ -38,8 +39,17 @@ ALLOWED_CAPABILITIES = {
     "audio",
     "video",
     "streaming",
-    "function_calling",
 }
+
+
+def _clean_capabilities(values: list[str] | None) -> list[str]:
+    """去重并只保留白名单内的能力标签（历史 function_calling 归并为 tools）。"""
+    cleaned = _clean_tags(values)
+    if "function_calling" in cleaned:
+        cleaned = [item for item in cleaned if item != "function_calling"]
+        if "tools" not in cleaned:
+            cleaned.append("tools")
+    return [item for item in cleaned if item in ALLOWED_CAPABILITIES]
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -220,7 +230,7 @@ class FakeModelService:
             cached_write_price_per_million=_to_decimal(pricing.get("cached_write")),
             context_window=context_window,
             max_output_tokens=max_output_tokens,
-            capabilities=_clean_tags(capabilities),
+            capabilities=_clean_capabilities(capabilities),
             billing_tier=BillingTier(billing_tier or BillingTier.PAY_AS_YOU_GO.value),
             endpoint_type=ModelEndpointType(endpoint_type or ModelEndpointType.OPENAI_CHAT.value),
             logo_url=(logo_url or "").strip() or None,
@@ -278,7 +288,7 @@ class FakeModelService:
             if name == "display_name" or name == "logo_url":
                 value = (value or "").strip() or None
             elif name == "capabilities":
-                value = [item for item in (value or []) if item in ALLOWED_CAPABILITIES]
+                value = _clean_capabilities(value)
             elif name == "tags":
                 value = _clean_tags(value)
             elif name == "billing_tier" and value is not None:

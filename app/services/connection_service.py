@@ -31,6 +31,7 @@ from ..core.security import (
     verify_binding_code,
 )
 from ..core.time import utc_now
+from ..domain.connections import ConnectorError
 from ..domain.dsl import is_empty_draft, parse_reply
 from ..domain.enums import (
     ActorType,
@@ -55,6 +56,8 @@ class ConnectionService:
         self.repo = ConnectionRepository()
         self.audit = AuditRepository()
         self.tasks = TaskRepository()
+        # 扫码登录会话：connection_id -> 登录连接器实例（跨 start/poll 请求共享）。
+        self._login_connectors: dict[int, Connector] = {}
 
     # ------------------------------------------------------------------
     # 配置加密
@@ -208,6 +211,9 @@ class ConnectionService:
             if new_name != row.name:
                 row.name = new_name
                 changed_fields.append("name")
+        # 配置变化后旧的登录会话（持有旧 token 的 SDK client）不再可信。
+        if changed_fields:
+            self._login_connectors.pop(row.id, None)
         try:
             session.flush()
         except IntegrityError as exc:
@@ -239,6 +245,7 @@ class ConnectionService:
         from ..connectors import connection_manager as manager
 
         await manager.stop(row.id)
+        self._login_connectors.pop(row.id, None)
         row.desired_running = False
         await run_in_threadpool(session.flush)
         await run_in_threadpool(self.repo.delete, session, row.id)
@@ -390,9 +397,12 @@ class ConnectionService:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED, "该平台不支持交互式登录", status_code=400
             )
-        connector = self._ensure_connector(row)
-        result = _run_coroutine(connector.start_login())
-        # qrcode_img_content 为 PNG bytes，转成 base64 供前端 data URL 渲染。
+        connector = self._login_connector(row)
+        try:
+            result = _run_coroutine(connector.start_login())
+        except ConnectorError as exc:
+            raise _login_domain_error(exc) from exc
+        # qrcode_img_content 可能是 PNG bytes（转 base64）或图片 URL 字符串（原样透传）。
         raw_img = result.get("qrcode_img_content")
         if isinstance(raw_img, (bytes, bytearray)):
             result["qrcode_img_content"] = base64.b64encode(bytes(raw_img)).decode("ascii")
@@ -408,13 +418,32 @@ class ConnectionService:
         return result
 
     def poll_login(self, session: Session, *, row: ImConnection) -> dict[str, Any]:
-        connector = self._ensure_connector(row)
-        return _run_coroutine(connector.poll_login())
+        connector = self._login_connectors.get(row.id)
+        if connector is None:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "尚未发起扫码登录，请先获取二维码",
+                status_code=400,
+            )
+        try:
+            return _run_coroutine(connector.poll_login())
+        except ConnectorError as exc:
+            raise _login_domain_error(exc) from exc
 
-    def _ensure_connector(self, row: ImConnection) -> Connector:
-        """为登录流程创建临时连接器实例（不改变连接运行状态）。"""
-        ctx = _connector_context(row, self.decrypt_config(row))
-        return self.registry.create(row.platform, ctx)
+    def _login_connector(self, row: ImConnection) -> Connector:
+        """登录流程的连接器实例按 connection_id 缓存。
+
+        start_login 与 poll_login 是两次独立请求，必须共享同一实例，
+        否则二维码状态（_pending_qrcode / SDK client）会丢失。
+        连接被删除或重新配置时应清除缓存（见 delete/update 路径）。
+        """
+        connector = self._login_connectors.get(row.id)
+        if connector is None:
+            connector = self.registry.create(
+                row.platform, _connector_context(row, self.decrypt_config(row))
+            )
+            self._login_connectors[row.id] = connector
+        return connector
 
     # ------------------------------------------------------------------
     # 进站处理（连接器回调与 /connectors/* 入口共用）
@@ -666,6 +695,16 @@ def _connector_context(row: ImConnection, config: dict[str, Any]):
         name=row.name,
         platform=row.platform,
         config=config,
+    )
+
+
+def _login_domain_error(exc: ConnectorError) -> DomainError:
+    """把连接器登录错误映射为对外领域错误（不泄露内部堆栈）。"""
+    status = 401 if exc.is_auth else 400
+    return DomainError(
+        DomainErrorCode.VALIDATION_FAILED,
+        exc.message or "扫码登录失败，请重试",
+        status_code=status,
     )
 
 

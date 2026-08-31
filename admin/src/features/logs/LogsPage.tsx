@@ -94,7 +94,7 @@ export function LogsPage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="日志审计" description="按动作、资源、级别与时间窗检索操作与运行日志。" />
+      <PageHeader title="日志审计" />
 
       <Card>
         <div className="flex gap-1 border-b border-slate-100 px-4 pt-3">

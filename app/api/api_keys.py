@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from ..core.db import get_db
 from ..core.time import iso_utc
 from ..domain.enums import DeliveryMode, ReplyStrategy, UserRole
+from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.catalog import FakeModelRepository
 from ..repositories.models import ApiKey, User
 from ..services.api_key_service import ApiKeyService
@@ -127,6 +128,7 @@ def create_api_key(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> ApiKeyCreated:
+    _assert_admin_can_manage(user)
     row, plaintext = _service.create(
         db,
         owner=user,
@@ -142,6 +144,12 @@ def create_api_key(
     db.commit()
     db.refresh(row)
     return ApiKeyCreated(**_view(db, row).model_dump(), plaintext=plaintext)
+
+
+def _assert_admin_can_manage(user: User) -> None:
+    """管理员只监管 API Key（停用/删除），不能以管理员身份新建或改写 Key。"""
+    if user.role is UserRole.ADMIN:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "管理员不能创建 API Key", status_code=403)
 
 
 def _get_key(db: Session, key_id: int, user: User) -> ApiKey:
@@ -167,6 +175,15 @@ def update_api_key(
 ) -> ApiKeyView:
     row = _get_key(db, key_id, user)
     fields = payload.model_dump(include=payload.model_fields_set)
+    if user.role is UserRole.ADMIN:
+        # 管理员仅允许启停治理，不能改写 Key 的其他配置。
+        disallowed = set(fields) - {"enabled"}
+        if disallowed:
+            raise DomainError(
+                DomainErrorCode.FORBIDDEN,
+                "管理员仅能停用或启用 API Key",
+                status_code=403,
+            )
     _service.update(db, row=row, actor=user, fields=fields)
     db.commit()
     db.refresh(row)

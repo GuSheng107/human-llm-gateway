@@ -205,12 +205,13 @@ export function ApiKeysPage() {
     <div className="space-y-5">
       <PageHeader
         title="API 管理"
-        description="设置请求的回复入口、回复策略与可用模型"
         actions={
-          <Button onClick={openCreate}>
-            <Icon name="plus" className="h-4 w-4" />
-            新建 Key
-          </Button>
+          !isAdmin ? (
+            <Button onClick={openCreate}>
+              <Icon name="plus" className="h-4 w-4" />
+              新建 Key
+            </Button>
+          ) : undefined
         }
       />
 
@@ -270,9 +271,11 @@ export function ApiKeysPage() {
                     <td className="px-4 py-3 text-slate-500">{key.owner_username ?? "-"}</td>
                   )}
                   <td className="sticky right-0 space-x-3 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
-                    <button onClick={() => openEdit(key)} className="text-primary">
-                      编辑
-                    </button>
+                    {!isAdmin && (
+                      <button onClick={() => openEdit(key)} className="text-primary">
+                        编辑
+                      </button>
+                    )}
                     <button onClick={() => void toggle(key)} className="text-primary">
                       {key.is_enabled ? "停用" : "启用"}
                     </button>

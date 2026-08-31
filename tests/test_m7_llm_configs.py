@@ -719,3 +719,65 @@ def test_connectivity_test_other_user_config_returns_404(
 def test_create_requires_auth(client) -> None:
     resp = client.post("/api/llm-configs", json=_create_body())
     assert resp.status_code == 401
+
+
+# ----------------------------------------------------------------------
+# 思考模式：三协议支持 + 六档等级
+# ----------------------------------------------------------------------
+
+
+def test_thinking_levels_accepted_for_all_protocols(client, created_user) -> None:
+    """minimal/xhigh/max 等六档等级对三种上游协议都合法。"""
+    for protocol in ("openai_chat", "openai_responses", "anthropic_messages"):
+        for level in ("minimal", "low", "medium", "high", "xhigh", "max"):
+            resp = client.post(
+                "/api/llm-configs",
+                headers=created_user.headers,
+                json=_create_body(
+                    name=f"think-{protocol}-{level}",
+                    protocol=protocol,
+                )
+                | {"thinking_mode": "enabled", "thinking_level": level},
+            )
+            assert resp.status_code == 201, f"{protocol}/{level}: {resp.text}"
+            assert resp.json()["thinking_level"] == level
+
+
+def test_thinking_enabled_requires_level(client, created_user) -> None:
+    resp = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_create_body(name="think-no-level") | {"thinking_mode": "enabled"},
+    )
+    assert resp.status_code == 400
+    assert "思考等级" in resp.json()["error"]["message"]
+
+
+def test_thinking_applied_per_protocol() -> None:
+    """配置应用：chat -> reasoning_effort；responses -> reasoning.effort；
+    anthropic -> thinking.budget_tokens。"""
+    from app.domain.enums import LLMProtocol, ThinkingLevel, ThinkingMode
+    from app.repositories.models import LlmConfig
+    from app.services.llm_draft_service import _apply_config
+
+    base = {
+        "name": "t",
+        "protocol": LLMProtocol.OPENAI_CHAT,
+        "thinking_mode": ThinkingMode.ENABLED,
+    }
+    cfg = LlmConfig(**base, thinking_level=ThinkingLevel.XHIGH)
+    body = _apply_config({}, cfg)
+    assert body["reasoning_effort"] == "xhigh"
+
+    cfg = LlmConfig(
+        **{**base, "protocol": LLMProtocol.OPENAI_RESPONSES}, thinking_level=ThinkingLevel.MAX
+    )
+    body = _apply_config({}, cfg)
+    assert body["reasoning"] == {"effort": "max"}
+
+    cfg = LlmConfig(
+        **{**base, "protocol": LLMProtocol.ANTHROPIC_MESSAGES}, thinking_level=ThinkingLevel.LOW
+    )
+    body = _apply_config({}, cfg)
+    assert body["thinking"]["type"] == "enabled"
+    assert body["thinking"]["budget_tokens"] == 4096

@@ -52,11 +52,29 @@ class ThinkingMode(StrEnum):
 
 
 class ThinkingLevel(StrEnum):
-    """仅 OpenAI Responses 上游支持（reasoning.effort）。"""
+    """思考等级：OpenAI 两种格式映射 reasoning effort；Anthropic 映射思考预算。
 
+    effort 档位对齐业内聚合器（newapi 等）通用的六档：
+    minimal / low / medium / high / xhigh / max。
+    """
+
+    MINIMAL = "minimal"
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
+
+
+# Anthropic 思考预算（tokens）：等级 -> budget_tokens（须 >= max_tokens 才生效）。
+ANTHROPIC_THINKING_BUDGETS: dict[ThinkingLevel, int] = {
+    ThinkingLevel.MINIMAL: 2048,
+    ThinkingLevel.LOW: 4096,
+    ThinkingLevel.MEDIUM: 8192,
+    ThinkingLevel.HIGH: 16384,
+    ThinkingLevel.XHIGH: 32768,
+    ThinkingLevel.MAX: 65536,
+}
 
 
 class FakeModelScope(StrEnum):

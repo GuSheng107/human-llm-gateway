@@ -3,7 +3,7 @@ import type { LlmConfig, LlmConfigTestResult, Page } from "../types/gateway";
 
 export type LlmProtocol = "openai_chat" | "openai_responses" | "anthropic_messages";
 export type ThinkingMode = "model_default" | "enabled" | "disabled";
-export type ThinkingLevel = "low" | "medium" | "high";
+export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface LlmConfigHeaderInput {
   name: string;

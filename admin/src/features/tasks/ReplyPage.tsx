@@ -376,7 +376,7 @@ export function ReplyPage() {
   if (error && !task) {
     return (
       <div className="space-y-4">
-        <PageHeader title="回复任务" description="独立回复页" />
+        <PageHeader title="回复任务" />
         <ErrorBanner message={error} />
         <Button variant="ghost" onClick={() => navigate("/tasks")}>
           <Icon name="chevronLeft" className="h-4 w-4" />
@@ -401,9 +401,6 @@ export function ReplyPage() {
     <div className="space-y-5">
       <PageHeader
         title={`回复任务 #${task.public_id}`}
-        description={`${task.fake_model_name} · ${
-          PROTOCOL_LABELS[task.protocol] ?? task.protocol
-        }`}
         dismissId="reply-page"
         actions={
           <>

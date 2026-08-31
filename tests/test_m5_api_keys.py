@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 import app.core.db as database
 from app.domain.enums import (
@@ -351,6 +352,60 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
         "/v1/models", headers={"Authorization": f"Bearer {selected['plaintext']}"}
     ).json()
     assert {item["id"] for item in models["data"]} == {"deepseek-v4-pro", "narrow-private"}
+
+
+def test_admin_cannot_create_or_rewrite_keys_only_toggle_and_delete(client, admin_headers) -> None:
+    """管理员监管：禁止新建；PATCH 仅允许启停；删除可用。"""
+    user_headers = _create_user(client, admin_headers, "key-user-admin-rw")
+    created = client.post(
+        "/api/api-keys", headers=user_headers, json={"name": "admin-managed"}
+    ).json()
+
+    blocked = client.post("/api/api-keys", headers=admin_headers, json={"name": "admin-key"})
+    assert blocked.status_code == 403
+    assert "管理员" in blocked.json()["error"]["message"]
+
+    # 管理员可以停用/启用普通用户的 Key。
+    toggled = client.patch(
+        f"/api/api-keys/{created['id']}", headers=admin_headers, json={"enabled": False}
+    )
+    assert toggled.status_code == 200, toggled.text
+    assert toggled.json()["is_enabled"] is False
+
+    # 管理员不能改写 Key 的其他配置。
+    rewritten = client.patch(
+        f"/api/api-keys/{created['id']}",
+        headers=admin_headers,
+        json={"name": "renamed-by-admin"},
+    )
+    assert rewritten.status_code == 403
+
+    deleted = client.delete(f"/api/api-keys/{created['id']}", headers=admin_headers)
+    assert deleted.status_code == 204
+
+
+def test_user_key_can_use_public_group(client, admin_headers) -> None:
+    """用户新建 Key 可以选择管理员维护的公开分组（如供应商默认分组）。"""
+    from app.repositories.models import ModelGroup
+
+    headers = _create_user(client, admin_headers, "key-user-public-group")
+    # 种子分组（管理员创建、is_public=True）。
+    with database.SessionLocal() as session:
+        public_group = session.scalars(
+            select(ModelGroup).where(ModelGroup.is_public.is_(True))
+        ).first()
+        assert public_group is not None
+
+    created = client.post(
+        "/api/api-keys",
+        headers=headers,
+        json={"name": "public-group-key", "model_group_id": int(public_group.id)},
+    )
+    assert created.status_code == 201, created.text
+    models = client.get(
+        "/v1/models", headers={"Authorization": f"Bearer {created.json()['plaintext']}"}
+    ).json()
+    assert len(models["data"]) > 0
 
 
 def test_disabled_model_disappears_from_catalog_and_resolve(client, admin_headers) -> None:

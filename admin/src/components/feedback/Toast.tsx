@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { Icon } from "../../icons";
 
 export type ToastVariant = "info" | "success" | "error";
 type Notice = { id: number; message: string; variant: ToastVariant };
@@ -30,18 +31,20 @@ export function ToastHost() {
   }, [push]);
 
   if (!notice) return null;
+  // Element Plus Message 风格：顶部居中、浅色底、左侧彩色图标、圆角与轻阴影。
   const tone =
     notice.variant === "error"
-      ? "bg-red-600"
+      ? { icon: "close-circle", color: "text-red-500", border: "border-red-200" }
       : notice.variant === "success"
-        ? "bg-emerald-600"
-        : "bg-slate-800";
+        ? { icon: "check-circle", color: "text-emerald-500", border: "border-emerald-200" }
+        : { icon: "info-circle", color: "text-sky-500", border: "border-sky-200" };
   return (
     <div
       role={notice.variant === "error" ? "alert" : "status"}
-      className={`fixed bottom-5 right-5 z-60 max-w-sm rounded-md px-4 py-3 text-xs text-white shadow-modal animate-slide-up ${tone}`}
+      className={`fixed top-5 left-1/2 z-60 flex w-fit max-w-sm -translate-x-1/2 items-center gap-2 rounded-md border bg-white px-4 py-2.5 text-xs text-slate-600 shadow-md animate-toast-in ${tone.border}`}
     >
-      {notice.message}
+      <Icon name={tone.icon} className={`h-4 w-4 shrink-0 ${tone.color}`} />
+      <span>{notice.message}</span>
     </div>
   );
 }

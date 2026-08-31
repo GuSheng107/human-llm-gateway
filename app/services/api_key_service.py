@@ -312,9 +312,12 @@ class ApiKeyService:
         if model_group_id is None:
             return None
         group = self.catalog.get_group(session, model_group_id)
-        if group is None or group.owner_user_id != owner.id:
+        # 自己的分组或公开分组（如管理员维护的供应商分组）都可以被 Key 选用。
+        if group is None or (group.owner_user_id != owner.id and not group.is_public):
             raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED, "模型分组必须是自己的有效分组", status_code=400
+                DomainErrorCode.VALIDATION_FAILED,
+                "模型分组必须是自己的或公开的有效分组",
+                status_code=400,
             )
         return model_group_id
 

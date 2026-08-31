@@ -3,14 +3,12 @@ import {
   createTool,
   deleteTool,
   executeTool,
-  listToolExecutions,
   listTools,
   updateTool,
   type ToolExecutionItem,
   type ToolItem,
 } from "../../api/tools";
 import { Card } from "../../components/data-display/Card";
-import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
@@ -19,8 +17,6 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
-
-const PAGE_SIZE = 20;
 
 const EXECUTION_BADGE: Record<string, string> = {
   succeeded: "active",
@@ -34,9 +30,6 @@ export function ToolsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [tools, setTools] = useState<ToolItem[]>([]);
-  const [executions, setExecutions] = useState<ToolExecutionItem[]>([]);
-  const [execPage, setExecPage] = useState(1);
-  const [execTotal, setExecTotal] = useState(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   // 管理员表单
@@ -60,19 +53,14 @@ export function ToolsPage() {
     setLoading(true);
     setError("");
     try {
-      const [toolPage, execPageData] = await Promise.all([
-        listTools(1),
-        listToolExecutions(execPage),
-      ]);
+      const toolPage = await listTools(1);
       setTools(toolPage.items);
-      setExecutions(execPageData.items);
-      setExecTotal(execPageData.total);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "加载失败");
     } finally {
       setLoading(false);
     }
-  }, [execPage]);
+  }, []);
 
   useEffect(() => {
     void load();
@@ -163,11 +151,6 @@ export function ToolsPage() {
     <div className="space-y-5">
       <PageHeader
         title="工具沙箱"
-        description={
-          isAdmin
-            ? "维护服务端工具白名单；执行在隔离进程中运行并完整审计。"
-            : "执行管理员开放的服务端工具；每次执行需确认并记录审计。"
-        }
         actions={
           isAdmin ? (
             <Button
@@ -272,61 +255,6 @@ export function ToolsPage() {
               )}
             </tbody>
           </table>
-        </div>
-      </Card>
-
-      <Card>
-        <div className="border-b border-slate-100 px-5 py-3 text-sm font-medium text-slate-700">
-          执行历史
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-left text-xs">
-            <thead className="bg-slate-50 text-slate-400">
-              <tr>
-                <th className="px-4 py-3 font-medium">时间</th>
-                <th className="px-4 py-3 font-medium">工具</th>
-                <th className="px-4 py-3 font-medium">状态</th>
-                <th className="px-4 py-3 font-medium">退出码</th>
-                <th className="px-4 py-3 font-medium">耗时</th>
-                <th className="px-4 py-3 font-medium">输出</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {executions.map((item) => (
-                <tr key={item.id} className="hover:bg-slate-50/60">
-                  <td className="whitespace-nowrap px-4 py-3 text-slate-400">
-                    {item.created_at ? new Date(item.created_at).toLocaleString() : "-"}
-                  </td>
-                  <td className="px-4 py-3 text-slate-600">{item.tool_name}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge
-                      status={EXECUTION_BADGE[item.state] ?? "inactive"}
-                      fallback={item.state}
-                    />
-                  </td>
-                  <td className="px-4 py-3 font-mono text-slate-500">
-                    {item.exit_code ?? "-"}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">
-                    {item.duration_ms != null ? `${item.duration_ms}ms` : "-"}
-                  </td>
-                  <td className="max-w-[320px] truncate px-4 py-3 font-mono text-[11px] text-slate-400">
-                    {(item.stdout ?? item.stderr ?? "").slice(0, 120) || "-"}
-                  </td>
-                </tr>
-              ))}
-              {executions.length === 0 && (
-                <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-400">
-                    暂无执行记录
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        <div className="flex justify-end border-t border-slate-100 px-4 py-3">
-          <Pagination page={execPage} pageSize={PAGE_SIZE} total={execTotal} onChange={setExecPage} />
         </div>
       </Card>
 
