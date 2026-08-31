@@ -16,6 +16,7 @@ from app.core.security import (
     generate_temporary_password,
     hash_password,
     hash_session_token,
+    is_api_key_format,
     password_needs_rehash,
     verify_api_key,
     verify_password,
@@ -73,10 +74,15 @@ class TestPasswordHash:
 
 class TestCredentialHash:
     def test_api_key(self) -> None:
-        secret, _prefix, encoded = generate_api_key()
-        assert secret.startswith("hlg_")
+        secret, prefix, encoded = generate_api_key()
+        assert secret.startswith("sk-")
+        assert len(secret) == 46
+        assert prefix == secret[:8]
+        assert len(prefix) == 8
+        assert is_api_key_format(secret)
+        assert not is_api_key_format("not-a-gateway-key")
         assert verify_api_key(secret, encoded)
-        assert not verify_api_key("hlg_wrong", encoded)
+        assert not verify_api_key("sk-wrong", encoded)
 
     def test_session_token_hash_is_deterministic(self) -> None:
         token, _prefix, encoded = generate_session_token()

@@ -4,7 +4,7 @@
 """
 
 # 数据库 Schema 版本：与代码不一致时启动失败，不执行迁移。
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 加密契约（详见 docs/DATABASE.md §2.4）
 SECRET_ENVELOPE_PREFIX = "hlg1"
@@ -79,3 +79,9 @@ TOOL_MAX_STDOUT_BYTES = 64 * 1024  # 单边输出上限（截断保存）
 TOOL_MAX_NAME_LENGTH = 100
 TOOL_MAX_COMMAND_LENGTH = 2000
 TOOL_MAX_ARGUMENTS = 16
+TOOL_MAX_ARGUMENT_VALUE_LENGTH = 4096
+
+# 外部 API Key：`sk-` + 32 字节随机数的无 padding base64url（43 字符）。
+API_KEY_PREFIX = "sk-"
+API_KEY_PREFIX_LENGTH = 8
+API_KEY_RANDOM_BYTES = 32

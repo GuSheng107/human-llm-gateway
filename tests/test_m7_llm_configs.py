@@ -78,6 +78,45 @@ def test_create_returns_view_without_secret(client, created_user) -> None:
     assert "secret" not in body
 
 
+def test_admin_can_view_but_cannot_manage_llm_configs(client, admin_headers, created_user) -> None:
+    created = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_create_body(name="user-owned"),
+    )
+    assert created.status_code == 201, created.text
+    config_id = created.json()["id"]
+
+    listing = client.get("/api/llm-configs", headers=admin_headers)
+    assert listing.status_code == 200
+    assert any(item["id"] == config_id for item in listing.json()["items"])
+
+    denied_create = client.post(
+        "/api/llm-configs",
+        headers=admin_headers,
+        json=_create_body(name="admin-owned"),
+    )
+    denied_update = client.patch(
+        f"/api/llm-configs/{config_id}",
+        headers=admin_headers,
+        json={"name": "admin-edited"},
+    )
+    denied_test = client.post(f"/api/llm-configs/{config_id}/test", headers=admin_headers)
+    denied_delete = client.delete(f"/api/llm-configs/{config_id}", headers=admin_headers)
+    for response in (denied_create, denied_update, denied_test, denied_delete):
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "forbidden"
+
+
+def test_user_can_still_create_llm_config(client, created_user) -> None:
+    response = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_create_body(name="user-write"),
+    )
+    assert response.status_code == 201, response.text
+
+
 def test_create_strips_trailing_slash(client, created_user) -> None:
     resp = client.post(
         "/api/llm-configs",

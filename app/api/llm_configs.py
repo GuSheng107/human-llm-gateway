@@ -36,6 +36,16 @@ router = APIRouter(prefix="/api/llm-configs", tags=["llm-configs"])
 _service = LlmConfigService()
 
 
+def _assert_not_admin_llm_manager(user: User) -> None:
+    """管理员只能监管 LLM 配置，不能以管理员身份创建、修改或删除。"""
+    if user.role is UserRole.ADMIN:
+        raise DomainError(
+            DomainErrorCode.FORBIDDEN,
+            "管理员不能管理 LLM 配置",
+            status_code=403,
+        )
+
+
 # ----------------------------------------------------------------------
 # 请求模型
 # ----------------------------------------------------------------------
@@ -268,6 +278,7 @@ def create_llm_config(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> LlmConfigView:
+    _assert_not_admin_llm_manager(user)
     row = _service.create(
         db,
         owner=user,
@@ -323,6 +334,7 @@ def update_llm_config(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> LlmConfigView:
+    _assert_not_admin_llm_manager(user)
     row = _get_config(db, config_id, user)
     fields = payload.model_dump(include=payload.model_fields_set)
     if "headers" in fields:
@@ -339,6 +351,7 @@ def delete_llm_config(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
+    _assert_not_admin_llm_manager(user)
     row = _get_config(db, config_id, user)
     _service.delete(db, row=row, actor=user)
     db.commit()
@@ -355,6 +368,7 @@ async def test_llm_config(
 
     不回显 Secret / Header 值，仅返回 success / reason_code / detail / http_status。
     """
+    _assert_not_admin_llm_manager(user)
     row, secret, headers = _service.get_owned_with_secret(db, config_id, user)
     if not row.is_enabled:
         raise DomainError(

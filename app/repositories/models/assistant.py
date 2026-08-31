@@ -22,9 +22,7 @@ from .base import TimestampMixin, sa_enum, utc_now
 
 class AssistantSession(TimestampMixin, Base):
     __tablename__ = "assistant_sessions"
-    __table_args__ = (
-        Index("ix_assistant_sessions_owner", "owner_user_id", "last_message_at"),
-    )
+    __table_args__ = (Index("ix_assistant_sessions_owner", "owner_user_id", "last_message_at"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)

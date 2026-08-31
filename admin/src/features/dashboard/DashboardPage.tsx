@@ -10,6 +10,7 @@ import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import { useAuth } from "../auth/AuthContext";
 import { formatDeadline } from "../tasks/labels";
 
@@ -217,6 +218,11 @@ export function DashboardPage() {
         ]
     : [];
 
+  const copyCurlExample = async () => {
+    const command = `curl "${window.location.origin}/v1/models" -H "Authorization: Bearer <API_KEY>"`;
+    await copyText(command, "curl 命令");
+  };
+
   return (
     <div className="relative space-y-5">
       {refreshing && data && (
@@ -293,6 +299,14 @@ export function DashboardPage() {
                     {label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={() => void copyCurlExample()}
+                  className="col-span-2 flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2.5 text-left text-slate-600 hover:border-primary/40 hover:text-primary"
+                >
+                  <Icon name="copy" className="h-4 w-4" />
+                  复制 API 调用 curl
+                </button>
               </div>
             </Card>
 

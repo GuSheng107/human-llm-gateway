@@ -46,6 +46,7 @@ class ApiKey(TimestampMixin, Base):
         ),
         Index("ix_api_keys_owner", "owner_user_id"),
         Index("ix_api_keys_owner_enabled", "owner_user_id", "is_enabled"),
+        Index("ix_api_keys_key_prefix", "key_prefix"),
         Index("ix_api_keys_im_connection", "im_connection_id"),
         Index("ix_api_keys_llm_config", "llm_config_id"),
         Index("ix_api_keys_model_group", "model_group_id"),
@@ -55,7 +56,7 @@ class ApiKey(TimestampMixin, Base):
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    key_prefix: Mapped[str] = mapped_column(String(20), nullable=False)
+    key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     delivery_mode: Mapped[DeliveryMode] = mapped_column(sa_enum(DeliveryMode), nullable=False)
     im_connection_id: Mapped[int | None] = mapped_column(

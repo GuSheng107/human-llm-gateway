@@ -57,6 +57,10 @@ def test_restricted_session_only_allows_me_logout_and_password(client) -> None:
         ).status_code
         == 403
     )
+    assert (
+        client.patch("/api/account/avatar", headers=headers, json={"avatar": None}).status_code
+        == 403
+    )
 
     changed = client.post(
         "/api/account/password",
@@ -79,6 +83,36 @@ def test_restricted_session_only_allows_me_logout_and_password(client) -> None:
         "logs.manage",
     }
     assert client.get("/api/invitations", headers=headers).status_code == 200
+
+
+def test_avatar_has_dedicated_target_state_endpoint(client, admin_headers) -> None:
+    png = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYA"
+        "AjCB0C8AAAAASUVORK5CYII="
+    )
+    updated = client.patch(
+        "/api/account/avatar",
+        headers=admin_headers,
+        json={"avatar": f"data:image/png;base64,{png}"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["avatar_base64"] == png
+
+    legacy_profile_field = client.patch(
+        "/api/account/profile",
+        headers=admin_headers,
+        json={"display_name": "Administrator", "avatar_base64": png},
+    )
+    assert legacy_profile_field.status_code == 422
+
+    invalid = client.patch(
+        "/api/account/avatar", headers=admin_headers, json={"avatar": "not-an-image"}
+    )
+    assert invalid.status_code == 400
+
+    cleared = client.patch("/api/account/avatar", headers=admin_headers, json={"avatar": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["avatar_base64"] is None
 
 
 def test_invitation_lifecycle_and_atomic_registration(client, admin_headers) -> None:
@@ -207,7 +241,7 @@ def test_user_account_and_disable_transaction(client, admin_headers) -> None:
             owner_user_id=user_id,
             name="managed-key",
             key_hash="hash-managed-key",
-            key_prefix="hlg_managed",
+            key_prefix="sk-manag",
             delivery_mode=DeliveryMode.WEB,
             reply_strategy=ReplyStrategy.HUMAN,
             human_timeout_seconds=300,

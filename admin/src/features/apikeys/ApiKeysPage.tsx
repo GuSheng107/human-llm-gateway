@@ -12,6 +12,7 @@ import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import { useAuth } from "../auth/AuthContext";
 import type {
   ApiKey,
@@ -235,7 +236,20 @@ export function ApiKeysPage() {
               {items.map((key) => (
                 <tr key={key.id} className="group hover:bg-slate-50/60">
                   <td className="px-4 py-3 font-medium text-slate-700">{key.name}</td>
-                  <td className="px-4 py-3 font-mono text-slate-500">{key.key_prefix}…</td>
+                  <td className="px-4 py-3 text-slate-500">
+                    <span className="inline-flex items-center gap-1.5 font-mono">
+                      {key.key_prefix}…
+                      <button
+                        type="button"
+                        aria-label="复制 API Key 前缀"
+                        title="复制前缀"
+                        onClick={() => void copyText(key.key_prefix, "API Key 前缀")}
+                        className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                      >
+                        <Icon name="copy" className="h-3.5 w-3.5" />
+                      </button>
+                    </span>
+                  </td>
                   <td className="px-4 py-3 text-slate-500">
                     {DELIVERY_LABEL[key.delivery_mode] ?? key.delivery_mode}
                   </td>
@@ -499,10 +513,7 @@ export function ApiKeysPage() {
             </div>
             <div className="flex justify-end">
               <Button
-                onClick={() => {
-                  void navigator.clipboard.writeText(created.plaintext);
-                  notify("已复制 API Key");
-                }}
+                onClick={() => void copyText(created.plaintext, "API Key")}
               >
                 <Icon name="copy" className="h-4 w-4" />
                 复制

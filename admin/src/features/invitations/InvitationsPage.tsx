@@ -16,6 +16,7 @@ import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import type { Invitation, InvitationCreated } from "../../types/governance";
 import { InvitationFormModal } from "./InvitationFormModal";
 
@@ -177,10 +178,7 @@ export function InvitationsPage() {
             </div>
             <div className="flex justify-end">
               <Button
-                onClick={() => {
-                  void navigator.clipboard.writeText(created.code);
-                  notify("已复制邀请码");
-                }}
+                onClick={() => void copyText(created.code, "邀请码")}
               >
                 <Icon name="copy" className="h-4 w-4" />
                 复制

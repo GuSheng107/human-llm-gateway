@@ -134,11 +134,13 @@ export function LlmConfigsPage() {
   };
 
   const openCreate = () => {
+    if (isAdmin) return;
     setFormError("");
     setForm(blankForm());
   };
 
   const openEdit = (cfg: LlmConfig) => {
+    if (isAdmin) return;
     setFormError("");
     setForm({
       id: cfg.id,
@@ -166,7 +168,7 @@ export function LlmConfigsPage() {
   };
 
   const submit = async () => {
-    if (!form) return;
+    if (!form || isAdmin) return;
     const temperature = optionalNumber(form.default_temperature);
     const topP = optionalNumber(form.default_top_p);
     const topK = optionalNumber(form.default_top_k);
@@ -260,6 +262,7 @@ export function LlmConfigsPage() {
   };
 
   const remove = async (cfg: LlmConfig) => {
+    if (isAdmin) return;
     if (!window.confirm(`确认删除 LLM 配置「${cfg.name}」？`)) return;
     try {
       await deleteLlmConfig(cfg.id);
@@ -317,6 +320,16 @@ export function LlmConfigsPage() {
         dismissId="llm-configs"
       />
 
+      {isAdmin && (
+        <div
+          role="status"
+          className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800"
+        >
+          管理员视角 · 只读。管理员可以监管配置状态，但不能创建、编辑、测试或删除用户的
+          LLM 配置。
+        </div>
+      )}
+
       <Card>
         <form
           onSubmit={submitSearch}
@@ -332,7 +345,11 @@ export function LlmConfigsPage() {
             <Icon name="search" className="h-3.5 w-3.5" />
             搜索
           </Button>
-          <Button onClick={openCreate}>
+          <Button
+            onClick={openCreate}
+            disabled={isAdmin}
+            title={isAdmin ? "管理员不能创建 LLM 配置" : undefined}
+          >
             <Icon name="plus" className="h-4 w-4" />
             新建配置
           </Button>
@@ -412,19 +429,25 @@ export function LlmConfigsPage() {
                     <td className="px-4 py-3 text-slate-500">{cfg.owner_username ?? "-"}</td>
                   )}
                   <td className="sticky right-0 space-x-3 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
-                    <button
-                      onClick={() => void runTest(cfg)}
-                      disabled={testingId === cfg.id}
-                      className="text-primary disabled:text-slate-400"
-                    >
-                      {testingId === cfg.id ? "测试中…" : "测试"}
-                    </button>
-                    <button onClick={() => openEdit(cfg)} className="text-primary">
-                      编辑
-                    </button>
-                    <button onClick={() => void remove(cfg)} className="text-red-500">
-                      删除
-                    </button>
+                    {isAdmin ? (
+                      <span className="text-slate-400">只读</span>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => void runTest(cfg)}
+                          disabled={testingId === cfg.id}
+                          className="text-primary disabled:text-slate-400"
+                        >
+                          {testingId === cfg.id ? "测试中…" : "测试"}
+                        </button>
+                        <button onClick={() => openEdit(cfg)} className="text-primary">
+                          编辑
+                        </button>
+                        <button onClick={() => void remove(cfg)} className="text-red-500">
+                          删除
+                        </button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -446,7 +469,7 @@ export function LlmConfigsPage() {
         </div>
       </Card>
 
-      {form && (
+      {form && !isAdmin && (
         <Modal
           title={form.id ? "编辑 LLM 配置" : "新建 LLM 配置"}
           description="密钥与自定义 Header 只写不读，保存后不再展示。"

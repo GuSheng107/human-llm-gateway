@@ -19,6 +19,7 @@ import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import { useAuth } from "../auth/AuthContext";
 import type {
   BindingStatus as BindingStatusType,
@@ -290,10 +291,7 @@ export function ConnectionsPage() {
                 绑定状态：{binding?.bound ? "已绑定" : binding?.binding_pending ? "等待绑定" : "未绑定"}
               </span>
               <Button
-                onClick={() => {
-                  void navigator.clipboard.writeText(bindingCode);
-                  notify("已复制绑定码");
-                }}
+                onClick={() => void copyText(bindingCode, "绑定码")}
               >
                 <Icon name="copy" className="h-4 w-4" />
                 复制

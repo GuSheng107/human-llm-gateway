@@ -342,7 +342,7 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `owner_user_id` | integer | FK users，非空 |
 | `name` | varchar(100) | 非空 |
 | `key_hash` | varchar(255) | 非空，唯一 |
-| `key_prefix` | varchar(20) | 非空，用于列表识别 |
+| `key_prefix` | varchar(8) | 非空、有索引，固定为 `sk-` 加 5 个 base64url 字符，用于鉴权候选查找与列表识别 |
 | `is_enabled` | boolean | 默认 true |
 | `delivery_mode` | enum | web/im |
 | `im_connection_id` | integer nullable | FK im_connections |
@@ -406,7 +406,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `previous_task_id` | integer nullable | FK request_tasks，同一 API Key 的历史响应链 |
 | `owner_user_id` | integer | FK users，非空 |
 | `api_key_id` | integer | FK api_keys，非空，ON DELETE RESTRICT |
-| `api_key_prefix_snapshot` | varchar(20) | 创建任务时 Key 前缀快照 |
+| `api_key_prefix_snapshot` | varchar(8) | 创建任务时 8 字符 Key 前缀快照 |
 | `fake_model_id` | integer nullable | FK fake_models，删除时 SET NULL |
 | `requested_model` | varchar(255) | Fake Model 字符串快照 |
 | `protocol` | enum | 三种入站协议 |

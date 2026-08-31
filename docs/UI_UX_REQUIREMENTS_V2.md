@@ -11,7 +11,7 @@
 | 项 | 约定 |
 | --- | --- |
 | 目标版本 | 一次大版本迭代，统一发布（建议打包为 0.7.0） |
-| 数据库兼容 | **不破坏现有表 schema**；新增字段允许 nullable；新增表允许 create_all；不允许删除字段。涉及后端 `app/core/constants.py` 的 `SCHEMA_VERSION` 暂不 bump（旧库可继续） |
+| 数据库兼容 | **不兼容旧数据库**；目标结构一次切换并提升 `SCHEMA_VERSION`，旧库删除后按当前模型重建。 |
 | 协议兼容 | OpenAI Chat / OpenAI Responses / Anthropic Messages 三种客户端协议在 API 入口已实现（`app/protocols/`），本次需求中协议选择器必须覆盖这三种 |
 | 角色区分 | 管理员（`admin`）/ 普通用户（`user`）。`FakeModel` 范围字段（system / private）继续保留 |
 | 错误展示 | 沿用现有 `ErrorBanner / Toast / Modal` 组件，**禁止引入新组件库** |
@@ -190,7 +190,7 @@
 
 | 字段 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `protocol` | `Enum` | `openai_chat` | **改为枚举**：`openai_chat` / `openai_responses` / `anthropic_messages`（值变化需 migration） |
+| `protocol` | `Enum` | `openai_chat` | **改为枚举**：`openai_chat` / `openai_responses` / `anthropic_messages`（新库直接使用目标值） |
 | `default_temperature` | `Decimal(3,2)` | NULL | 默认采样温度（0.00–2.00） |
 | `default_top_p` | `Decimal(3,2)` | NULL | 默认 Top-P（0.00–1.00） |
 | `default_top_k` | `Integer` | NULL | 默认 Top-K（1–100） |
@@ -203,10 +203,10 @@
 | `thinking_level` | `Enum` | NULL | `low` / `medium` / `high`（**仅 OpenAI Responses** 支持；其他协议 NULL 或 model_default） |
 | `extra_body` | `JSON` | `{}` | 透传 `extra_body` 给上游（深度的厂商参数；如 glm/通义专有参数） |
 
-**migration 策略：**
+**目标库重建策略：**
 - 旧库的 `protocol` 字段为字符串 `openai_compatible` / `anthropic`，**ALTER 旧值到新值**：`openai_compatible` → `openai_chat`，`anthropic` → `anthropic_messages`。
 - 新增列 nullable。
-- **不 bump SCHEMA_VERSION**（需求 0 约定），但写入 migration SQL 在 `app/services/bootstrap.py` 启动时执行（用 `_migrate_post_load` 风格，仅补齐字段，不动数据）。
+- **提升 SCHEMA_VERSION**；不编写 migration 或旧字段兼容分支，旧库由部署者删除后按目标模型重建。
 
 ### 4.2 后端 LLM Config 服务
 
@@ -596,7 +596,7 @@ UI：
 ## 12. 风险与不做的清单
 
 **风险：**
-- 需求 4 协议字段值变化（`openai_compatible` → `openai_chat`）涉及既有 LLM Config 数据；migration 在启动时执行，失败时应用启动中止。
+- 需求 4 协议字段直接使用目标枚举；不读取或转换既有 LLM Config 数据，旧库需删除重建。
 - 需求 5 微信扫码对 `openilink` SDK 有依赖（`app/connectors/implementations/wecom_ilink.py:55-67`）；SDK 不支持扫码的版本需额外兜底（走回退 binding_code 流程）。
 - 需求 10 把 drawer 改为独立路由会影响部分"打开回复中关闭 drawer"的旧状态，需在 ReplyPage 关闭时主动 `invalidate tasks` 缓存。
 

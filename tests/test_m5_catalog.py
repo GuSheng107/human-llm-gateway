@@ -279,6 +279,21 @@ def test_model_group_membership_is_limited_to_visible_models(client, admin_heade
         if item["scope"] == "system"
     }
 
+    first_page = client.get(
+        "/api/fake-models",
+        headers=headers,
+        params={"group_id": group["id"], "page": 1, "page_size": 1},
+    ).json()
+    second_page = client.get(
+        "/api/fake-models",
+        headers=headers,
+        params={"group_id": group["id"], "page": 2, "page_size": 1},
+    ).json()
+    assert first_page["total"] == len(updated.json()["model_ids"])
+    assert len(first_page["items"]) == 1
+    assert len(second_page["items"]) == 1
+    assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
+
     assert client.delete(f"/api/model-groups/{group['id']}", headers=headers).status_code == 204
 
 
@@ -297,7 +312,7 @@ def test_group_deletion_blocked_while_enabled_key_references_it(client, admin_he
                 owner_user_id=owner.id,
                 name="group-key",
                 key_hash="hash-group",
-                key_prefix="hlg_group",
+                key_prefix="sk-group",
                 delivery_mode=DeliveryMode.WEB,
                 reply_strategy=ReplyStrategy.HUMAN,
                 human_timeout_seconds=300,

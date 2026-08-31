@@ -197,6 +197,7 @@ def list_fake_models(
     endpoint_type: str | None = Query(default=None, max_length=32),
     capability: str | None = Query(default=None, max_length=32),
     tag: str | None = Query(default=None, max_length=64),
+    group_id: int | None = Query(default=None, ge=1),
     include_disabled: bool = Query(default=False),
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
@@ -214,17 +215,16 @@ def list_fake_models(
         }.items()
         if value
     }
+    filters["enabled_only"] = not include_disabled
+    if group_id is not None:
+        group = _groups.get_visible(db, group_id, user)
+        filters["model_ids"] = {model.id for model in _models.catalog.group_items(db, group.id)}
     if user.role is UserRole.ADMIN:
         rows, total = _models.list_governance(
             db, page=page, page_size=page_size, search=search, filters=filters
         )
-        if not include_disabled:
-            rows = [row for row in rows if row.is_enabled]
-            total = len(rows)
     else:
         rows = _models.list_for_user(db, user, search=search, filters=filters)
-        if not include_disabled:
-            rows = [row for row in rows if row.is_enabled]
         total = len(rows)
         rows = rows[(page - 1) * page_size : page * page_size]
     return FakeModelPage(

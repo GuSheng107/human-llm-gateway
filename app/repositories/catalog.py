@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from ..core.time import utc_now
@@ -443,8 +443,7 @@ class FakeModelRepository:
         """治理列表全量行（搜索与多维筛选由服务层统一完成）。"""
         return list(
             session.scalars(
-                select(FakeModel)
-                .order_by(FakeModel.scope, FakeModel.sort_order, FakeModel.id)
+                select(FakeModel).order_by(FakeModel.scope, FakeModel.sort_order, FakeModel.id)
             )
         )
 

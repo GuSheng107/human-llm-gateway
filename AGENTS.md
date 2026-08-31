@@ -89,6 +89,7 @@ uv run --locked ruff format --check app tests
 uv run --locked ruff check app tests
 uv run --locked python -m pytest -q
 npm ci                         # workdir: admin
+npm test                       # workdir: admin
 npm run build                  # workdir: admin
 git diff --check
 ```

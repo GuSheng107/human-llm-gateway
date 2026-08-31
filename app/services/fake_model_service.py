@@ -95,7 +95,7 @@ class FakeModelService:
         user: User,
         *,
         search: str | None = None,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> list[FakeModel]:
         """普通用户：系统模型 + 自己的私有模型（私有遮蔽同名系统模型）。"""
         rows = self.catalog.visible_models(session, user.id, only_enabled=False)
@@ -108,7 +108,7 @@ class FakeModelService:
         page: int,
         page_size: int,
         search: str | None = None,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, Any] | None = None,
     ) -> tuple[list[FakeModel], int]:
         """管理员治理列表：全部模型（元数据维度过滤在内存完成后再分页）。"""
         rows = self.catalog.list_all_governance(session)
@@ -121,7 +121,7 @@ class FakeModelService:
         rows: list[FakeModel],
         *,
         search: str | None,
-        filters: dict[str, str] | None,
+        filters: dict[str, Any] | None,
     ) -> list[FakeModel]:
         result = rows
         if search:
@@ -150,6 +150,11 @@ class FakeModelService:
             tag = filters.get("tag")
             if tag:
                 result = [row for row in result if tag in (row.tags or [])]
+            if filters.get("enabled_only"):
+                result = [row for row in result if row.is_enabled]
+            model_ids = filters.get("model_ids")
+            if model_ids is not None:
+                result = [row for row in result if row.id in model_ids]
         return result
 
     def get_visible(self, session: Session, user: User, model_pk: int) -> FakeModel:
@@ -335,6 +340,14 @@ class ModelGroupService:
         if row is None or (user.role is not UserRole.ADMIN and row.owner_user_id != user.id):
             raise DomainError(DomainErrorCode.NOT_FOUND, "模型分组不存在", status_code=404)
         return row
+
+    def get_visible(self, session: Session, group_pk: int, user: User) -> ModelGroup:
+        row = self.catalog.get_group(session, group_pk)
+        if row is None:
+            raise DomainError(DomainErrorCode.NOT_FOUND, "模型分组不存在", status_code=404)
+        if user.role is UserRole.ADMIN or row.owner_user_id == user.id or row.is_public:
+            return row
+        raise DomainError(DomainErrorCode.NOT_FOUND, "模型分组不存在", status_code=404)
 
     def list_for_user(
         self, session: Session, user: User, *, page: int, page_size: int

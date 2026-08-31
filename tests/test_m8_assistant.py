@@ -1,13 +1,13 @@
-"""M8-A Web 小助手后端测试（docs/API_CONTRACT.md §10）�?
+"""M8-A Web 小助手后端测试（docs/API_CONTRACT.md §10）。
 
-覆盖�?
-- 会话 CRUD + owner 隔离（他人会�?404�?
+覆盖：
+- 会话 CRUD + owner 隔离（他人会话 404）
 - 消息发送：user 消息落库 + LLM 回复落库 + last_message_at 更新
-- 页面上下文封�?schema：未�?feature / resource �?/ 未知字段拒收
-- 脱敏：resource �?/ unsaved_edit 文本 / tool_call arguments 值擦�?
-- 上下文快照落库且历史不回�?
-- LLM 调用 mock：Chat �?Anthropic 双协议、历史轮次携�?
-- 会话未绑�?停用配置 400；未配置调用 400
+- 页面上下文封闭 schema：未知 feature / resource 键 / 未知字段拒收
+- 脱敏：resource 值 / unsaved_edit 文本 / tool_call arguments 值擦洗
+- 上下文快照落库且历史不回写
+- LLM 调用 mock：Chat 与 Anthropic 双协议、历史轮次携带
+- 会话未绑定/停用配置 400；未配置调用 400
 """
 
 from __future__ import annotations
@@ -54,14 +54,14 @@ def _make_session(client, headers, llm_config_id: int | None) -> dict[str, Any]:
 def _chat_reply(**kwargs: Any) -> dict[str, Any]:
     return {
         "choices": [
-            {"message": {"role": "assistant", "content": "小助手回�?}, "finish_reason": "stop"}
+            {"message": {"role": "assistant", "content": "小助手回答"}, "finish_reason": "stop"}
         ],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5},
     }
 
 
 # ----------------------------------------------------------------------
-# 会话 CRUD 与隔�?
+# 会话 CRUD 与隔离
 # ----------------------------------------------------------------------
 
 
@@ -90,7 +90,7 @@ def test_session_crud_roundtrip(client, created_user) -> None:
 
 
 def test_session_owner_isolation(client, admin_headers, created_user) -> None:
-    """他人会话对当前用�?404（防存在性探测）�?""
+    """他人会话对当前用户 404（防存在性探测）。"""
     cfg = _make_llm_config(client, created_user.headers)
     created = _make_session(client, created_user.headers, int(cfg["id"]))
     other = client.post(
@@ -148,7 +148,7 @@ def test_session_owner_isolation(client, admin_headers, created_user) -> None:
 
 
 def test_session_with_foreign_llm_config_rejected(client, admin_headers, created_user) -> None:
-    """别人�?LLM 配置不能绑定会话�?""
+    """别人的 LLM 配置不能绑定会话。"""
     other_cfg = _make_llm_config(client, created_user.headers)
     other = client.post(
         "/api/users",
@@ -194,7 +194,7 @@ def test_session_with_foreign_llm_config_rejected(client, admin_headers, created
 
 
 # ----------------------------------------------------------------------
-# 消息发送与上下�?
+# 消息发送与上下文
 # ----------------------------------------------------------------------
 
 
@@ -213,7 +213,7 @@ def test_send_message_with_context_and_reply(client, created_user) -> None:
                     "feature": "task_detail",
                     "resource": {"task_id": "1", "state": "waiting_human"},
                     "unsaved_edit": {
-                        "reasoning": "先分析请�?,
+                        "reasoning": "先分析请求",
                         "final_text": "这是我的草稿",
                         "tool_calls": [],
                     },
@@ -224,7 +224,7 @@ def test_send_message_with_context_and_reply(client, created_user) -> None:
     assert resp.status_code == 201, resp.text
     reply = resp.json()
     assert reply["role"] == "assistant"
-    assert reply["text"] == "小助手回�?
+    assert reply["text"] == "小助手回答"
 
     detail = client.get(
         f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
@@ -273,7 +273,7 @@ def test_context_unknown_resource_key_rejected(client, created_user) -> None:
 
 
 def test_context_unknown_field_rejected(client, created_user) -> None:
-    """StrictModel：schema 外字�?422 拒收�?""
+    """StrictModel：schema 外字段 422 拒收。"""
     cfg = _make_llm_config(client, created_user.headers)
     session_data = _make_session(client, created_user.headers, int(cfg["id"]))
     resp = client.post(
@@ -297,7 +297,7 @@ def test_context_unknown_field_rejected(client, created_user) -> None:
 
 
 def test_context_secrets_redacted(client, created_user) -> None:
-    """resource 值与自由文本中的凭据形态被擦洗�?[REDACTED]�?""
+    """resource 值与自由文本中的凭据形态被擦洗为 [REDACTED]。"""
     cfg = _make_llm_config(client, created_user.headers)
     session_data = _make_session(client, created_user.headers, int(cfg["id"]))
     with patch(_UPSTREAM_CHAT, side_effect=lambda **kw: _chat_reply(**kw)):
@@ -305,7 +305,7 @@ def test_context_secrets_redacted(client, created_user) -> None:
             f"/api/assistant/sessions/{session_data['id']}/messages",
             headers=created_user.headers,
             json={
-                "text": "我的密钥�?hlg_abcdefghij1234567890 怎么�?,
+                "text": "我的密钥是 sk-abcdefghij1234567890 怎么用",
                 "page_context": {
                     "feature": "task_detail",
                     "resource": {
@@ -319,7 +319,7 @@ def test_context_secrets_redacted(client, created_user) -> None:
                             {
                                 "id": "c1",
                                 "name": "fn",
-                                "arguments": {"api_key": "hlg_zzzzzz1234567890xxx"},
+                                "arguments": {"api_key": "sk-zzzzzz1234567890xxx"},
                             }
                         ],
                     },
@@ -336,17 +336,17 @@ def test_context_secrets_redacted(client, created_user) -> None:
     edit = context["unsaved_edit"]
     assert edit["reasoning"] == "[REDACTED]"
     assert edit["tool_calls"][0]["arguments"]["api_key"] == "[REDACTED]"
-    # 键结构保�?
+    # 键结构保留
     assert "api_key" in edit["tool_calls"][0]["arguments"]
     # 落库内容不含明文凭据
     with database.SessionLocal() as session:
         row = session.get(AssistantMessage, int(user_msg["id"]))
-        assert "hlg_abcdefghij" not in (row.page_context_json or "")
-        assert "hlg_zzzzzz" not in (row.page_context_json or "")
+        assert "sk-abcdefghij" not in (row.page_context_json or "")
+        assert "sk-zzzzzz" not in (row.page_context_json or "")
 
 
 def test_user_text_also_redacted_before_upstream(client, created_user) -> None:
-    """发送文本（落库原文保留用户语义，但送上游前同样擦洗）�?""
+    """发送文本（落库原文保留用户语义，但送上游前同样擦洗）。"""
     cfg = _make_llm_config(client, created_user.headers)
     session_data = _make_session(client, created_user.headers, int(cfg["id"]))
 
@@ -360,7 +360,7 @@ def test_user_text_also_redacted_before_upstream(client, created_user) -> None:
         resp = client.post(
             f"/api/assistant/sessions/{session_data['id']}/messages",
             headers=created_user.headers,
-            json={"text": "key �?sk-abcdef1234567890XYZ 帮我测一�?},
+            json={"text": "key 是 sk-abcdef1234567890XYZ 帮我测一下"},
         )
     assert resp.status_code == 201
     upstream_text = captured["messages"][-1]["content"]
@@ -374,7 +374,7 @@ def test_user_text_also_redacted_before_upstream(client, created_user) -> None:
 
 
 def test_history_carried_to_upstream(client, created_user) -> None:
-    """第二轮对话携带第一轮历史�?""
+    """第二轮对话携带第一轮历史。"""
     cfg = _make_llm_config(client, created_user.headers)
     session_data = _make_session(client, created_user.headers, int(cfg["id"]))
 
@@ -388,20 +388,20 @@ def test_history_carried_to_upstream(client, created_user) -> None:
         client.post(
             f"/api/assistant/sessions/{session_data['id']}/messages",
             headers=created_user.headers,
-            json={"text": "第一�?},
+            json={"text": "第一轮"},
         )
         client.post(
             f"/api/assistant/sessions/{session_data['id']}/messages",
             headers=created_user.headers,
-            json={"text": "第二�?},
+            json={"text": "第二轮"},
         )
     texts = [m["content"] for m in captured["messages"]]
-    assert any("第一�? in t for t in texts)
-    assert any("小助手回�? in t for t in texts)
+    assert any("第一轮" in t for t in texts)
+    assert any("小助手回答" in t for t in texts)
 
 
 def test_anthropic_config_reply_extracted(client, created_user) -> None:
-    """Anthropic 配置：上游响�?content 块提取回复�?""
+    """Anthropic 配置：上游响应 content 块提取回复。"""
     resp_cfg = client.post(
         "/api/llm-configs",
         headers=created_user.headers,
@@ -436,7 +436,7 @@ def test_anthropic_config_reply_extracted(client, created_user) -> None:
 
 
 def test_send_without_bound_config_rejected(client, created_user) -> None:
-    """会话未绑�?LLM 配置时发�?400�?""
+    """会话未绑定 LLM 配置时发送 400。"""
     session_data = _make_session(client, created_user.headers, None)
     resp = client.post(
         f"/api/assistant/sessions/{session_data['id']}/messages",
@@ -454,14 +454,14 @@ def test_send_with_disabled_config_rejected(client, created_user) -> None:
         json={"enabled": False},
     )
     assert disabled.status_code == 200
-    # 停用配置在会话创建与消息发送两个入口都被拒绝�?
+    # 停用配置在会话创建与消息发送两个入口都被拒绝。
     create_resp = client.post(
         "/api/assistant/sessions",
         headers=created_user.headers,
         json={"title": "x", "llm_config_id": int(cfg["id"])},
     )
     assert create_resp.status_code == 400
-    # 既有会话（配置后来停用）发送消息同样被拒绝�?
+    # 既有会话（配置后来停用）发送消息同样被拒绝。
     enabled_cfg = _make_llm_config(client, created_user.headers, "second-cfg")
     session_data = _make_session(client, created_user.headers, int(enabled_cfg["id"]))
     disable2 = client.patch(
@@ -495,12 +495,12 @@ def test_empty_message_rejected(client, created_user) -> None:
 
 
 def test_stream_message_delta_and_done(client, created_user) -> None:
-    """SSE 流式：delta 增量 + done 完整消息；两条消息均落库�?""
+    """SSE 流式：delta 增量 + done 完整消息；两条消息均落库。"""
     cfg = _make_llm_config(client, created_user.headers)
     session_data = _make_session(client, created_user.headers, int(cfg["id"]))
 
     async def fake_stream(**kwargs: Any):
-        for piece in ("小助�?, "回答"):
+        for piece in ("小助手", "回答"):
             yield UpstreamChunk(text=piece)
 
     with patch(_UPSTREAM_STREAM_CHAT, side_effect=fake_stream):
@@ -513,9 +513,9 @@ def test_stream_message_delta_and_done(client, created_user) -> None:
     assert resp.headers["content-type"].startswith("text/event-stream")
     body = resp.text
     assert '"type": "delta"' in body
-    assert '"text": "小助�?' in body
+    assert '"text": "小助手"' in body
     assert '"type": "done"' in body
-    assert "小助手回�? in body
+    assert "小助手回答" in body
 
     detail = client.get(
         f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
@@ -524,12 +524,12 @@ def test_stream_message_delta_and_done(client, created_user) -> None:
     assert len(messages) == 2  # user + assistant
     assert messages[0]["role"] == "user"
     assert messages[1]["role"] == "assistant"
-    assert messages[1]["text"] == "小助手回�?
+    assert messages[1]["text"] == "小助手回答"
 
 
 def test_stream_message_error_event(client, created_user) -> None:
-    """流中 DomainError �?error 事件（HTTP �?200）；user 消息保留�?""
-    session_data = _make_session(client, created_user.headers, None)  # 未绑定配�?
+    """流中 DomainError → error 事件（HTTP 仍为 200）；user 消息保留。"""
+    session_data = _make_session(client, created_user.headers, None)  # 未绑定配置
     resp = client.post(
         f"/api/assistant/sessions/{session_data['id']}/messages/stream",
         headers=created_user.headers,
@@ -538,7 +538,7 @@ def test_stream_message_error_event(client, created_user) -> None:
     assert resp.status_code == 200
     assert '"type": "error"' in resp.text
     assert "validation_failed" in resp.text
-    # user 消息在错误前已落库（便于用户重试）�?
+    # user 消息在错误前已落库（便于用户重试）。
     detail = client.get(
         f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
     ).json()

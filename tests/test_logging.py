@@ -13,8 +13,8 @@ def test_sensitive_fields_are_redacted_recursively() -> None:
             "password": "plain-password",
             "nested": {
                 "access_token": "plain-token",
-                "api_key": "hlg_plain",
-                "api_key_prefix": "hlg_safe",
+                "api_key": "sk-plain-secret-value",
+                "api_key_prefix": "sk-safe1",
             },
         }
     )
@@ -26,7 +26,7 @@ def test_sensitive_fields_are_redacted_recursively() -> None:
         "nested": {
             "access_token": "[REDACTED]",
             "api_key": "[REDACTED]",
-            "api_key_prefix": "hlg_safe",
+            "api_key_prefix": "sk-safe1",
         },
     }
 

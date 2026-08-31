@@ -1,32 +1,28 @@
-"""进程级工具沙箱执行器（M12，docs/ROADMAP.md M12 / docs/PRODUCT.md §6）。
+"""OCI 工具沙箱（M12）。
 
-隔离措施（平台差异文档化）：
-- 独立子进程，工作目录为每次执行创建的临时目录（用后即删）；
-- 超时上限（硬 kill）；输出单边 64 KiB 截断（防内存放大）；
-- 环境变量清零（继承零环境——凭据不可能经环境泄漏给工具）；
-- Linux 额外 resource.setrlimit 限制 CPU 秒数与地址空间；Windows 无
-  等价机制，靠超时 + 输出截断 + 临时目录兜底（部署文档注明差异）；
-- 网络隔离：沙箱不提供任何出网代理/凭据；严格网络阻断依赖部署层
-  （如容器内运行整个网关并禁出网），进程级无法可移植地拦截 socket。
-
-命令模板安全：占位符 {name} 只允许白名单 arguments 的字符串值替换，
-渲染用 shlex 后拼 argv（不经 shell），参数值经 shlex.quote 防注入；
-模板保存时校验占位符与 schema 一致。
+所有白名单命令都在本机 Docker 或 Podman 的 Linux 容器中执行。Windows、
+macOS 与 Linux 共用同一隔离契约；找不到容器运行时或镜像时失败关闭，绝不
+回退到宿主进程。容器无网络、无宿主挂载、只读根文件系统、无 capabilities，
+并受 CPU、内存、PID、文件描述符、时间和输出大小限制。
 """
 
 from __future__ import annotations
 
 import os
+import re
 import shlex
+import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 import time
+import uuid
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, BinaryIO
 
-from ...core.constants import (
-    TOOL_MAX_STDOUT_BYTES,
-)
+from ...core.config import get_settings
+from ...core.constants import TOOL_MAX_ARGUMENT_VALUE_LENGTH, TOOL_MAX_STDOUT_BYTES
 from ...core.logging import log_event
 from ...domain.errors import DomainError, DomainErrorCode
 
@@ -36,134 +32,327 @@ class SandboxResult:
     exit_code: int | None
     stdout: str
     stderr: str
-    state: str  # succeeded / failed / timed_out / limit_exceeded
+    state: str
     duration_ms: int
     error_code: str | None = None
 
 
-def _apply_posix_limits(cpu_seconds: int) -> None:
-    """Linux only：限制子进程 CPU 时间与地址空间（Windows 跳过）。"""
-    try:
-        import resource
+def _validation_error(message: str) -> DomainError:
+    return DomainError(DomainErrorCode.VALIDATION_FAILED, message, status_code=400)
 
-        resource.setrlimit(resource.RLIMIT_CPU, (cpu_seconds, cpu_seconds + 1))
-        memory = 512 * 1024 * 1024
-        resource.setrlimit(resource.RLIMIT_AS, (memory, memory))
-    except (ImportError, ValueError, OSError):
-        # Windows / 平台不支持：靠超时 + 输出截断 + 临时目录兜底。
-        pass
+
+def _parse_template(command_template: str) -> list[str]:
+    try:
+        parts = shlex.split(command_template, posix=False)
+    except ValueError as exc:
+        raise _validation_error("命令模板引号不匹配") from exc
+    parsed: list[str] = []
+    for part in parts:
+        if len(part) >= 2 and part[0] == part[-1] and part[0] in {'"', "'"}:
+            parsed.append(part[1:-1])
+        else:
+            parsed.append(part)
+    if not parsed:
+        raise _validation_error("命令为空")
+    return parsed
 
 
 def render_command(command_template: str, arguments: dict[str, Any]) -> list[str]:
-    """模板 + 已校验参数 -> argv（不经 shell；参数值 shlex.quote 防注入）。"""
-    rendered_parts: list[str] = []
-    # 以空白拆分模板（模板由管理员维护、保存时已校验占位符集合）。
-    for token in shlex.split(command_template, posix=False):
-        part = token
-        for key, value in arguments.items():
-            placeholder = "{" + key + "}"
-            if placeholder in part:
-                if not isinstance(value, str):
-                    raise DomainError(
-                        DomainErrorCode.VALIDATION_FAILED,
-                        f"参数 {key} 必须是字符串",
-                        status_code=400,
-                    )
-                # 参数值整体 quote：即使含空格/引号/; 也是单参数。
-                part = part.replace(placeholder, shlex.quote(value))
-        rendered_parts.append(part)
-    # posix=False 产生的带引号 token 再规范一次
-    return [p.strip('"') if p.startswith('"') and p.endswith('"') else p for p in rendered_parts]
+    """把已校验参数替换进 argv；整个过程不经过 shell。"""
+    checked: dict[str, str] = {}
+    for key, value in arguments.items():
+        if not isinstance(value, str):
+            raise _validation_error(f"参数 {key} 必须是字符串")
+        if len(value) > TOOL_MAX_ARGUMENT_VALUE_LENGTH:
+            raise _validation_error(f"参数 {key} 最多 {TOOL_MAX_ARGUMENT_VALUE_LENGTH} 字符")
+        if "\x00" in value:
+            raise _validation_error(f"参数 {key} 不能包含 NUL")
+        checked[key] = value
 
+    placeholder_pattern = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
-def run_sandboxed(
-    argv: list[str],
-    *,
-    timeout_seconds: int,
-) -> SandboxResult:
-    """在临时目录中以清零环境运行 argv，返回截断后的结果。
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key not in checked:
+            raise _validation_error(f"命令模板参数 {key} 未赋值")
+        return checked[key]
 
-    preexec_fn 仅 POSIX 可用（Windows 子进程不支持 fork 前钩子）。
-    """
-    import sys
-
-    if not argv:
-        raise DomainError(DomainErrorCode.VALIDATION_FAILED, "命令为空", status_code=400)
-    is_posix = sys.platform != "win32"
-    with tempfile.TemporaryDirectory(prefix="hlg-tool-") as workdir:
-        started = time.monotonic()
-        popen_kwargs: dict[str, Any] = {}
-        if is_posix:
-            popen_kwargs["preexec_fn"] = lambda: _apply_posix_limits(timeout_seconds)
-        try:
-            completed = subprocess.run(  # argv 经白名单+quote 渲染
-                argv,
-                cwd=workdir,
-                env={},
-                capture_output=True,
-                timeout=timeout_seconds,
-                check=False,
-                **popen_kwargs,
-            )
-        except subprocess.TimeoutExpired:
-            duration = int((time.monotonic() - started) * 1000)
-            log_event(
-                "warning",
-                "tool.sandbox_timeout",
-                "工具执行超时被终止",
-                argv0=argv[0],
-                timeout_seconds=timeout_seconds,
-            )
-            return SandboxResult(
-                exit_code=None,
-                stdout="",
-                stderr="",
-                state="timed_out",
-                duration_ms=duration,
-                error_code="timeout",
-            )
-        duration = int((time.monotonic() - started) * 1000)
-        stdout = completed.stdout.decode("utf-8", errors="replace")
-        stderr = completed.stderr.decode("utf-8", errors="replace")
-        truncated = len(stdout) > TOOL_MAX_STDOUT_BYTES or len(stderr) > TOOL_MAX_STDOUT_BYTES
-        stdout = stdout[:TOOL_MAX_STDOUT_BYTES]
-        stderr = stderr[:TOOL_MAX_STDOUT_BYTES]
-        state = "succeeded" if completed.returncode == 0 else "failed"
-        if truncated:
-            state = "limit_exceeded"
-        return SandboxResult(
-            exit_code=completed.returncode,
-            stdout=stdout,
-            stderr=stderr,
-            state=state,
-            duration_ms=duration,
-            error_code="output_truncated" if truncated else None,
-        )
+    rendered: list[str] = []
+    for token in _parse_template(command_template):
+        rendered.append(placeholder_pattern.sub(replace, token))
+    return rendered
 
 
 def validate_command_template(command_template: str, argument_names: list[str]) -> None:
-    """保存白名单时校验：模板占位符必须是 schema 声明的参数名。"""
-    import re
-
+    """保存白名单时校验模板语法、占位符和静态可执行文件。"""
     placeholders = set(re.findall(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}", command_template))
     unknown = placeholders - set(argument_names)
     if unknown:
-        raise DomainError(
-            DomainErrorCode.VALIDATION_FAILED,
-            f"命令模板包含未声明的参数占位符: {', '.join(sorted(unknown))}",
-            status_code=400,
-        )
-    # 拒绝 shell 元字符（不经 shell 执行，但防管理员按 shell 语义误配置；
-    # `;` 允许——python -c 等单行命令需要，argv 直传下无 shell 语义）。
+        raise _validation_error(f"命令模板包含未声明的参数占位符: {', '.join(sorted(unknown))}")
+    if any(control in command_template for control in ("\x00", "\r", "\n")):
+        raise _validation_error("命令模板不能包含控制字符或换行")
     for forbidden in ("|", "`", "$(", "&&", "||", ">>", ">", "<"):
         if forbidden in command_template:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                f"命令模板不允许 shell 元字符: {forbidden}",
-                status_code=400,
+            raise _validation_error(f"命令模板不允许 shell 元字符: {forbidden}")
+    argv = _parse_template(command_template)
+    if "{" in argv[0] or "}" in argv[0] or argv[0].startswith("-"):
+        raise _validation_error("命令模板的可执行文件必须是管理员配置的静态值")
+
+
+def resolve_oci_runtime(requested: str) -> str | None:
+    candidates = ("docker", "podman") if requested == "auto" else (requested,)
+    for candidate in candidates:
+        resolved = shutil.which(candidate)
+        if resolved:
+            return resolved
+    return None
+
+
+def build_oci_command(
+    runtime: str,
+    image: str,
+    container_name: str,
+    argv: list[str],
+    *,
+    memory_mb: int,
+    cpus: float,
+    pids_limit: int,
+    tmpfs_mb: int,
+) -> list[str]:
+    """构造 Docker/Podman 共同支持的失败关闭执行命令。"""
+    if not argv:
+        raise _validation_error("命令为空")
+    if not image or image.startswith("-") or any(char.isspace() for char in image):
+        raise _validation_error("OCI 镜像引用非法")
+    return [
+        runtime,
+        "run",
+        "--rm",
+        "--name",
+        container_name,
+        "--pull=never",
+        "--network",
+        "none",
+        "--ipc",
+        "none",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges:true",
+        "--pids-limit",
+        str(pids_limit),
+        "--memory",
+        f"{memory_mb}m",
+        "--memory-swap",
+        f"{memory_mb}m",
+        "--cpus",
+        str(cpus),
+        "--ulimit",
+        "nofile=64:64",
+        "--user",
+        "65532:65532",
+        "--hostname",
+        "sandbox",
+        "--workdir",
+        "/workspace",
+        "--tmpfs",
+        f"/workspace:rw,nosuid,nodev,size={tmpfs_mb}m",
+        "--tmpfs",
+        f"/tmp:rw,nosuid,nodev,noexec,size={tmpfs_mb}m",
+        "--tmpfs",
+        "/run:rw,nosuid,nodev,noexec,size=8m",
+        "--env",
+        "HOME=/workspace",
+        "--env",
+        "TMPDIR=/tmp",
+        "--env",
+        "PATH=/usr/local/bin:/usr/bin:/bin",
+        "--log-driver",
+        "none",
+        "--stop-timeout",
+        "1",
+        "--init",
+        "--entrypoint",
+        argv[0],
+        image,
+        *argv[1:],
+    ]
+
+
+def _runtime_environment(config_dir: str) -> dict[str, str]:
+    """只给本机容器 CLI 必要宿主变量，不转交网关 Secret。"""
+    allowed = (
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "TEMP",
+        "TMP",
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_RUNTIME_DIR",
+        "DOCKER_CONFIG",
+    )
+    env = {name: os.environ[name] for name in allowed if os.environ.get(name)}
+    env["HOME"] = env.get("HOME") or env.get("USERPROFILE") or config_dir
+    windows_pipe_prefix = "\\\\.\\pipe" + "\\"
+    for endpoint_name in ("DOCKER_HOST", "CONTAINER_HOST"):
+        endpoint = os.environ.get(endpoint_name, "")
+        if endpoint.startswith(("unix://", "npipe://", "/", windows_pipe_prefix)):
+            env[endpoint_name] = endpoint
+    return env
+
+
+def _capture_stream(stream: BinaryIO, target: bytearray, exceeded: threading.Event) -> None:
+    while True:
+        chunk = stream.read(8192)
+        if not chunk:
+            return
+        remaining = TOOL_MAX_STDOUT_BYTES + 1 - len(target)
+        if remaining > 0:
+            target.extend(chunk[:remaining])
+        if len(target) > TOOL_MAX_STDOUT_BYTES:
+            exceeded.set()
+
+
+def _kill_process_tree(process: subprocess.Popen[bytes], env: dict[str, str]) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                check=False,
+                timeout=5,
+                env=env,
             )
+        except (OSError, subprocess.SubprocessError):
+            pass
+    else:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        process.kill()
+    except OSError:
+        pass
 
 
-def empty_env_hint() -> str:
-    """文档性说明：沙箱进程环境为空。"""
-    return f"env={os.environ and 'cleared'}"
+def _cleanup_container(runtime: str, name: str, env: dict[str, str]) -> None:
+    try:
+        subprocess.run(
+            [runtime, "rm", "--force", name],
+            capture_output=True,
+            check=False,
+            timeout=10,
+            env=env,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def run_sandboxed(argv: list[str], *, timeout_seconds: int) -> SandboxResult:
+    """在受限 OCI 容器中执行 argv；任何运行时问题都不会回退宿主执行。"""
+    settings = get_settings()
+    started = time.monotonic()
+    runtime = resolve_oci_runtime(settings.tool_sandbox_runtime)
+    if runtime is None:
+        return SandboxResult(None, "", "", "failed", 0, "sandbox_unavailable")
+
+    name = f"hlg-tool-{uuid.uuid4().hex}"
+    command = build_oci_command(
+        runtime,
+        settings.tool_sandbox_image,
+        name,
+        argv,
+        memory_mb=settings.tool_sandbox_memory_mb,
+        cpus=settings.tool_sandbox_cpus,
+        pids_limit=settings.tool_sandbox_pids_limit,
+        tmpfs_mb=settings.tool_sandbox_tmpfs_mb,
+    )
+    with tempfile.TemporaryDirectory(prefix="hlg-oci-config-") as config_dir:
+        env = _runtime_environment(config_dir)
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=env,
+                creationflags=creationflags,
+                start_new_session=os.name != "nt",
+            )
+        except OSError:
+            return SandboxResult(None, "", "", "failed", 0, "sandbox_unavailable")
+        assert process.stdout is not None and process.stderr is not None
+        stdout_bytes, stderr_bytes = bytearray(), bytearray()
+        exceeded = threading.Event()
+        readers = [
+            threading.Thread(
+                target=_capture_stream, args=(process.stdout, stdout_bytes, exceeded), daemon=True
+            ),
+            threading.Thread(
+                target=_capture_stream, args=(process.stderr, stderr_bytes, exceeded), daemon=True
+            ),
+        ]
+        for reader in readers:
+            reader.start()
+
+        stop_reason: str | None = None
+        while process.poll() is None:
+            if exceeded.is_set():
+                stop_reason = "output_truncated"
+                break
+            if time.monotonic() - started >= timeout_seconds:
+                stop_reason = "timeout"
+                break
+            time.sleep(0.01)
+        if stop_reason:
+            _kill_process_tree(process, env)
+            _cleanup_container(runtime, name, env)
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _kill_process_tree(process, env)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                stop_reason = "runtime_stuck"
+                _cleanup_container(runtime, name, env)
+        for reader in readers:
+            reader.join(timeout=2)
+        if stop_reason is None and exceeded.is_set():
+            stop_reason = "output_truncated"
+
+    duration = int((time.monotonic() - started) * 1000)
+    stdout = bytes(stdout_bytes[:TOOL_MAX_STDOUT_BYTES]).decode("utf-8", errors="replace")
+    stderr = bytes(stderr_bytes[:TOOL_MAX_STDOUT_BYTES]).decode("utf-8", errors="replace")
+    if stop_reason == "timeout":
+        log_event("warning", "tool.sandbox_timeout", "工具执行超时被终止")
+        return SandboxResult(None, stdout, stderr, "timed_out", duration, "timeout")
+    if stop_reason == "output_truncated":
+        log_event("warning", "tool.sandbox_output_limit", "工具输出超过限制被终止")
+        return SandboxResult(
+            process.returncode, stdout, stderr, "limit_exceeded", duration, "output_truncated"
+        )
+    if stop_reason == "runtime_stuck":
+        return SandboxResult(
+            process.returncode, stdout, stderr, "failed", duration, "sandbox_runtime_error"
+        )
+    state = "succeeded" if process.returncode == 0 else "failed"
+    if state == "succeeded":
+        error_code = None
+    elif process.returncode in {125, 126, 127}:
+        error_code = "sandbox_runtime_error"
+    else:
+        error_code = "nonzero_exit"
+    return SandboxResult(process.returncode, stdout, stderr, state, duration, error_code)

@@ -8,6 +8,7 @@ import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import type { TaskItem, TaskState } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 import { DeadlineBadge } from "./DeadlineBadge";
@@ -181,6 +182,15 @@ export function TasksPage() {
                         <Icon name="code" className="h-3.5 w-3.5 text-primary" />
                       )}
                       #{task.public_id}
+                      <button
+                        type="button"
+                        aria-label={`复制任务编号 ${task.public_id}`}
+                        title="复制任务编号"
+                        onClick={() => void copyText(task.public_id, "任务编号")}
+                        className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                      >
+                        <Icon name="copy" className="h-3.5 w-3.5" />
+                      </button>
                     </span>
                   </td>
                   <td className="px-4 py-3 text-slate-600">{task.fake_model_name}</td>

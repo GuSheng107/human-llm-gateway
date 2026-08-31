@@ -12,6 +12,7 @@ import { listLlmConfigs } from "../../api/llmConfigs";
 import { notify } from "../../components/feedback/Toast";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import type { AssistantMessage, LlmConfig } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 import { currentEditBridge } from "./bridge";
@@ -188,11 +189,8 @@ export function AssistantPanel() {
     [input, sending, context, ensureSession, refreshSessions],
   );
 
-  const copyMessage = (message: AssistantMessage) => {
-    void navigator.clipboard
-      .writeText(message.text)
-      .then(() => notify("已复制"))
-      .catch(() => notify("复制失败"));
+  const copyMessage = async (message: AssistantMessage) => {
+    await copyText(message.text, "回复");
   };
 
   const applyInsert = useCallback(() => {
@@ -399,7 +397,7 @@ export function AssistantPanel() {
                     <div className="mt-1.5 flex items-center gap-2 text-[11px]">
                       <button
                         type="button"
-                        onClick={() => copyMessage(message)}
+                        onClick={() => void copyMessage(message)}
                         className="text-slate-400 hover:text-slate-600"
                       >
                         复制

@@ -152,6 +152,24 @@ def test_dashboard_admin_view(client, admin_headers) -> None:
     assert stats["active_users"] >= 1
 
 
+def test_dashboard_api_key_count_excludes_physically_deleted_key(
+    client, admin_headers, created_user, created_key
+) -> None:
+    before = client.get("/api/dashboard", headers=admin_headers)
+    assert before.status_code == 200
+    assert before.json()["stats"]["total_api_keys"] == 1
+
+    deleted = client.delete(
+        f"/api/api-keys/{created_key.id}",
+        headers=created_user.headers,
+    )
+    assert deleted.status_code == 204, deleted.text
+
+    after = client.get("/api/dashboard", headers=admin_headers)
+    assert after.status_code == 200
+    assert after.json()["stats"]["total_api_keys"] == 0
+
+
 def test_dashboard_requires_auth(client) -> None:
     resp = client.get("/api/dashboard")
     assert resp.status_code == 401

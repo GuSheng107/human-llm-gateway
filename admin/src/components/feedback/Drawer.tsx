@@ -7,9 +7,17 @@ interface DrawerProps {
   onClose: () => void;
   children: ReactNode;
   width?: string;
+  side?: "left" | "right";
 }
 
-export function Drawer({ title, description, onClose, children, width = "max-w-2xl" }: DrawerProps) {
+export function Drawer({
+  title,
+  description,
+  onClose,
+  children,
+  width = "max-w-2xl",
+  side = "right",
+}: DrawerProps) {
   useEscapeKey(onClose);
 
   return (
@@ -18,7 +26,11 @@ export function Drawer({ title, description, onClose, children, width = "max-w-2
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <aside
-        className={`absolute inset-y-0 right-0 flex w-full ${width} flex-col border-l border-slate-200 bg-white shadow-drawer animate-slide-in-right`}
+        className={`absolute inset-y-0 flex w-full ${width} flex-col bg-white shadow-drawer ${
+          side === "left"
+            ? "left-0 border-r border-slate-200 animate-slide-in-left"
+            : "right-0 border-l border-slate-200 animate-slide-in-right"
+        }`}
         role="dialog"
         aria-modal="true"
         aria-label={title}

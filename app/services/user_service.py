@@ -230,6 +230,35 @@ class UserService:
         session.flush()
         return user
 
+    def update_avatar(
+        self,
+        session: Session,
+        user: User,
+        *,
+        avatar_base64: str | None,
+        actor_user_id: int,
+    ) -> User:
+        """替换裁剪后的头像；null 代表清空。"""
+        normalized_avatar = normalize_avatar_base64(avatar_base64 or "")
+        if normalized_avatar is None:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "头像需为 PNG/JPEG 且不超过 2MB",
+                status_code=400,
+            )
+        user.avatar_base64 = normalized_avatar or None
+        self.audit.add(
+            session,
+            action=AuditAction.USER_UPDATED,
+            resource_type="user",
+            resource_id=str(user.id),
+            actor_user_id=actor_user_id,
+            owner_user_id=user.id,
+            metadata={"fields": ["avatar_base64"]},
+        )
+        session.flush()
+        return user
+
     def update_display_name(
         self, session: Session, user: User, display_name: str, *, actor_user_id: int
     ) -> User:

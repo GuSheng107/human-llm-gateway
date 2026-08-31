@@ -7,7 +7,8 @@ from datetime import datetime
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
-from ..core.security import verify_api_key
+from ..core.constants import API_KEY_PREFIX_LENGTH
+from ..core.security import is_api_key_format, verify_api_key
 from ..core.time import utc_now
 from .models import ApiKey
 
@@ -73,7 +74,9 @@ class ApiKeyRepository:
         """验证明文 Key；要求 Key 启用且所有者仍处于启用状态。"""
         from .models import User
 
-        prefix = plaintext[:12]
+        if not is_api_key_format(plaintext):
+            return None
+        prefix = plaintext[:API_KEY_PREFIX_LENGTH]
         for row in self.find_by_prefix(session, prefix):
             if not row.is_enabled:
                 continue

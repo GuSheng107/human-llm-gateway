@@ -72,6 +72,7 @@ export interface ModelListFilters {
   endpoint_type?: string;
   capability?: string;
   tag?: string;
+  group_id?: string;
   include_disabled?: boolean;
 }
 
@@ -81,16 +82,42 @@ export interface GroupPayload {
   enabled?: boolean;
 }
 
-export function listFakeModels(filters: ModelListFilters = {}): Promise<Page<FakeModel>> {
-  const query = new URLSearchParams({ page: "1", page_size: "100" });
+export function listFakeModels(
+  filters: ModelListFilters = {},
+  page = 1,
+  pageSize = 100,
+): Promise<Page<FakeModel>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (filters.search?.trim()) query.set("search", filters.search.trim());
   if (filters.provider) query.set("provider", filters.provider);
   if (filters.billing_tier) query.set("billing_tier", filters.billing_tier);
   if (filters.endpoint_type) query.set("endpoint_type", filters.endpoint_type);
   if (filters.capability) query.set("capability", filters.capability);
   if (filters.tag) query.set("tag", filters.tag);
+  if (filters.group_id) query.set("group_id", filters.group_id);
   if (filters.include_disabled) query.set("include_disabled", "true");
   return api<Page<FakeModel>>(`/api/fake-models?${query}`);
+}
+
+const LIST_ALL_PAGE_SIZE = 100;
+const LIST_ALL_CONCURRENCY = 4;
+
+export async function listAllFakeModels(filters: ModelListFilters = {}): Promise<FakeModel[]> {
+  const first = await listFakeModels(filters, 1, LIST_ALL_PAGE_SIZE);
+  const items = [...first.items];
+  const totalPages = Math.ceil(first.total / LIST_ALL_PAGE_SIZE);
+  // 首页已知 total 后，剩余页按固定并发分批拉取；任一请求失败即整体抛错，由调用方提示重试。
+  for (let start = 2; start <= totalPages; start += LIST_ALL_CONCURRENCY) {
+    const batchPages = Array.from(
+      { length: Math.min(LIST_ALL_CONCURRENCY, totalPages - start + 1) },
+      (_, index) => start + index,
+    );
+    const batch = await Promise.all(
+      batchPages.map((page) => listFakeModels(filters, page, LIST_ALL_PAGE_SIZE)),
+    );
+    for (const result of batch) items.push(...result.items);
+  }
+  return items.slice(0, first.total);
 }
 
 export function createFakeModel(payload: FakeModelPayload): Promise<FakeModel> {

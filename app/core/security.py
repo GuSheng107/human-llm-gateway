@@ -11,6 +11,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import secrets
 import string
 
@@ -20,7 +21,14 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.hashes import SHA256
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-from .constants import SECRET_ENVELOPE_PREFIX, SECRET_HKDF_INFO, SECRET_KEY_VERSION
+from .constants import (
+    API_KEY_PREFIX,
+    API_KEY_PREFIX_LENGTH,
+    API_KEY_RANDOM_BYTES,
+    SECRET_ENVELOPE_PREFIX,
+    SECRET_HKDF_INFO,
+    SECRET_KEY_VERSION,
+)
 from .exceptions import SecretCryptoError
 
 # Argon2id 基线参数（memory 单位为 KiB）。
@@ -151,9 +159,16 @@ def _verify_salted_digest(secret: str, encoded: str) -> bool:
 
 def generate_api_key() -> tuple[str, str, str]:
     """返回 (明文, 前缀, 哈希)。明文只在创建响应展示一次。"""
-    secret = f"hlg_{secrets.token_urlsafe(32)}"
-    prefix = secret[:12]
+    secret = f"{API_KEY_PREFIX}{secrets.token_urlsafe(API_KEY_RANDOM_BYTES)}"
+    prefix = secret[:API_KEY_PREFIX_LENGTH]
     return secret, prefix, _salted_digest(secret)
+
+
+def is_api_key_format(secret: str) -> bool:
+    """只接受本系统当前签发的 `sk-` API Key，不保留旧格式兼容。"""
+    token_length = (API_KEY_RANDOM_BYTES * 4 + 2) // 3
+    pattern = rf"{re.escape(API_KEY_PREFIX)}[A-Za-z0-9_-]{{{token_length}}}"
+    return re.fullmatch(pattern, secret) is not None
 
 
 def verify_api_key(secret: str, encoded: str) -> bool:

@@ -280,9 +280,7 @@ def dashboard(
             RequestTask.state.not_in(list(TERMINAL_STATES)),
         )
         stats.my_total_tasks = _count(db, RequestTask, RequestTask.owner_user_id == user.id)
-        stats.my_api_keys = _count(
-            db, ApiKey, ApiKey.owner_user_id == user.id
-        )
+        stats.my_api_keys = _count(db, ApiKey, ApiKey.owner_user_id == user.id)
         stats.my_llm_configs = _count(db, LlmConfig, LlmConfig.owner_user_id == user.id)
     else:
         stats.total_users = _count(db, User)

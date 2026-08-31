@@ -1,5 +1,5 @@
 import { type FormEvent, useState } from "react";
-import { changePassword, updateProfile } from "../../api/auth";
+import { changePassword, updateAvatar, updateProfile } from "../../api/auth";
 import { Card } from "../../components/data-display/Card";
 import { FormField } from "../../components/form/FormField";
 import { PasswordStrength, passwordValid } from "../../components/form/PasswordStrength";
@@ -9,48 +9,15 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
+import { AvatarCropModal } from "./AvatarCropModal";
 
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
-const AVATAR_TARGET_BYTES = 1024 * 1024;
 
-function drawCoverPng(img: HTMLImageElement, size: number): string {
-  const canvas = document.createElement("canvas");
-  canvas.width = size;
-  canvas.height = size;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("无法处理图片");
-  const min = Math.min(img.width, img.height);
-  const sx = (img.width - min) / 2;
-  const sy = (img.height - min) / 2;
-  ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
-  return canvas.toDataURL("image/png");
-}
-
-function resizeToPng(file: File): Promise<string> {
+function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
-    reader.onload = () => {
-      const img = new Image();
-      img.onload = () => {
-        try {
-          let result = drawCoverPng(img, 320);
-          // 输出超过 1MB 时降级到 200x200 再输出。
-          if (result.length > AVATAR_TARGET_BYTES) {
-            result = drawCoverPng(img, 200);
-          }
-          if (result.length > AVATAR_TARGET_BYTES * 2) {
-            reject(new Error("头像处理失败"));
-            return;
-          }
-          resolve(result);
-        } catch (error) {
-          reject(error);
-        }
-      };
-      img.onerror = () => reject(new Error("图片加载失败"));
-      img.src = reader.result as string;
-    };
+    reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(new Error("图片读取失败"));
     reader.readAsDataURL(file);
   });
@@ -61,7 +28,8 @@ export function AccountPage() {
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
   const [avatarPreview, setAvatarPreview] = useState<string | null>(user?.avatar_base64 ?? null);
-  const [avatarChanged, setAvatarChanged] = useState(false);
+  const [cropImage, setCropImage] = useState<string | null>(null);
+  const [savingAvatar, setSavingAvatar] = useState(false);
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -80,12 +48,40 @@ export function AccountPage() {
       return;
     }
     try {
-      const dataUrl = await resizeToPng(file);
-      setAvatarPreview(dataUrl);
-      setAvatarChanged(true);
+      setCropImage(await readFileAsDataUrl(file));
       setError("");
     } catch {
-      setError("头像处理失败");
+      setError("图片读取失败");
+    }
+  };
+
+  const saveAvatar = async (dataUrl: string) => {
+    setSavingAvatar(true);
+    try {
+      const updated = await updateAvatar(dataUrl);
+      setUser(updated);
+      setAvatarPreview(updated.avatar_base64);
+      setCropImage(null);
+      notify("头像已更新", "success");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "头像保存失败");
+      throw caught;
+    } finally {
+      setSavingAvatar(false);
+    }
+  };
+
+  const removeAvatar = async () => {
+    setSavingAvatar(true);
+    try {
+      const updated = await updateAvatar(null);
+      setUser(updated);
+      setAvatarPreview(null);
+      notify("头像已移除", "success");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "移除失败");
+    } finally {
+      setSavingAvatar(false);
     }
   };
 
@@ -101,10 +97,8 @@ export function AccountPage() {
       const updated = await updateProfile({
         display_name: displayName.trim(),
         email: email.trim() || null,
-        avatar_base64: avatarChanged ? avatarPreview : undefined,
       });
       setUser(updated);
-      setAvatarChanged(false);
       notify("资料已更新");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "保存失败");
@@ -170,19 +164,21 @@ export function AccountPage() {
                 type="file"
                 accept="image/png,image/jpeg"
                 className="hidden"
-                onChange={(event) => void onAvatarChange(event.target.files?.[0] ?? null)}
+                disabled={savingAvatar}
+                onChange={(event) => {
+                  void onAvatarChange(event.target.files?.[0] ?? null);
+                  event.target.value = "";
+                }}
               />
             </label>
             {avatarPreview && (
               <button
                 type="button"
-                onClick={() => {
-                  setAvatarPreview(null);
-                  setAvatarChanged(true);
-                }}
-                className="text-xs text-slate-400 hover:text-red-500"
+                onClick={() => void removeAvatar()}
+                disabled={savingAvatar}
+                className="text-xs text-slate-400 hover:text-red-500 disabled:opacity-50"
               >
-                移除
+                {savingAvatar ? "处理中…" : "移除"}
               </button>
             )}
           </div>
@@ -269,6 +265,14 @@ export function AccountPage() {
           </Button>
         </form>
       </Card>
+
+      {cropImage && (
+        <AvatarCropModal
+          image={cropImage}
+          onClose={() => setCropImage(null)}
+          onConfirm={saveAvatar}
+        />
+      )}
     </div>
   );
 }

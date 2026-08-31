@@ -24,8 +24,7 @@ from ...domain.errors import DomainError, DomainErrorCode
 # 已知凭据形态：本系统 API Key、OpenAI/Anthropic 兼容 Key、Bearer 头、
 # Secret envelope、PEM 私钥头。
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"hlg_[A-Za-z0-9_-]{16,}"),  # 本系统 API Key 明文
-    re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}"),  # OpenAI / Anthropic 兼容
+    re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}"),  # 本系统及兼容服务 API Key
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}"),  # Authorization 头
     re.compile(r"hlg1\.[0-9]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),  # Secret envelope
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),  # PEM 私钥

@@ -11,7 +11,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](admin/package.json)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](pyproject.toml)
 [![Tailwind](https://img.shields.io/badge/Tailwind%20CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](admin/package.json)
-[![Tests](https://img.shields.io/badge/tests-415%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-quality%20gates-brightgreen)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg)]()
 
 [English](README.md) | **简体中文**
@@ -84,7 +84,7 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 
 ### 🧰 工具沙箱
 - 管理员白名单，用户显式确认执行
-- 进程级隔离：临时目录 + 清零环境 + 超时 + 输出截断
+- 默认拒绝的 OCI 隔离：无网络、无挂载、只读根文件系统，并限制资源与输出
 - 调用方 tool call 永不自动执行
 
 </td></tr>
@@ -120,6 +120,7 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 
 - Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
+- 获批工具需要沙箱执行时安装 Docker 或 Podman
 
 ### 三步启动
 
@@ -149,7 +150,7 @@ uv run uvicorn app.api:app --host 0.0.0.0 --port 8000
 # ① 管理台创建 API Key（选一个 Fake Model，比如 deepseek-v4-pro）
 
 # ② 像调用 OpenAI 一样调用它
-export OPENAI_API_KEY="hlg_xxxx"   # 网关签发的 Key
+export OPENAI_API_KEY="sk-xxxx"    # 网关签发的 Key
 export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 
 python -c "
@@ -184,7 +185,10 @@ for chunk in stream:
 | M11 | 发布验收 | ⏳ |
 | M12 | 隔离工具沙箱 | ✅ |
 
-完整计划见 [ROADMAP](docs/ROADMAP.md)。测试：**415 passed**（后端）+ 22（前端）。
+完整计划见 [ROADMAP](docs/ROADMAP.md)。当前测试数量以末尾质量门禁的实际输出为准。
+
+M12 在 Windows、macOS 与 Linux 上统一使用默认拒绝的 Docker/Podman OCI 沙箱。
+默认镜像构建方式与安全边界见 [SANDBOX](docs/SANDBOX.md)。
 
 ## 🤝 参与贡献
 

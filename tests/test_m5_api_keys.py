@@ -61,12 +61,14 @@ def test_api_key_plaintext_shown_once_and_prefix_only_afterwards(client, admin_h
     response, body = _create_api_key(client, headers, name="一次性明文")
     assert response.status_code == 201, response.text
     plaintext = body["plaintext"]
-    assert plaintext.startswith("hlg_")
+    assert plaintext.startswith("sk-")
+    assert len(plaintext) == 46
 
     listed = client.get("/api/api-keys", headers=headers).json()
     item = listed["items"][0]
     assert "plaintext" not in item
-    assert item["key_prefix"] == plaintext[:12]
+    assert item["key_prefix"] == plaintext[:8]
+    assert len(item["key_prefix"]) == 8
     assert plaintext not in response_text(listed)
 
 
@@ -266,7 +268,7 @@ def test_v1_models_requires_api_key_auth(client, admin_headers) -> None:
     assert anonymous.status_code == 401
     assert anonymous.json()["error"]["code"] == "invalid_api_key"
 
-    invalid = client.get("/v1/models", headers={"Authorization": "Bearer hlg_not-a-real-key"})
+    invalid = client.get("/v1/models", headers={"Authorization": "Bearer sk-not-a-real-key"})
     assert invalid.status_code == 401
     assert invalid.json()["error"]["type"] == "invalid_request_error"
 

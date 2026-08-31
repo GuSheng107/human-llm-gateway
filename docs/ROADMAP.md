@@ -389,8 +389,8 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 
 - [x] 管理员维护工具白名单：`/api/tools` CRUD（名称唯一、命令模板占位符与参数 Schema 一致性校验、shell 元字符拒绝、仅 string 属性、超时 1-120s）。
 - [x] 用户只能执行白名单内已启用工具：目录视图不含命令模板与 Schema（管理员可见）；停用/删除即拒。
-- [x] 工具在隔离进程运行：专用临时工作目录（用后即删）、环境变量清零（凭据不可能经环境进入工具）、超时硬终止、输出单边 64 KiB 截断（limit_exceeded）；Linux 额外 RLIMIT_CPU/RLIMIT_AS（Windows 靠超时+截断+目录兜底，文档注明差异）；命令经 argv 直传不经 shell，参数值 shlex.quote 防注入。
+- [x] 工具在 Docker/Podman Linux OCI 容器运行，Windows、macOS、Linux 共用同一契约；无网络、无宿主挂载、只读根文件系统、非 root、capability 清零、no-new-privileges，并限制 CPU、内存、PID、文件描述符、时间和单边 64 KiB 输出。运行时不可用时失败关闭，不回退宿主执行。
 - [x] 调用方声明的工具永远不会自动获得执行权限：协议层 tool_calls 数据转发与沙箱路径完全隔离（专项测试固化——上游返回 rm 工具调用仅转发，ToolExecution 零记录）。
 - [x] 工具执行需要当前用户权限和显式确认，并写入完整审计：`confirmed=false` 拒绝并审计（not_confirmed）；执行结果（成功/失败/超时/超限）与拒绝原因（disabled/not_found/invalid_arguments/not_confirmed）全部进审计。
 - [x] 前端工具沙箱页（/tools）：管理员 CRUD 表单（模板/Schema JSON/超时）；所有用户执行弹窗（参数输入 + 结果 stdout/stderr 展示）；执行历史分页（管理员看全部、用户看自己）。
-- [ ] 沙箱逃逸、资源耗尽、网络越权和 Secret 泄漏安全测试通过。
+- [x] 沙箱逃逸面、资源耗尽、网络越权、命令注入和 Secret 泄漏安全测试通过；完整运维与自定义镜像说明见 `docs/SANDBOX.md`。

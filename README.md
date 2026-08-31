@@ -11,7 +11,7 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](admin/package.json)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](pyproject.toml)
 [![Tailwind](https://img.shields.io/badge/Tailwind%20CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](admin/package.json)
-[![Tests](https://img.shields.io/badge/tests-415%20passed-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-quality%20gates-brightgreen)]()
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg)]()
 
 **English** | [简体中文](README.zh-CN.md)
@@ -83,7 +83,7 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
 ### 🧰 Tool Sandbox
 - Admin-maintained whitelist with explicit user confirmation
-- Process-level isolation: temp dir + empty env + timeout + output caps
+- Fail-closed OCI isolation: no network or mounts, read-only root, resource and output caps
 - Caller-declared tool calls are never auto-executed
 
 </td></tr>
@@ -119,6 +119,7 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
+- Docker or Podman when approved tools need the sandbox
 
 ### Three Steps
 
@@ -150,7 +151,7 @@ Open **http://127.0.0.1:8000** — the console and the API share one port. The f
 # ① Create an API key in the console, pick a Fake Model (e.g. deepseek-v4-pro)
 
 # ② Call it just like OpenAI
-export OPENAI_API_KEY="hlg_xxxx"   # gateway-issued key
+export OPENAI_API_KEY="sk-xxxx"    # gateway-issued key
 export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 
 python -c "
@@ -185,7 +186,10 @@ for chunk in stream:
 | M11 | Release acceptance | ⏳ |
 | M12 | Isolated tool sandbox | ✅ |
 
-Full plan in [ROADMAP](docs/ROADMAP.md) (Chinese). Tests: **415 passed** (backend) + 22 (frontend).
+Full plan in [ROADMAP](docs/ROADMAP.md) (Chinese). Current test totals are reported by the quality gates below.
+
+M12 uses a fail-closed Docker/Podman OCI sandbox on Windows, macOS and Linux. Build the
+default image and review the security boundary in [SANDBOX](docs/SANDBOX.md).
 
 ## 🤝 Contributing
 

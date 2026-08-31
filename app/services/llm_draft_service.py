@@ -1,10 +1,10 @@
-"""LLM 草稿生成服务（M7-B）�?
+"""LLM 草稿生成服务（M7-B）。
 
 任务工作台中用户选择 LLM 配置生成持久化草稿：
-- 仅同协议：Chat/Responses -> openai_chat LLM；Anthropic -> Anthropic LLM�?
-  跨协议转换在 M7-C 字段矩阵中实现，本阶段不开放�?
-- 使用配置�?base_url / api_key / 自定�?Header 调上游最小请求（非流式）�?
-- 上游响应解析�?ReplyDraft 后落库为 source=llm 的活动草稿，用户继续编辑后提交�?
+- 仅同协议：Chat/Responses -> openai_chat LLM；Anthropic -> Anthropic LLM。
+  跨协议转换在 M7-C 字段矩阵中实现，本阶段不开放。
+- 使用配置的 base_url / api_key / 自定义 Header 调上游最小请求（非流式）。
+- 上游响应解析为 ReplyDraft 后落库为 source=llm 的活动草稿，用户继续编辑后提交。
 """
 
 from __future__ import annotations
@@ -36,20 +36,20 @@ from ..repositories.tasks import TaskRepository
 from . import llm_upstream
 
 # ---------------------------------------------------------------------------
-# 配置参数应用（采样默�?/ extra_body / 思考模式）
-# 说明：extra_body 与请求字段冲突时以请求体为准（setdefault 语义）�?
+# 配置参数应用（采样默认 / extra_body / 思考模式）
+# 说明：extra_body 与请求字段冲突时以请求体为准（setdefault 语义）。
 # ---------------------------------------------------------------------------
 
 
 def _apply_config(body: dict[str, Any], cfg: LlmConfig) -> dict[str, Any]:
-    """�?LlmConfig �?default_* / extra_body / thinking 应用到请求体�?
+    """把 LlmConfig 的 default_* / extra_body / thinking 应用到请求体。
 
-    规则�?
+    规则：
     1. extra_body 先用 setdefault 写入（请求体已显式提供的字段优先）；
-    2. default_temperature / default_top_p / default_top_k 同理�?
+    2. default_temperature / default_top_p / default_top_k 同理；
     3. 最大输出字段按目标协议写入（请求未带同义字段时）；
-    4. 思考模式：OPENAI_RESPONSES �?thinking_level -> reasoning.effort�?
-       其他协议 thinking_level 已在入库时拒绝，此处�?mode 兜底忽略�?
+    4. 思考模式：OPENAI_RESPONSES 时 thinking_level -> reasoning.effort；
+       其他协议 thinking_level 已在入库时拒绝，此处对 mode 兜底忽略。
     """
     for key, value in (cfg.extra_body or {}).items():
         body.setdefault(key, value)
@@ -74,7 +74,7 @@ def _apply_config(body: dict[str, Any], cfg: LlmConfig) -> dict[str, Any]:
 _LLM_SECRET_PURPOSE = "llm-config"
 
 
-# Inference protocol �?允许�?LLM 协议（M7-B 仅同协议生成）�?
+# Inference protocol → 允许的 LLM 协议（M7-B 仅同协议生成）。
 _INFERENCE_TO_LLM: dict[InferenceProtocol, LLMProtocol] = {
     InferenceProtocol.OPENAI_CHAT: LLMProtocol.OPENAI_CHAT,
     InferenceProtocol.OPENAI_RESPONSES: LLMProtocol.OPENAI_RESPONSES,
@@ -105,14 +105,14 @@ def _decrypt_config(row: LlmConfig) -> tuple[str, dict[str, str]]:
         except (ValueError, json.JSONDecodeError) as exc:
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "LLM 自定�?Header 解密失败，请重新保存配置",
+                "LLM 自定义 Header 解密失败，请重新保存配置",
                 status_code=409,
             ) from exc
     return secret, headers
 
 
 def _coerce_message_content(content: Any) -> str:
-    """把上下文项的 content 统一为字符串（多模态数组简化为首段文本）�?""
+    """把上下文项的 content 统一为字符串（多模态数组简化为首段文本）。"""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -129,10 +129,10 @@ def _build_chat_request(
     normalized: dict[str, Any],
     cfg: LlmConfig | None = None,
 ) -> dict[str, Any]:
-    """OpenAI Chat Completions 请求体：把规范化 context 直接�?messages�?
+    """OpenAI Chat Completions 请求体：把规范化 context 直接转 messages。
 
-    system 指令注入首位（来�?normalized.instructions）�?
-    assistant 历史�?tool_calls 已包含在 context 中�?
+    system 指令注入首位（来自 normalized.instructions）。
+    assistant 历史与 tool_calls 已包含在 context 中。
     """
     context = normalized.get("context") or []
     instructions = normalized.get("instructions")
@@ -165,7 +165,7 @@ def _build_anthropic_request(
     max_tokens: int,
     cfg: LlmConfig | None = None,
 ) -> dict[str, Any]:
-    """Anthropic Messages 请求体�?""
+    """Anthropic Messages 请求体。"""
     context = normalized.get("context") or []
     instructions = normalized.get("instructions")
     system_blocks = normalized.get("system_blocks")
@@ -204,10 +204,10 @@ def _build_anthropic_request(
 
 
 def _parse_responses_response(payload: dict[str, Any]) -> ReplyDraft:
-    """OpenAI Responses 响应 �?ReplyDraft�?
+    """OpenAI Responses 响应 → ReplyDraft。
 
-    output 数组：message（content[].output_text.text）、reasoning（summary[].text）�?
-    function_call（name / arguments JSON）�?""
+    output 数组：message（content[].output_text.text）、reasoning（summary[].text）、
+    function_call（name / arguments JSON）。"""
     output = payload.get("output")
     if not isinstance(output, list):
         raise DomainError(DomainErrorCode.UPSTREAM_ERROR, "上游响应缺少 output", status_code=502)
@@ -252,12 +252,12 @@ def _parse_responses_response(payload: dict[str, Any]) -> ReplyDraft:
 
 
 def _parse_chat_response(payload: dict[str, Any]) -> ReplyDraft:
-    """OpenAI Chat Completions 响应 �?ReplyDraft�?
+    """OpenAI Chat Completions 响应 → ReplyDraft。
 
-    兼容字段�?
+    兼容字段：
     - choices[0].message.content（最终文本）
-    - choices[0].message.reasoning_content（思考，M7-B 接受 chat protocol 兼容字段�?
-    - choices[0].message.tool_calls（数组，type=function 时取 function.name/arguments�?
+    - choices[0].message.reasoning_content（思考，M7-B 接受 chat protocol 兼容字段）
+    - choices[0].message.tool_calls（数组，type=function 时取 function.name/arguments）
     """
     choices = payload.get("choices") or []
     if not isinstance(choices, list) or not choices:
@@ -314,12 +314,12 @@ def _parse_chat_response(payload: dict[str, Any]) -> ReplyDraft:
 
 
 def _parse_anthropic_response(payload: dict[str, Any]) -> ReplyDraft:
-    """Anthropic Messages 响应 �?ReplyDraft�?
+    """Anthropic Messages 响应 → ReplyDraft。
 
-    content blocks�?
-    - type=text �?final_text
-    - type=thinking �?reasoning
-    - type=tool_use �?tool_calls（id / name / input�?
+    content blocks：
+    - type=text → final_text
+    - type=thinking → reasoning
+    - type=tool_use → tool_calls（id / name / input）
     """
     content = payload.get("content")
     if not isinstance(content, list):
@@ -370,7 +370,7 @@ async def _post_chat_completions(
     extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）�?""
+    """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）。"""
     return await llm_upstream.post_chat_completions(
         base_url=base_url,
         api_key=api_key,
@@ -388,7 +388,7 @@ async def _post_anthropic_messages(
     extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）�?""
+    """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）。"""
     return await llm_upstream.post_anthropic_messages(
         base_url=base_url,
         api_key=api_key,
@@ -414,16 +414,16 @@ class LlmDraftService:
     ) -> TaskDraft:
         task_id = task.id
         owner_id = owner.id
-        # 1. 任务状态校验：�?waiting_human 可生�?
+        # 1. 任务状态校验：仅 waiting_human 可生成
         if task.state is not TaskState.WAITING_HUMAN:
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "任务已结束，不能再生成草�?,
+                "任务已结束，不能再生成草稿",
                 status_code=409,
                 public_code="task_already_resolved",
             )
         # 1.5 幂等防护：已存在未提交的 LLM 草稿时拒绝重复生成（避免连点
-        # 产生多条 LLM 草稿；用户应在既有草稿上编辑或删除后重生成）�?
+        # 产生多条 LLM 草稿；用户应在既有草稿上编辑或删除后重生成）。
         from sqlalchemy import select as sa_select
 
         existing = session.execute(
@@ -436,29 +436,29 @@ class LlmDraftService:
         if existing is not None:
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "已存在未提交�?LLM 草稿，请编辑或删除后重新生成",
+                "已存在未提交的 LLM 草稿，请编辑或删除后重新生成",
                 status_code=409,
                 public_code="llm_draft_exists",
             )
         # 2. 归属校验
         if task.owner_user_id != owner.id:
-            raise DomainError(DomainErrorCode.NOT_FOUND, "任务不存�?, status_code=404)
+            raise DomainError(DomainErrorCode.NOT_FOUND, "任务不存在", status_code=404)
         # 3. LLM 配置所有权 + 启用
         cfg = self.llm_repo.get(session, llm_config_id)
         if cfg is None or cfg.owner_user_id != owner.id:
-            raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存�?, status_code=404)
+            raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存在", status_code=404)
         if not cfg.is_enabled:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
                 "LLM 配置已停用，无法生成草稿",
                 status_code=400,
             )
-        # 4. 解析规范化请�?
+        # 4. 解析规范化请求
         try:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, json.JSONDecodeError):
             normalized = {}
-        # 5. 构造目标协议请求体（同协议直拼；跨协议�?cross 矩阵，�?2.6�?
+        # 5. 构造目标协议请求体（同协议直拼；跨协议走 cross 矩阵，§12.6）
         expected_llm_protocol = _INFERENCE_TO_LLM.get(task.protocol)
         raw_body: dict[str, Any] | None = None
         if expected_llm_protocol is cfg.protocol:
@@ -469,7 +469,7 @@ class LlmDraftService:
             except (TypeError, ValueError, json.JSONDecodeError):
                 raw_body = None
         # previous_response_id 是网关控制字段；即使上游同为 Responses，也必须
-        # 使用已展开的规范化上下文，不能把本平台代理 ID 透传给上游�?
+        # 使用已展开的规范化上下文，不能把本平台代理 ID 透传给上游。
         if raw_body is not None and not (
             cfg.protocol is LLMProtocol.OPENAI_RESPONSES
             and raw_body.get("previous_response_id") is not None
@@ -500,14 +500,14 @@ class LlmDraftService:
             else:
                 body = cross.to_anthropic_request(normalized, cfg.real_model)
                 _apply_config(body, cfg)
-        # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch�?
+        # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch）
         secret, headers = _decrypt_config(cfg)
         cfg_id = cfg.id
         cfg_protocol = cfg.protocol
         cfg_base_url = cfg.base_url
         cfg_timeout_seconds = cfg.timeout_seconds
-        # 上游网络 I/O 前结束读取事务，避免 SQLite 在数十秒调用期间持锁�?
-        # 上游完成后重新取得写锁并复核任务与草稿状态�?
+        # 上游网络 I/O 前结束读取事务，避免 SQLite 在数十秒调用期间持锁。
+        # 上游完成后重新取得写锁并复核任务与草稿状态。
         session.rollback()
         try:
             if cfg_protocol is LLMProtocol.OPENAI_CHAT:
@@ -545,7 +545,7 @@ class LlmDraftService:
                 f"上游响应解析失败: {exc.__class__.__name__}",
                 status_code=502,
             ) from exc
-        # 7. 落库前原子复核；调用期间若人工已回复或生成了草稿，拒绝晚到结果�?
+        # 7. 落库前原子复核；调用期间若人工已回复或生成了草稿，拒绝晚到结果。
         begin_immediate_if_sqlite(session)
         current_task = session.get(RequestTask, task_id, with_for_update=True)
         if (
@@ -555,7 +555,7 @@ class LlmDraftService:
         ):
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "任务已结束，不能保存晚到�?LLM 草稿",
+                "任务已结束，不能保存晚到的 LLM 草稿",
                 status_code=409,
                 public_code="task_already_resolved",
             )
@@ -567,7 +567,7 @@ class LlmDraftService:
         ):
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "LLM 配置在调用期间已不可�?,
+                "LLM 配置在调用期间已不可用",
                 status_code=409,
             )
         existing = session.execute(
@@ -580,7 +580,7 @@ class LlmDraftService:
         if existing is not None:
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "已存在未提交�?LLM 草稿，请编辑或删除后重新生成",
+                "已存在未提交的 LLM 草稿，请编辑或删除后重新生成",
                 status_code=409,
                 public_code="llm_draft_exists",
             )

@@ -1,27 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  BILLING_LABELS,
   CAPABILITY_LABELS,
   ENDPOINT_LABELS,
+  deleteFakeModel,
+  listAllFakeModels,
   listFakeModels,
   listModelGroups,
-  createModelGroup,
-  deleteModelGroup,
-  deleteFakeModel,
-  replaceGroupMembers,
   updateFakeModel,
 } from "../../api/models";
 import { Card } from "../../components/data-display/Card";
+import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
-import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import { useAuth } from "../auth/AuthContext";
 import type { FakeModel, ModelGroup } from "../../types/gateway";
 import { ModelEditModal } from "./ModelEditModal";
+import { ModelsGroupsDrawer } from "./ModelsGroupsDrawer";
+import { MODEL_PAGE_SIZES, type ModelPageSize } from "./modelPagination";
 
 const VIEW_STORAGE_KEY = "hlg_models_view";
 
@@ -33,19 +33,6 @@ const ENDPOINT_GROUP_LABELS: Record<string, string> = {
   openai_responses: "OpenAI Responses",
   anthropic_messages: "Anthropic",
 };
-
-const BILLING_GROUP_LABELS: Record<string, string> = {
-  "": "全部",
-  pay_as_you_go: "按量计费",
-  subscription: "订阅",
-  free: "免费",
-  dynamic: "动态计费",
-};
-
-function formatPrice(value: number | null): string {
-  if (value === null || value === undefined) return "";
-  return Number.isInteger(value) ? String(value) : String(value);
-}
 
 function formatContext(value: number | null): string {
   if (!value) return "-";
@@ -74,32 +61,22 @@ function ModelLogo({ model }: { model: FakeModel }) {
   );
 }
 
-function PriceRow({ label, value }: { label: string; value: number | null }) {
-  if (value === null || value === undefined) return null;
-  return (
-    <div className="flex items-baseline justify-between text-xs">
-      <span className="text-slate-400">{label}</span>
-      <span className="font-mono text-slate-700">
-        {formatPrice(value)}
-        <span className="ml-0.5 text-[10px] text-slate-400">元/1M</span>
-      </span>
-    </div>
-  );
-}
-
 export function ModelsPage() {
   const { user } = useAuth();
   const [models, setModels] = useState<FakeModel[]>([]);
+  const [pageModels, setPageModels] = useState<FakeModel[]>([]);
   const [groups, setGroups] = useState<ModelGroup[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [pageLoading, setPageLoading] = useState(true);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
+  const pageRequest = useRef(0);
   const isAdmin = user?.role === "admin";
 
   // 筛选状态
   const [search, setSearch] = useState("");
   const [provider, setProvider] = useState("");
   const [group, setGroup] = useState("");
-  const [billingTier, setBillingTier] = useState("");
   const [endpointType, setEndpointType] = useState("");
   const [tag, setTag] = useState("");
   const [showDisabled, setShowDisabled] = useState(false);
@@ -110,28 +87,63 @@ export function ModelsPage() {
 
   const [editing, setEditing] = useState<FakeModel | null>(null);
   const [creating, setCreating] = useState(false);
-  const [groupForm, setGroupForm] = useState<{ name: string; description: string } | null>(null);
-  const [editingGroup, setEditingGroup] = useState<ModelGroup | null>(null);
-  const [selectedMembers, setSelectedMembers] = useState<number[]>([]);
+  const [groupsOpen, setGroupsOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<ModelPageSize>(20);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const loadCatalog = useCallback(async () => {
+    setCatalogLoading(true);
     try {
       const [modelPage, groupPage] = await Promise.all([
-        listFakeModels({ include_disabled: true }),
+        listAllFakeModels({ include_disabled: true }),
         listModelGroups(),
       ]);
-      setModels(modelPage.items);
+      setModels(modelPage);
       setGroups(groupPage.items);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "加载失败");
     } finally {
-      setLoading(false);
+      setCatalogLoading(false);
     }
   }, []);
 
-  useEffect(() => void load(), [load]);
+  const loadPage = useCallback(async () => {
+    const requestId = ++pageRequest.current;
+    setPageLoading(true);
+    try {
+      const result = await listFakeModels(
+        {
+          search,
+          provider,
+          group_id: group,
+          endpoint_type: endpointType,
+          tag,
+          include_disabled: showDisabled,
+        },
+        page,
+        pageSize,
+      );
+      if (requestId !== pageRequest.current) return;
+      setPageModels(result.items);
+      setTotal(result.total);
+      setError("");
+      const lastPage = Math.max(1, Math.ceil(result.total / pageSize));
+      if (page > lastPage) setPage(lastPage);
+    } catch (caught) {
+      if (requestId === pageRequest.current) {
+        setError(caught instanceof Error ? caught.message : "加载失败");
+      }
+    } finally {
+      if (requestId === pageRequest.current) setPageLoading(false);
+    }
+  }, [endpointType, group, page, pageSize, provider, search, showDisabled, tag]);
+
+  const refresh = useCallback(async () => {
+    await Promise.all([loadCatalog(), loadPage()]);
+  }, [loadCatalog, loadPage]);
+
+  useEffect(() => void loadCatalog(), [loadCatalog]);
+  useEffect(() => void loadPage(), [loadPage]);
 
   // 聚合筛选维度
   const providers = useMemo(() => {
@@ -152,55 +164,17 @@ export function ModelsPage() {
     return [...counter.entries()].sort((a, b) => b[1] - a[1]);
   }, [models]);
 
-  // 前端综合筛选（数据量小，内存过滤即可）
-  const filtered = useMemo(() => {
-    const term = search.trim().toLowerCase();
-    const groupModelIds = group
-      ? new Set(groups.find((item) => item.name === group)?.model_ids ?? [])
-      : null;
-    return models.filter((model) => {
-      if (!showDisabled && !model.is_enabled) return false;
-      if (provider && model.owned_by !== provider) return false;
-      if (groupModelIds && !groupModelIds.has(model.model_id)) return false;
-      if (billingTier && model.billing_tier !== billingTier) return false;
-      if (endpointType && model.endpoint_type !== endpointType) return false;
-      if (tag && !model.tags.includes(tag)) return false;
-      if (term) {
-        const haystack = [
-          model.model_id,
-          model.display_name ?? "",
-          model.description ?? "",
-          ...model.tags,
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(term)) return false;
-      }
-      return true;
-    });
-  }, [models, search, provider, group, billingTier, endpointType, tag, showDisabled, groups]);
-
-  const priceStats = useMemo(() => {
-    const withPrice = filtered.filter((model) => model.input_price_per_million !== null);
-    const inputs = withPrice.map((model) => model.input_price_per_million ?? 0);
-    return {
-      providers: new Set(models.map((model) => model.owned_by)).size,
-      min: inputs.length ? Math.min(...inputs) : null,
-      max: inputs.length ? Math.max(...inputs) : null,
-      cachedCount: models.filter((model) => model.cached_input_price_per_million !== null).length,
-    };
-  }, [filtered, models]);
+  const loading = pageLoading || (catalogLoading && models.length === 0);
 
   const copyModelId = async (model: FakeModel) => {
-    await navigator.clipboard.writeText(model.model_id);
-    notify(`已复制 ${model.model_id}`);
+    await copyText(model.model_id, "模型 ID");
   };
 
   const toggleModel = async (model: FakeModel) => {
     try {
       await updateFakeModel(model.id, { enabled: !model.is_enabled });
       notify(model.is_enabled ? "模型已停用" : "模型已启用");
-      await load();
+      await refresh();
     } catch (caught) {
       notify(caught instanceof Error ? caught.message : "操作失败");
     }
@@ -211,46 +185,7 @@ export function ModelsPage() {
     try {
       await deleteFakeModel(model.id);
       notify("模型已删除");
-      await load();
-    } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
-    }
-  };
-
-  const submitGroup = async () => {
-    if (!groupForm) return;
-    try {
-      await createModelGroup({
-        name: groupForm.name.trim(),
-        description: groupForm.description.trim() || null,
-      });
-      notify("分组已创建");
-      setGroupForm(null);
-      await load();
-    } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "创建失败");
-    }
-  };
-
-  const saveMembers = async () => {
-    if (!editingGroup) return;
-    try {
-      await replaceGroupMembers(editingGroup.id, selectedMembers);
-      notify("分组成员已更新");
-      setEditingGroup(null);
-      await load();
-    } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "更新失败");
-    }
-  };
-
-  const removeGroup = async (groupToRemove: ModelGroup) => {
-    if (!window.confirm(`确认删除分组「${groupToRemove.name}」？被启用的 Key 引用时会失败。`))
-      return;
-    try {
-      await deleteModelGroup(groupToRemove.id);
-      notify("分组已删除");
-      await load();
+      await refresh();
     } catch (caught) {
       notify(caught instanceof Error ? caught.message : "删除失败");
     }
@@ -270,7 +205,10 @@ export function ModelsPage() {
     <div className="flex flex-wrap gap-1.5">
       <button
         type="button"
-        onClick={() => onSelect("")}
+        onClick={() => {
+          setPage(1);
+          onSelect("");
+        }}
         className={`rounded-full px-2.5 py-1 text-xs transition ${
           active === "" ? "bg-primary text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"
         }`}
@@ -281,7 +219,10 @@ export function ModelsPage() {
         <button
           key={value}
           type="button"
-          onClick={() => onSelect(value)}
+          onClick={() => {
+            setPage(1);
+            onSelect(value);
+          }}
           className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs transition ${
             active === value
               ? "bg-primary text-white"
@@ -302,14 +243,14 @@ export function ModelsPage() {
         dismissId="models"
         description={
           isAdmin
-            ? "维护系统模型与分组；价格与能力信息仅用于展示"
+            ? "维护全站系统模型与模型分组"
             : "系统模型所有人都能用，你自己建的模型只有你能用"
         }
         actions={
           <>
-            <Button variant="ghost" onClick={() => setGroupForm({ name: "", description: "" })}>
-              <Icon name="plus" className="h-4 w-4" />
-              新建分组
+            <Button variant="ghost" onClick={() => setGroupsOpen(true)}>
+              <Icon name="settings" className="h-4 w-4" />
+              管理分组
             </Button>
             <Button onClick={() => setCreating(true)}>
               <Icon name="plus" className="h-4 w-4" />
@@ -321,35 +262,32 @@ export function ModelsPage() {
 
       {error && <ErrorBanner message={error} />}
 
-      {/* 顶部统计 Banner（参考 newapi 模型广场） */}
       <div className="rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-blue-600 px-6 py-5 text-white shadow-card">
         <div className="flex flex-wrap items-center gap-x-8 gap-y-2">
           <div>
             <div className="text-2xl font-bold">{models.length}</div>
-            <div className="text-xs text-white/70">可用模型</div>
+            <div className="text-xs text-white/70">模型</div>
           </div>
           <div>
-            <div className="text-2xl font-bold">{priceStats.providers}</div>
+            <div className="text-2xl font-bold">{groups.length}</div>
+            <div className="text-xs text-white/70">分组</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold">{providers.length}</div>
             <div className="text-xs text-white/70">供应商</div>
           </div>
           <div>
-            <div className="text-2xl font-bold">
-              {priceStats.min !== null ? `¥${formatPrice(priceStats.min)}` : "-"}
-              {priceStats.max !== null && priceStats.min !== priceStats.max
-                ? ` ~ ¥${formatPrice(priceStats.max)}`
-                : ""}
-            </div>
-            <div className="text-xs text-white/70">输入价区间（元 / 1M tokens）</div>
-          </div>
-          <div>
-            <div className="text-2xl font-bold">{priceStats.cachedCount}</div>
-            <div className="text-xs text-white/70">支持缓存计价</div>
+            <div className="text-2xl font-bold">{tags.length}</div>
+            <div className="text-xs text-white/70">标签</div>
           </div>
           <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-white/80">
             <input
               type="checkbox"
               checked={showDisabled}
-              onChange={(event) => setShowDisabled(event.target.checked)}
+              onChange={(event) => {
+                setPage(1);
+                setShowDisabled(event.target.checked);
+              }}
               className="accent-white"
             />
             显示已停用
@@ -367,10 +305,10 @@ export function ModelsPage() {
           <Card className="p-4">
             <h3 className="mb-2 text-xs font-semibold text-slate-700">模型分组</h3>
             {filterChips(
-              groups.map((item) => [item.name, item.model_ids.length] as [string, number]),
+              groups.map((item) => [item.id, item.model_ids.length] as [string, number]),
               group,
               setGroup,
-              (value) => value,
+              (value) => groups.find((item) => item.id === value)?.name ?? value,
             )}
           </Card>
           <Card className="p-4">
@@ -385,20 +323,6 @@ export function ModelsPage() {
               endpointType,
               setEndpointType,
               (value) => ENDPOINT_GROUP_LABELS[value],
-            )}
-          </Card>
-          <Card className="p-4">
-            <h3 className="mb-2 text-xs font-semibold text-slate-700">计费类型</h3>
-            {filterChips(
-              Object.keys(BILLING_GROUP_LABELS)
-                .filter((key) => key === "" || models.some((model) => model.billing_tier === key))
-                .map((key) => [
-                  key,
-                  key === "" ? models.length : models.filter((m) => m.billing_tier === key).length,
-                ] as [string, number]),
-              billingTier,
-              setBillingTier,
-              (value) => BILLING_GROUP_LABELS[value],
             )}
           </Card>
           {tags.length > 0 && (
@@ -420,7 +344,10 @@ export function ModelsPage() {
                 />
                 <input
                   value={search}
-                  onChange={(event) => setSearch(event.target.value)}
+                  onChange={(event) => {
+                    setPage(1);
+                    setSearch(event.target.value);
+                  }}
                   className="field-input pl-9"
                   placeholder="搜索模型 ID、显示名、描述或标签"
                 />
@@ -447,8 +374,8 @@ export function ModelsPage() {
               </div>
             </div>
             <div className="mt-2 flex items-center justify-between px-1 text-[11px] text-slate-400">
-              <span>共 {filtered.length} 个模型</span>
-              <span>价格单位：元 / 1M tokens</span>
+              <span>共 {total} 个模型</span>
+              <span>第 {page} 页</span>
             </div>
           </Card>
 
@@ -456,15 +383,15 @@ export function ModelsPage() {
             <Card className="p-12 text-center text-xs text-slate-400">加载中…</Card>
           )}
 
-          {!loading && filtered.length === 0 && (
+          {!loading && total === 0 && (
             <Card className="p-12 text-center text-xs text-slate-400">
               没有符合条件的模型，试试调整筛选
             </Card>
           )}
 
-          {!loading && view === "grid" && filtered.length > 0 && (
+          {!loading && view === "grid" && total > 0 && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {filtered.map((model) => (
+              {pageModels.map((model) => (
                 <Card key={model.id} className="group flex flex-col p-4">
                   <div className="flex items-start justify-between">
                     <div className="flex min-w-0 items-center gap-3">
@@ -507,10 +434,6 @@ export function ModelsPage() {
                   )}
 
                   <div className="mt-3 space-y-1.5">
-                    <PriceRow label="输入" value={model.input_price_per_million} />
-                    <PriceRow label="输出" value={model.output_price_per_million} />
-                    <PriceRow label="缓存读" value={model.cached_input_price_per_million} />
-                    <PriceRow label="缓存写" value={model.cached_write_price_per_million} />
                     {model.context_window && (
                       <div className="flex items-baseline justify-between text-xs">
                         <span className="text-slate-400">上下文</span>
@@ -523,9 +446,6 @@ export function ModelsPage() {
 
                   <div className="mt-auto flex items-center justify-between border-t border-slate-100 pt-3">
                     <div className="flex items-center gap-1.5">
-                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500">
-                        {BILLING_LABELS[model.billing_tier] ?? model.billing_tier}
-                      </span>
                       {!model.is_enabled && (
                         <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] text-red-500">
                           已停用
@@ -557,19 +477,16 @@ export function ModelsPage() {
             </div>
           )}
 
-          {!loading && view === "table" && filtered.length > 0 && (
+          {!loading && view === "table" && total > 0 && (
             <Card>
               <div className="overflow-x-auto">
-                <table className="min-w-[1080px] w-full text-left text-xs">
+                <table className="min-w-[820px] w-full text-left text-xs">
                   <thead className="bg-slate-50 text-slate-400">
                     <tr>
                       <th className="px-4 py-3 font-medium">model_id</th>
                       <th className="px-4 py-3 font-medium">显示名</th>
                       <th className="px-4 py-3 font-medium">端点</th>
                       <th className="px-4 py-3 font-medium">上下文</th>
-                      <th className="px-4 py-3 font-medium">输入价</th>
-                      <th className="px-4 py-3 font-medium">输出价</th>
-                      <th className="px-4 py-3 font-medium">缓存读</th>
                       <th className="px-4 py-3 font-medium">能力</th>
                       <th className="px-4 py-3 font-medium">标签</th>
                       <th className="px-4 py-3 font-medium">状态</th>
@@ -577,7 +494,7 @@ export function ModelsPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100">
-                    {filtered.map((model) => (
+                    {pageModels.map((model) => (
                       <tr key={model.id} className="group hover:bg-slate-50/60">
                         <td className="px-4 py-3">
                           <button
@@ -595,15 +512,6 @@ export function ModelsPage() {
                         </td>
                         <td className="px-4 py-3 font-mono text-slate-500">
                           {formatContext(model.context_window)}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-slate-500">
-                          {formatPrice(model.input_price_per_million) || "-"}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-slate-500">
-                          {formatPrice(model.output_price_per_million) || "-"}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-slate-500">
-                          {formatPrice(model.cached_input_price_per_million) || "-"}
                         </td>
                         <td className="px-4 py-3">
                           <div className="flex max-w-40 flex-wrap gap-1">
@@ -653,67 +561,29 @@ export function ModelsPage() {
               </div>
             </Card>
           )}
+          {!loading && total > 0 && (
+            <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+              <label className="flex items-center gap-2 text-xs text-slate-500">
+                每页
+                <select
+                  value={pageSize}
+                  onChange={(event) => {
+                    setPage(1);
+                    setPageSize(Number(event.target.value) as ModelPageSize);
+                  }}
+                  className="field-input h-8 w-20 py-1"
+                  aria-label="每页模型数"
+                >
+                  {MODEL_PAGE_SIZES.map((size) => (
+                    <option key={size} value={size}>{size}</option>
+                  ))}
+                </select>
+              </label>
+              <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} />
+            </Card>
+          )}
         </div>
       </div>
-
-      {/* 模型分组管理（沿用原能力，收纳到底部） */}
-      <Card>
-        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
-          <h2 className="text-sm font-semibold text-slate-700">模型分组</h2>
-          <span className="text-xs text-slate-400">Key 可按分组批量选用模型</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-[720px] w-full text-left text-xs">
-            <thead className="bg-slate-50 text-slate-400">
-              <tr>
-                <th className="px-4 py-3 font-medium">名称</th>
-                <th className="px-4 py-3 font-medium">成员模型</th>
-                <th className="px-4 py-3 font-medium">状态</th>
-                <th className="px-4 py-3 text-right font-medium">操作</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {groups.map((item) => (
-                <tr key={item.id} className="group hover:bg-slate-50/60">
-                  <td className="px-4 py-3 font-medium text-slate-700">{item.name}</td>
-                  <td className="max-w-sm truncate px-4 py-3 text-slate-500">
-                    {item.model_ids.length ? item.model_ids.join("、") : "未选择成员"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={item.is_enabled ? "active" : "inactive"} />
-                  </td>
-                  <td className="space-x-3 px-4 py-3 text-right">
-                    <button
-                      onClick={() => {
-                        setEditingGroup(item);
-                        setSelectedMembers(
-                          item.model_ids
-                            .map((modelId) => models.find((m) => m.model_id === modelId)?.id)
-                            .filter((value): value is string => Boolean(value))
-                            .map(Number),
-                        );
-                      }}
-                      className="text-primary"
-                    >
-                      成员
-                    </button>
-                    <button onClick={() => void removeGroup(item)} className="text-red-500">
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {!loading && groups.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-4 py-12 text-center text-slate-400">
-                    暂无分组
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Card>
 
       {(creating || editing) && (
         <ModelEditModal
@@ -722,91 +592,19 @@ export function ModelsPage() {
             setCreating(false);
             setEditing(null);
           }}
-          onSaved={load}
+          onSaved={refresh}
         />
       )}
 
-      {groupForm && (
-        <Modal
-          title="新建模型分组"
-          description="把常用模型归成一组，方便 Key 一起选用"
-          onClose={() => setGroupForm(null)}
-        >
-          <div className="space-y-4 p-6">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">分组名称</span>
-              <input
-                value={groupForm.name}
-                onChange={(event) =>
-                  setGroupForm((previous) => previous && { ...previous, name: event.target.value })
-                }
-                className="field-input"
-                placeholder="例如：常用模型"
-              />
-            </label>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">说明</span>
-              <input
-                value={groupForm.description}
-                onChange={(event) =>
-                  setGroupForm(
-                    (previous) => previous && { ...previous, description: event.target.value },
-                  )
-                }
-                className="field-input"
-                placeholder="可留空"
-              />
-            </label>
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setGroupForm(null)}>
-                取消
-              </Button>
-              <Button onClick={() => void submitGroup()} disabled={!groupForm.name.trim()}>
-                <Icon name="check" className="h-4 w-4" />
-                创建
-              </Button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {editingGroup && (
-        <Modal
-          title={`分组成员 · ${editingGroup.name}`}
-          description="勾选组内模型，保存后替换。"
-          onClose={() => setEditingGroup(null)}
-        >
-          <div className="max-h-80 space-y-2 overflow-y-auto p-6">
-            {models.map((model) => (
-              <label
-                key={model.id}
-                className="flex items-center gap-3 rounded-md border border-slate-200 px-3 py-2 text-xs text-slate-600"
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedMembers.includes(Number(model.id))}
-                  onChange={(event) =>
-                    setSelectedMembers((previous) =>
-                      event.target.checked
-                        ? [...previous, Number(model.id)]
-                        : previous.filter((value) => value !== Number(model.id)),
-                    )
-                  }
-                />
-                <span className="font-mono text-slate-700">{model.model_id}</span>
-                <span className="text-slate-400">
-                  {model.scope === "system" ? "系统" : "私有"}
-                </span>
-              </label>
-            ))}
-          </div>
-          <div className="flex justify-end gap-2 border-t border-slate-100 p-4">
-            <Button variant="ghost" onClick={() => setEditingGroup(null)}>
-              取消
-            </Button>
-            <Button onClick={() => void saveMembers()}>保存</Button>
-          </div>
-        </Modal>
+      {groupsOpen && user && (
+        <ModelsGroupsDrawer
+          groups={groups}
+          models={models}
+          currentUserId={user.id}
+          isAdmin={isAdmin}
+          onClose={() => setGroupsOpen(false)}
+          onChanged={refresh}
+        />
       )}
     </div>
   );

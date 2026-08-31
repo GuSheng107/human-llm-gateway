@@ -9,6 +9,7 @@ import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import type { UserDetail, UserSummary } from "../../types/governance";
 import { useAuth } from "../auth/AuthContext";
 import { PasswordResetModal } from "./PasswordResetModal";
@@ -198,10 +199,7 @@ export function UsersPage() {
             </div>
             <div className="flex justify-end">
               <Button
-                onClick={() => {
-                  void navigator.clipboard.writeText(oneTime.password);
-                  notify("已复制临时密码");
-                }}
+                onClick={() => void copyText(oneTime.password, "临时密码")}
               >
                 <Icon name="copy" className="h-4 w-4" />
                 复制

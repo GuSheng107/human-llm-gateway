@@ -329,6 +329,8 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 规则：
 
+- 新 Key 固定为 `sk-` 加 `secrets.token_urlsafe(32)` 生成的 43 个 base64url 字符；数据库仅保存哈希和前 8 字符 `key_prefix`，不接受其他格式。
+- Key 明文只出现在创建接口的成功响应中；列表和详情只返回 8 字符前缀。
 - `delivery_mode` 为 `web` 或 `im`；`im` 必须选择当前用户有效连接。
 - 任务无论入口为何都在 Web 可见且可回复。
 - `reply_strategy` 为 `human`、`llm` 或 `human_fallback_llm`。

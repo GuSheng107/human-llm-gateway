@@ -36,11 +36,17 @@ export async function registerAccount(payload: {
 export async function updateProfile(payload: {
   display_name: string;
   email?: string | null;
-  avatar_base64?: string | null;
 }): Promise<CurrentUser> {
   return api<CurrentUser>("/api/account/profile", {
     method: "PATCH",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function updateAvatar(avatar: string | null): Promise<CurrentUser> {
+  return api<CurrentUser>("/api/account/avatar", {
+    method: "PATCH",
+    body: JSON.stringify({ avatar }),
   });
 }
 

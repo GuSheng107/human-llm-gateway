@@ -1,7 +1,7 @@
-"""任务工作�?API（docs/API_CONTRACT.md §9）：任务详情、事件时间线、草稿与原子提交�?
+"""任务工作台 API（docs/API_CONTRACT.md §9）：任务详情、事件时间线、草稿与原子提交。
 
-LLM 草稿生成（POST /api/tasks/{id}/drafts/generate）属�?M7，本阶段不提供�?
-管理员对草稿与回复写接口只读：归属校验、状态校验与禁写均在 TaskService 内完成�?
+LLM 草稿生成（POST /api/tasks/{id}/drafts/generate）属于 M7，本阶段不提供。
+管理员对草稿与回复写接口只读：归属校验、状态校验与禁写均在 TaskService 内完成。
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ def _summary(task: RequestTask) -> tuple[str, list[str]]:
 
 
 def _batch_fake_model_names(session: Session, tasks: list[RequestTask]) -> dict[int, str]:
-    """批量解析 FakeModel 名称；批量查询避免列�?N+1�?""
+    """批量解析 FakeModel 名称；批量查询避免列表 N+1。"""
     ids = {t.fake_model_id for t in tasks if t.fake_model_id is not None}
     if not ids:
         return {}
@@ -214,7 +214,7 @@ def _batch_fake_model_names(session: Session, tasks: list[RequestTask]) -> dict[
 
 
 def _batch_owner_usernames(session: Session, tasks: list[RequestTask]) -> dict[int, str]:
-    """批量解析 owner username；管理员列表用，普通用户无 include_owner�?""
+    """批量解析 owner username；管理员列表用，普通用户无 include_owner。"""
     ids = {t.owner_user_id for t in tasks}
     if not ids:
         return {}
@@ -333,7 +333,7 @@ def list_tasks(
     page_size: int = Query(default=20, ge=1, le=100),
     search: str | None = Query(default=None, max_length=100),
     state: TaskState | None = Query(default=None),
-    # 分段筛选：in_progress（进行中�? finished（completed�? failed（失�?超时+取消�?
+    # 分段筛选：in_progress（进行中）、finished（completed）、failed（失败/超时+取消）
     bucket: str | None = Query(default=None, pattern="^(in_progress|finished|failed)$"),
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
@@ -457,10 +457,10 @@ async def generate_draft(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> DraftView:
-    """调用用户选定 LLM 配置生成持久化草稿（M7-B）�?
+    """调用用户选定 LLM 配置生成持久化草稿（M7-B）。
 
-    仅同协议：Chat/Responses 任务必须�?openai_chat；Anthropic 任务
-    必须�?anthropic。跨协议生成在后续阶段（字段矩阵）开放�?
+    仅同协议：Chat/Responses 任务必须选 openai_chat；Anthropic 任务
+    必须选 anthropic。跨协议生成在后续阶段（字段矩阵）开放。
     """
     from ..services.llm_draft_service import LlmDraftService
 
@@ -494,7 +494,7 @@ def submit_reply(
     if not accepted:
         raise DomainError(
             DomainErrorCode.CONFLICT,
-            "任务已回复，晚到提交被拒�?,
+            "任务已回复，晚到提交被拒绝",
             status_code=409,
             public_code="task_already_resolved",
         )

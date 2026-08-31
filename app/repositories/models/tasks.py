@@ -56,7 +56,7 @@ class RequestTask(TimestampMixin, VersionMixin, Base):
     api_key_id: Mapped[int] = mapped_column(
         ForeignKey("api_keys.id", ondelete="RESTRICT"), nullable=False
     )
-    api_key_prefix_snapshot: Mapped[str] = mapped_column(String(20), nullable=False)
+    api_key_prefix_snapshot: Mapped[str] = mapped_column(String(8), nullable=False)
     fake_model_id: Mapped[int | None] = mapped_column(
         ForeignKey("fake_models.id", ondelete="SET NULL"), nullable=True
     )
