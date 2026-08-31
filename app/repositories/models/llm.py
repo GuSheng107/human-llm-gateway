@@ -16,7 +16,6 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,7 +32,6 @@ class LlmConfig(TimestampMixin, Base):
             "owner_user_id",
             "name",
             unique=True,
-            sqlite_where=text("deleted_at IS NULL"),
         ),
         Index("ix_llm_configs_owner_enabled", "owner_user_id", "is_enabled"),
     )
@@ -71,4 +69,3 @@ class LlmConfig(TimestampMixin, Base):
     extra_body: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, nullable=False)
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_test_result: Mapped[str | None] = mapped_column(String(20), nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

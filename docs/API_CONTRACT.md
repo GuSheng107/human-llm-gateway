@@ -185,7 +185,7 @@
 | GET | `/api/invitations/{id}` | 查看非敏感详情。 |
 | PATCH | `/api/invitations/{id}` | 修改备注、有效期和最大使用次数。 |
 | POST | `/api/invitations/{id}/revoke` | 立即撤销并保留可见记录。 |
-| DELETE | `/api/invitations/{id}` | 仅对已撤销邀请码执行软删除；注册来源和审计继续保留。 |
+| DELETE | `/api/invitations/{id}` | 仅对已撤销邀请码物理删除；注册来源信息保留在审计日志。 |
 
 创建字段：`note`、`expires_at`、`max_uses`。`max_uses` 必须大于 0；已使用次数不能因更新上限而变得非法。只有管理员可调用这些接口。
 
@@ -253,7 +253,7 @@ CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `
 | POST | `/api/llm-configs` | 用户创建配置。 |
 | GET | `/api/llm-configs/{id}` | 查看自己的非敏感详情。 |
 | PATCH | `/api/llm-configs/{id}` | 修改配置；省略 Secret 表示保留。 |
-| DELETE | `/api/llm-configs/{id}` | 被有效 API Key 或活动任务引用时返回 409，否则清空 Secret 后软删除。 |
+| DELETE | `/api/llm-configs/{id}` | 被有效 API Key 或活动任务引用时返回 409，否则清空 Secret 后物理删除。 |
 | POST | `/api/llm-configs/{id}/test` | 使用最小请求测试连通性，不回显 Secret。 |
 
 主要字段：
@@ -309,7 +309,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | POST | `/api/api-keys` | 用户创建 Key，明文只返回一次。 |
 | GET | `/api/api-keys/{id}` | 返回配置和 Key 前缀。 |
 | PATCH | `/api/api-keys/{id}` | 修改名称、状态、入口和策略。 |
-| DELETE | `/api/api-keys/{id}` | 立即阻止新请求并软删除 Key；已准入任务按创建快照继续完成。 |
+| DELETE | `/api/api-keys/{id}` | 立即阻止新请求并物理删除 Key；被历史任务引用时 RESTRICT 返回 409，已准入任务按创建快照继续完成。 |
 
 目标写入结构：
 

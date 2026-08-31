@@ -1,4 +1,4 @@
-"""LLM 配置仓库：所有权查询、分页列表、引用计数与软删除（docs/DATABASE.md §4.4）。"""
+"""LLM 配置仓库：所有权查询、分页列表、引用计数与物理删除（docs/DATABASE.md §4.4）。"""
 
 from __future__ import annotations
 
@@ -21,10 +21,7 @@ class LlmConfigRepository:
     # ------------------------------------------------------------------
 
     def get(self, session: Session, config_id: int) -> LlmConfig | None:
-        row = session.get(LlmConfig, config_id)
-        if row is None or row.deleted_at is not None:
-            return None
-        return row
+        return session.get(LlmConfig, config_id)
 
     def get_owned(self, session: Session, config_id: int, owner_user_id: int) -> LlmConfig | None:
         row = self.get(session, config_id)
@@ -41,7 +38,7 @@ class LlmConfigRepository:
         owner_user_id: int | None = None,
         search: str | None = None,
     ) -> tuple[list[LlmConfig], int]:
-        filters: list = [LlmConfig.deleted_at.is_(None)]
+        filters: list = []
         if owner_user_id is not None:
             filters.append(LlmConfig.owner_user_id == owner_user_id)
         if search:
@@ -71,12 +68,11 @@ class LlmConfigRepository:
             select(LlmConfig).where(
                 LlmConfig.owner_user_id == owner_user_id,
                 LlmConfig.name == name,
-                LlmConfig.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
 
     def count_api_key_references(self, session: Session, *, config_id: int) -> int:
-        """未删除且引用该配置的 API Key 数。"""
+        """引用该配置的 API Key 数。"""
         from .models import ApiKey
 
         return (
@@ -85,7 +81,6 @@ class LlmConfigRepository:
                 .select_from(ApiKey)
                 .where(
                     ApiKey.llm_config_id == config_id,
-                    ApiKey.deleted_at.is_(None),
                 )
             )
             or 0
@@ -117,21 +112,12 @@ class LlmConfigRepository:
         session.add(row)
         return row
 
-    def soft_delete(self, session: Session, config_id: int) -> bool:
-        from sqlalchemy import update as sa_update
-
-        result = session.execute(
-            sa_update(LlmConfig)
-            .where(LlmConfig.id == config_id, LlmConfig.deleted_at.is_(None))
-            .values(
-                deleted_at=_now(),
-                is_enabled=False,
-                secret_ciphertext="",
-                headers_ciphertext=None,
-                updated_at=_now(),
-            )
-        )
-        return result.rowcount == 1
+    def delete(self, session: Session, config_id: int) -> bool:
+        row = session.get(LlmConfig, config_id)
+        if row is None:
+            return False
+        session.delete(row)
+        return True
 
     def record_test_result(
         self,

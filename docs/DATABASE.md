@@ -20,7 +20,7 @@
 
 初期使用 SQLite `INTEGER PRIMARY KEY` 作为内部主键。管理 API 把 ID 序列化为字符串；外部推理对象使用单独生成的协议 ID，不把数据库自增 ID 暴露为 OpenAI/Anthropic 对象 ID。
 
-所有外键列命名为 `<resource>_id`。历史任务引用的资源允许软删除或保存快照，禁止因删除配置而删除历史任务。
+所有外键列命名为 `<resource>_id`。历史任务引用的资源通过外键 RESTRICT 保护或保存快照，禁止因删除配置而连带删除历史任务。
 
 ### 2.2 通用列
 
@@ -30,7 +30,6 @@
 | --- | --- | --- |
 | `created_at` | datetime | 创建时间，不为空。 |
 | `updated_at` | datetime | 最后更新时间，不为空。 |
-| `deleted_at` | datetime nullable | 软删除时间；存在时普通查询不可见。 |
 | `version` | integer | 乐观并发版本，从 1 开始。 |
 
 ### 2.3 枚举
@@ -178,12 +177,11 @@
 | `used_count` | integer | 非空，默认 0，CHECK 0 <= used_count <= max_uses |
 | `expires_at` | datetime nullable | 空表示不按时间过期 |
 | `revoked_at` | datetime nullable | 撤销时间 |
-| `deleted_at` | datetime nullable | 管理员删除后隐藏并禁止消费 |
 | `created_at` / `updated_at` | datetime | 非空 |
 
-索引：`(expires_at, revoked_at, deleted_at)`、`created_by_user_id`。
+索引：`(expires_at, revoked_at)`、`created_by_user_id`。
 
-明文邀请码只在创建响应展示一次。撤销负责立即禁止消费并继续显示；删除只允许作用于已撤销邀请码，采用软删除从普通列表隐藏，同时保留用户来源和审计证据。
+明文邀请码只在创建响应展示一次。撤销负责立即禁止消费并继续显示；删除只允许作用于已撤销邀请码，采用物理删除移除行，审计证据保留在审计日志中。
 
 ## 4. 用户连接与真实 LLM
 
@@ -208,11 +206,11 @@
 | `last_error_message` | varchar(500) nullable | 脱敏摘要 |
 | `retry_count` | integer | 连续自动重试次数，默认 0 |
 | `next_retry_at` | datetime nullable | 下次自动重试时间 |
-| `created_at` / `updated_at` / `deleted_at` | datetime | 软删除 |
+| `created_at` / `updated_at` | datetime | 非空 |
 
 约束和索引：
 
-- 同一用户活动连接名唯一：部分唯一索引 `(owner_user_id, lower(name)) WHERE deleted_at IS NULL`。
+- 同一用户连接名唯一：唯一索引 `(owner_user_id, lower(name))`。
 - `(platform, state)`、`(owner_user_id, state)`。
 - `binding_code_hash` 存在时唯一。
 
@@ -277,9 +275,9 @@
 | `is_enabled` | boolean | 非空，默认 true |
 | `last_tested_at` | datetime nullable | 最近连通性测试 |
 | `last_test_result` | varchar(20) nullable | success/failed，不存响应原文 |
-| `created_at` / `updated_at` / `deleted_at` | datetime | 软删除 |
+| `created_at` / `updated_at` | datetime | 非空 |
 
-部分唯一索引 `(owner_user_id, lower(name)) WHERE deleted_at IS NULL`；索引 `(owner_user_id, is_enabled)`。
+唯一索引 `(owner_user_id, lower(name))`；索引 `(owner_user_id, is_enabled)`。
 
 LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协议、Base URL 主机、真实模型和状态等治理元数据，但不能解密或代用配置。
 
@@ -299,13 +297,13 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `sort_order` | integer | 默认 0 |
 | `is_enabled` | boolean | 默认 true |
 | `created_by_user_id` | integer | FK users，用于审计 |
-| `created_at` / `updated_at` / `deleted_at` | datetime | 软删除 |
+| `created_at` / `updated_at` | datetime | 非空 |
 
 约束：
 
 - CHECK：system 时 `owner_user_id IS NULL`；private 时 `owner_user_id IS NOT NULL`。
-- 系统模型活动唯一：`model_id WHERE scope = 'system' AND deleted_at IS NULL`。
-- 用户私有模型活动唯一：`(owner_user_id, model_id) WHERE scope = 'private' AND deleted_at IS NULL`。
+- 系统模型唯一：`model_id WHERE scope = 'system'`。
+- 用户私有模型唯一：`(owner_user_id, model_id) WHERE scope = 'private'`。
 - 索引 `(scope, is_enabled, sort_order)`、`(owner_user_id, is_enabled, sort_order)`。
 
 普通用户查询的基础可见集合为所有启用系统模型与自己的启用私有模型。若私有模型和系统模型使用相同 `model_id`，服务层只保留私有模型作为该用户的可见项；创建/更新 API 会提示冲突，前端默认阻止产生遮蔽。其他普通用户永远不能查询或引用该私有模型。管理员治理列表可查看全部模型，但不能把私有模型转授给其他用户。
@@ -319,9 +317,9 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `name` | varchar(100) | 非空 |
 | `description` | varchar(500) nullable | 说明 |
 | `is_enabled` | boolean | 默认 true |
-| `created_at` / `updated_at` / `deleted_at` | datetime | 软删除 |
+| `created_at` / `updated_at` | datetime | 非空 |
 
-部分唯一索引 `(owner_user_id, lower(name)) WHERE deleted_at IS NULL`。
+唯一索引 `(owner_user_id, lower(name))`。
 
 ### 5.3 `model_group_items`
 
@@ -353,7 +351,7 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `human_timeout_seconds` | integer | 默认 300，CHECK 10-1800 |
 | `model_group_id` | integer nullable | FK model_groups |
 | `last_used_at` | datetime nullable | 最近使用 |
-| `created_at` / `updated_at` / `deleted_at` | datetime | 软删除 |
+| `created_at` / `updated_at` | datetime | 非空 |
 
 约束：
 
@@ -445,7 +443,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 
 `previous_response_id` 原始值留在 `raw_payload_json`，解析成功后写入 `previous_task_id`。引用必须属于同一 `api_key_id` 且指向已完成响应；规范化请求保存等价展开后的上下文。历史清理必须保留仍被引用任务的最小请求/回复快照，不能留下悬空链。
 
-`api_key_id` 物理清理依赖 `ON DELETE RESTRICT` 保护；API Key 的“删除”采用软删除，历史任务的 FK 始终指向存在的 Key 行。`api_key_prefix_snapshot` 仅作为历史展示快照，不替代 FK。物理清理必须由未来的 retention job 按完整依赖关系执行，平时不把历史任务的 `api_key_id` 设为 NULL。
+`api_key_id` 物理 FK 由 `ON DELETE RESTRICT` 保护；API Key 被历史任务引用时无法物理删除，需先解除引用或由 retention job 按完整依赖关系清理。`api_key_prefix_snapshot` 仅作为历史展示快照，不替代 FK；平时不把历史任务的 `api_key_id` 设为 NULL。
 
 `response_public_id` 使用 `resp_` + 32 位小写 hex（CSPRNG，例如 `resp_a10c46f728e24da0970ba9e7189f429d`）。这是网关在自己命名空间内签发的协议兼容 ID，不是冒充真实 OpenAI response ID；任务内部仍以 integer PK 为主键。生成时机是任务创建事务，而不是响应成功之后：发送第一个 Responses 响应事件（包括 `response.created` 和失败终态 `response.failed`）之前该 ID 必须已经持久化，全程沿用同一 ID。数据库条件约束保证 `protocol = openai_responses` 的任务 `response_public_id` 非空，Chat 和 Anthropic 任务保持为空。只有 COMPLETED 状态的响应可被后续 `previous_response_id` 引用；失败或取消的响应保留 ID，但不能成为历史链父节点。
 
@@ -509,9 +507,9 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `title` | varchar(255) | 非空 |
 | `llm_config_id` | integer nullable | FK llm_configs |
 | `last_message_at` | datetime nullable | 排序 |
-| `created_at` / `updated_at` / `deleted_at` | datetime | 用户可删除 |
+| `created_at` / `updated_at` | datetime | 非空 |
 
-索引 `(owner_user_id, deleted_at, last_message_at)`。
+索引 `(owner_user_id, last_message_at)`。
 
 ### 8.2 `assistant_messages`
 
@@ -590,7 +588,6 @@ UPDATE invitation_codes
 SET used_count = used_count + 1,
     updated_at = :now
 WHERE id = :id
-  AND deleted_at IS NULL
   AND revoked_at IS NULL
   AND (expires_at IS NULL OR expires_at > :now)
   AND used_count < max_uses;
@@ -717,13 +714,13 @@ WHERE id = :task_id
 
 | 资源 | 删除行为 |
 | --- | --- |
-| 邀请码 | 先撤销使其立即不可消费；删除只对已撤销记录执行软删除，用户来源和审计保留。 |
+| 邀请码 | 先撤销使其立即不可消费；删除只对已撤销记录物理删除，用户来源信息保留在审计日志。 |
 | 用户 | 禁用时撤销会话和 Key、终止活动任务并释放名额；存在历史任务时不物理删除。 |
-| IM 连接 | 先停止运行并清空凭据，再软删除；引用它的有效 Key 必须先改为 Web 或停用。 |
-| LLM 配置 | 清空 Secret 后软删除；被有效转发 Key 或活动任务引用时返回 409，历史任务保留非敏感快照。 |
-| Fake Model | 软删除并从目录立即消失；活动任务使用 requested_model 快照继续完成。 |
+| IM 连接 | 先停止运行并清空凭据，再物理删除；引用它的有效 Key 必须先改为 Web 或停用。 |
+| LLM 配置 | 清空 Secret 后物理删除；被有效转发 Key 或活动任务引用时返回 409，历史任务保留非敏感快照。 |
+| Fake Model | 物理删除并从目录立即消失；活动任务使用 requested_model 快照继续完成。 |
 | 模型分组 | 被有效 Key 引用时返回 409。 |
-| API Key | 立即停用并软删除，阻止新请求；已准入任务按快照继续，历史任务保留 ID 和前缀。 |
+| API Key | 物理删除并立即阻止新请求；被历史任务引用时 RESTRICT 返回 409，已准入任务按快照继续，历史任务保留前缀快照。 |
 | 任务/事件 | 普通用户不能删除；未来清理必须保留被 `previous_task_id` 引用的最小上下文快照。 |
 | 草稿 | 用户可删除未提交草稿；已提交草稿随任务保留。 |
 | 小助手会话 | 用户删除时级联删除消息或进入可配置保留队列。 |

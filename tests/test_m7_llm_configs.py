@@ -1,7 +1,7 @@
 """M7-A LLM 配置管理测试（docs/API_CONTRACT.md §6）。
 
 覆盖：
-- 创建 / 查看 / 修改 / 软删除
+- 创建 / 查看 / 修改 / 物理删除
 - Secret 与 Header 值绝不回显
 - 重名校验
 - 删除被 API Key 引用返回 409
@@ -337,7 +337,7 @@ def test_create_rejects_case_conflicting_headers(client, created_user) -> None:
     assert "冲突" in resp.json()["error"]["message"]
 
 
-def test_delete_unreferenced_soft_deletes(client, created_user) -> None:
+def test_delete_unreferenced_removes_row(client, created_user) -> None:
     created = client.post(
         "/api/llm-configs", headers=created_user.headers, json=_create_body()
     ).json()

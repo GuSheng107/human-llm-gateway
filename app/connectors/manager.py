@@ -139,7 +139,7 @@ class ConnectionManager:
         """进程启动恢复：desired_running 的连接重新拉起（docs/ARCHITECTURE §5.5）。"""
         started = 0
         for row in rows:
-            if not row.desired_running or row.deleted_at is not None:
+            if not row.desired_running:
                 continue
             try:
                 config = decrypt_config(row)

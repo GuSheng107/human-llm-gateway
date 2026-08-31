@@ -26,7 +26,6 @@ from ...core.constants import (
     TOOL_MIN_TIMEOUT_SECONDS,
 )
 from ...core.db import begin_immediate_if_sqlite
-from ...core.time import utc_now
 from ...domain.enums import (
     AuditAction,
     AuditResult,
@@ -131,7 +130,7 @@ class ToolService:
     def list_whitelist(
         self, session: Session, *, include_disabled: bool = True
     ) -> list[ToolWhitelist]:
-        filters = [ToolWhitelist.deleted_at.is_(None)]
+        filters = []
         if not include_disabled:
             filters.append(ToolWhitelist.is_enabled.is_(True))
         return list(
@@ -180,9 +179,7 @@ class ToolService:
         argument_names = _validate_arguments_schema(arguments_schema)
         validate_command_template(command_template, argument_names)
         existing = session.execute(
-            select(ToolWhitelist).where(
-                ToolWhitelist.name == cleaned_name, ToolWhitelist.deleted_at.is_(None)
-            )
+            select(ToolWhitelist).where(ToolWhitelist.name == cleaned_name)
         ).scalar_one_or_none()
         if existing is not None:
             raise DomainError(DomainErrorCode.CONFLICT, "同名工具已存在", status_code=409)
@@ -272,8 +269,7 @@ class ToolService:
         if actor.role is not UserRole.ADMIN:
             raise DomainError(DomainErrorCode.FORBIDDEN, "需要管理员权限", status_code=403)
         begin_immediate_if_sqlite(session)
-        row.deleted_at = utc_now()
-        row.is_enabled = False
+        session.delete(row)
         session.flush()
         self.audit.add(
             session,
@@ -281,7 +277,6 @@ class ToolService:
             resource_type="tool_whitelist",
             resource_id=str(row.id),
             actor_user_id=actor.id,
-            metadata={"fields": ["deleted_at", "is_enabled"]},
         )
 
     # ------------------------------------------------------------------
@@ -317,7 +312,7 @@ class ToolService:
                 status_code=400,
             )
         tool = session.get(ToolWhitelist, tool_id)
-        if tool is None or tool.deleted_at is not None:
+        if tool is None:
             self.audit.add(
                 session,
                 action=AuditAction.TOOL_EXECUTION_DENIED,

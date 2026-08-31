@@ -145,7 +145,7 @@ class InvitationService:
             raise DomainError(
                 DomainErrorCode.CONFLICT, "只有已撤销的邀请码可以删除", status_code=409
             )
-        if self.invitations.soft_delete(session, row.id):
+        if self.invitations.delete(session, row.id):
             self.audit.add(
                 session,
                 action=AuditAction.INVITATION_DELETED,

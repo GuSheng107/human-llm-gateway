@@ -38,14 +38,14 @@ class FakeModel(TimestampMixin, Base):
             "uq_fake_models_system_model",
             "model_id",
             unique=True,
-            sqlite_where=text("scope = 'system' AND deleted_at IS NULL"),
+            sqlite_where=text("scope = 'system'"),
         ),
         Index(
             "uq_fake_models_private_model",
             "owner_user_id",
             "model_id",
             unique=True,
-            sqlite_where=text("scope = 'private' AND deleted_at IS NULL"),
+            sqlite_where=text("scope = 'private'"),
         ),
         Index("ix_fake_models_scope_enabled_sort", "scope", "is_enabled", "sort_order"),
         Index("ix_fake_models_owner_enabled_sort", "owner_user_id", "is_enabled", "sort_order"),
@@ -81,7 +81,6 @@ class FakeModel(TimestampMixin, Base):
     logo_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ModelGroup(TimestampMixin, Base):
@@ -92,7 +91,6 @@ class ModelGroup(TimestampMixin, Base):
             "owner_user_id",
             "name",
             unique=True,
-            sqlite_where=text("deleted_at IS NULL"),
         ),
     )
 
@@ -103,7 +101,6 @@ class ModelGroup(TimestampMixin, Base):
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # 公开分组对所有用户可见可用（只读）；私有分组仅 owner 可见。
     is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ModelGroupItem(Base):

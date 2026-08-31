@@ -386,17 +386,13 @@ class FakeModelRepository:
     # ------------------------------------------------------------------
 
     def get(self, session: Session, model_pk: int) -> FakeModel | None:
-        row = session.get(FakeModel, model_pk)
-        if row is None or row.deleted_at is not None:
-            return None
-        return row
+        return session.get(FakeModel, model_pk)
 
     def find_system_by_model_id(self, session: Session, model_id: str) -> FakeModel | None:
         return session.execute(
             select(FakeModel).where(
                 FakeModel.scope == FakeModelScope.SYSTEM,
                 FakeModel.model_id == model_id,
-                FakeModel.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
 
@@ -408,7 +404,6 @@ class FakeModelRepository:
                 FakeModel.scope == FakeModelScope.PRIVATE,
                 FakeModel.owner_user_id == owner_user_id,
                 FakeModel.model_id == model_id,
-                FakeModel.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
 
@@ -422,7 +417,6 @@ class FakeModelRepository:
         rows = list(
             session.scalars(
                 select(FakeModel).where(
-                    FakeModel.deleted_at.is_(None),
                     or_(
                         FakeModel.owner_user_id.is_(None),  # 系统模型
                         FakeModel.owner_user_id == owner_user_id,  # 自己的私有模型
@@ -450,7 +444,6 @@ class FakeModelRepository:
         return list(
             session.scalars(
                 select(FakeModel)
-                .where(FakeModel.deleted_at.is_(None))
                 .order_by(FakeModel.scope, FakeModel.sort_order, FakeModel.id)
             )
         )
@@ -458,7 +451,7 @@ class FakeModelRepository:
     def list_governance(
         self, session: Session, *, page: int, page_size: int, search: str | None = None
     ) -> tuple[list[FakeModel], int]:
-        filters = [FakeModel.deleted_at.is_(None)]
+        filters = []
         if search:
             term = search.strip()
             filters.append(FakeModel.model_id.ilike(f"%{term}%"))
@@ -478,22 +471,17 @@ class FakeModelRepository:
         session.add(model)
         return model
 
-    def soft_delete(self, session: Session, model_pk: int) -> None:
-        session.execute(
-            update(FakeModel)
-            .where(FakeModel.id == model_pk, FakeModel.deleted_at.is_(None))
-            .values(deleted_at=_now(), updated_at=_now())
-        )
+    def delete(self, session: Session, model_pk: int) -> None:
+        row = session.get(FakeModel, model_pk)
+        if row is not None:
+            session.delete(row)
 
     # ------------------------------------------------------------------
     # 模型分组
     # ------------------------------------------------------------------
 
     def get_group(self, session: Session, group_pk: int) -> ModelGroup | None:
-        row = session.get(ModelGroup, group_pk)
-        if row is None or row.deleted_at is not None:
-            return None
-        return row
+        return session.get(ModelGroup, group_pk)
 
     def find_group_by_name(
         self, session: Session, owner_user_id: int, name: str
@@ -502,7 +490,6 @@ class FakeModelRepository:
             select(ModelGroup).where(
                 ModelGroup.owner_user_id == owner_user_id,
                 ModelGroup.name == name,
-                ModelGroup.deleted_at.is_(None),
             )
         ).scalar_one_or_none()
 
@@ -515,7 +502,7 @@ class FakeModelRepository:
         page: int,
         page_size: int,
     ) -> tuple[list[ModelGroup], int]:
-        filters = [ModelGroup.deleted_at.is_(None)]
+        filters = []
         if owner_user_id is not None:
             if include_public:
                 filters.append(
@@ -549,7 +536,6 @@ class FakeModelRepository:
                 .join(ModelGroupItem, ModelGroupItem.fake_model_id == FakeModel.id)
                 .where(
                     ModelGroupItem.model_group_id == group_pk,
-                    FakeModel.deleted_at.is_(None),
                 )
                 .order_by(FakeModel.sort_order, FakeModel.id)
             )
@@ -564,12 +550,10 @@ class FakeModelRepository:
             session.add(ModelGroupItem(model_group_id=group_pk, fake_model_id=model_pk))
         session.flush()
 
-    def soft_delete_group(self, session: Session, group_pk: int) -> None:
-        session.execute(
-            update(ModelGroup)
-            .where(ModelGroup.id == group_pk, ModelGroup.deleted_at.is_(None))
-            .values(deleted_at=_now(), updated_at=_now())
-        )
+    def delete_group(self, session: Session, group_pk: int) -> None:
+        row = session.get(ModelGroup, group_pk)
+        if row is not None:
+            session.delete(row)
 
     def count_enabled_api_key_references_for_group(self, session: Session, group_pk: int) -> int:
         from .models import ApiKey
@@ -581,7 +565,6 @@ class FakeModelRepository:
                 .where(
                     ApiKey.model_group_id == group_pk,
                     ApiKey.is_enabled.is_(True),
-                    ApiKey.deleted_at.is_(None),
                 )
             )
             or 0

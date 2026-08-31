@@ -17,12 +17,7 @@ def _now() -> datetime:
 
 class InvitationRepository:
     def get(self, session: Session, invitation_id: int) -> InvitationCode | None:
-        return session.execute(
-            select(InvitationCode).where(
-                InvitationCode.id == invitation_id,
-                InvitationCode.deleted_at.is_(None),
-            )
-        ).scalar_one_or_none()
+        return session.get(InvitationCode, invitation_id)
 
     def list_page(
         self,
@@ -32,7 +27,7 @@ class InvitationRepository:
         page_size: int,
         search: str | None = None,
     ) -> tuple[list[InvitationCode], int]:
-        filters = [InvitationCode.deleted_at.is_(None)]
+        filters = []
         if search:
             term = search.strip()
             filters.append(
@@ -60,7 +55,6 @@ class InvitationRepository:
             session.scalars(
                 select(InvitationCode).where(
                     InvitationCode.code_prefix == code_prefix,
-                    InvitationCode.deleted_at.is_(None),
                 )
             )
         )
@@ -75,7 +69,6 @@ class InvitationRepository:
             update(InvitationCode)
             .where(
                 InvitationCode.id == invitation_id,
-                InvitationCode.deleted_at.is_(None),
                 InvitationCode.revoked_at.is_(None),
                 (InvitationCode.expires_at.is_(None)) | (InvitationCode.expires_at > _now()),
                 InvitationCode.used_count < InvitationCode.max_uses,
@@ -89,21 +82,20 @@ class InvitationRepository:
             update(InvitationCode)
             .where(
                 InvitationCode.id == invitation_id,
-                InvitationCode.deleted_at.is_(None),
                 InvitationCode.revoked_at.is_(None),
             )
             .values(revoked_at=_now(), updated_at=_now())
         )
         return result.rowcount == 1
 
-    def soft_delete(self, session: Session, invitation_id: int) -> bool:
-        result = session.execute(
-            update(InvitationCode)
-            .where(
+    def delete(self, session: Session, invitation_id: int) -> bool:
+        row = session.execute(
+            select(InvitationCode).where(
                 InvitationCode.id == invitation_id,
                 InvitationCode.revoked_at.is_not(None),
-                InvitationCode.deleted_at.is_(None),
             )
-            .values(deleted_at=_now(), updated_at=_now())
-        )
-        return result.rowcount == 1
+        ).scalar_one_or_none()
+        if row is None:
+            return False
+        session.delete(row)
+        return True

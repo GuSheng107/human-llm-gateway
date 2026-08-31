@@ -305,7 +305,7 @@ class FakeModelService:
 
     def delete(self, session: Session, *, row: FakeModel, actor: User) -> None:
         self._ensure_manageable(row, actor)
-        self.catalog.soft_delete(session, row.id)
+        self.catalog.delete(session, row.id)
         self.audit.add(
             session,
             action=AuditAction.FAKE_MODEL_DELETED,
@@ -313,7 +313,6 @@ class FakeModelService:
             resource_id=str(row.id),
             actor_user_id=actor.id,
             owner_user_id=row.owner_user_id,
-            metadata={"fields": ["deleted_at"]},
         )
 
     def _ensure_manageable(self, row: FakeModel, actor: User) -> None:
@@ -463,7 +462,7 @@ class ModelGroupService:
             raise DomainError(
                 DomainErrorCode.CONFLICT, "分组仍被启用的 API Key 引用", status_code=409
             )
-        self.catalog.soft_delete_group(session, row.id)
+        self.catalog.delete_group(session, row.id)
         self.audit.add(
             session,
             action=AuditAction.MODEL_GROUP_DELETED,
@@ -471,5 +470,4 @@ class ModelGroupService:
             resource_id=str(row.id),
             actor_user_id=actor.id,
             owner_user_id=row.owner_user_id,
-            metadata={"fields": ["deleted_at"]},
         )

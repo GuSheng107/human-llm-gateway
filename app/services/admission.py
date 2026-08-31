@@ -21,7 +21,7 @@ class AdmissionService:
 
     def acquire_slot(self, session: Session, key: ApiKey, owner: User) -> None:
         """原子占用用户活动任务名额；超过上限返回协议兼容 429。"""
-        if not key.is_enabled or key.deleted_at is not None:
+        if not key.is_enabled:
             raise DomainError(DomainErrorCode.INVALID_API_KEY, "API Key 无效", status_code=401)
         # 在任何读取前取得写锁，避免事务升级竞争（先锁后读）。
         begin_immediate_if_sqlite(session)

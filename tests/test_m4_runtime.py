@@ -26,7 +26,6 @@ class _FakeRow:
         self.platform = platform
         self.retry_count = retry_count
         self.desired_running = True
-        self.deleted_at = None
 
 
 class FlakyConnector(Connector):

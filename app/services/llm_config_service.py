@@ -566,7 +566,7 @@ class LlmConfigService:
         return row
 
     # ------------------------------------------------------------------
-    # 删除（被引用时拒绝，软删除并清空 Secret�?
+    # 删除（被引用时拒绝，物理删除并清空 Secret）
     # ------------------------------------------------------------------
 
     def delete(self, session: Session, *, row: LlmConfig, actor: User) -> None:
@@ -583,7 +583,7 @@ class LlmConfigService:
                 ),
                 status_code=409,
             )
-        self.repo.soft_delete(session, row.id)
+        self.repo.delete(session, row.id)
         self.audit.add(
             session,
             action=AuditAction.LLM_CONFIG_DELETED,
@@ -591,7 +591,7 @@ class LlmConfigService:
             resource_id=str(row.id),
             actor_user_id=actor.id,
             owner_user_id=row.owner_user_id,
-            metadata={"fields": ["deleted_at", "is_enabled", "secret", "headers"]},
+            metadata={"fields": ["is_enabled", "secret", "headers"]},
         )
 
     # ------------------------------------------------------------------

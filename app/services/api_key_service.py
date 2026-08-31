@@ -220,8 +220,8 @@ class ApiKeyService:
         return row
 
     def delete(self, session: Session, *, row: ApiKey, actor: User) -> None:
-        """立即阻止新请求并软删除；已准入任务按快照继续（FK 保留）。"""
-        self.repo.soft_delete(session, row.id)
+        """立即阻止新请求并物理删除；已准入任务按快照继续（FK 保留）。"""
+        self.repo.delete(session, row.id)
         self.audit.add(
             session,
             action=AuditAction.API_KEY_DELETED,
@@ -229,7 +229,7 @@ class ApiKeyService:
             resource_id=str(row.id),
             actor_user_id=actor.id,
             owner_user_id=row.owner_user_id,
-            metadata={"fields": ["deleted_at", "is_enabled"]},
+            metadata={"fields": ["is_enabled"]},
         )
 
     # ------------------------------------------------------------------
@@ -293,7 +293,7 @@ class ApiKeyService:
             from ..repositories.models import LlmConfig
 
             config = session.get(LlmConfig, llm_config_id)
-            if config is None or config.deleted_at is not None or config.owner_user_id != owner_id:
+            if config is None or config.owner_user_id != owner_id:
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED,
                     "LLM 配置必须是自己的有效配置",

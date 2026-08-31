@@ -138,7 +138,7 @@ async def websocket_endpoint(
     await websocket.accept()
     with SessionLocal() as db:
         row = _repo.get(db, connection_id)
-        if row is None or row.platform != "websocket" or row.deleted_at is not None:
+        if row is None or row.platform != "websocket":
             await websocket.close(code=4404)
             return
         if not row.desired_running:

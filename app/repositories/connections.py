@@ -25,10 +25,7 @@ class ConnectionRepository:
     # ------------------------------------------------------------------
 
     def get(self, session: Session, connection_id: int) -> ImConnection | None:
-        row = session.get(ImConnection, connection_id)
-        if row is None or row.deleted_at is not None:
-            return None
-        return row
+        return session.get(ImConnection, connection_id)
 
     def get_owned(
         self, session: Session, connection_id: int, owner_user_id: int
@@ -49,7 +46,7 @@ class ConnectionRepository:
         platform: str | None = None,
         state: ConnectionState | None = None,
     ) -> tuple[list[ImConnection], int]:
-        filters: list[Any] = [ImConnection.deleted_at.is_(None)]
+        filters: list[Any] = []
         if owner_user_id is not None:
             filters.append(ImConnection.owner_user_id == owner_user_id)
         if platform:
@@ -75,7 +72,6 @@ class ConnectionRepository:
         return list(
             session.scalars(
                 select(ImConnection).where(
-                    ImConnection.deleted_at.is_(None),
                     ImConnection.desired_running.is_(True),
                 )
             )
@@ -91,7 +87,6 @@ class ConnectionRepository:
                 .where(
                     ApiKey.im_connection_id == connection_id,
                     ApiKey.is_enabled.is_(True),
-                    ApiKey.deleted_at.is_(None),
                 )
             )
             or 0
@@ -105,12 +100,10 @@ class ConnectionRepository:
         session.add(connection)
         return connection
 
-    def soft_delete(self, session: Session, connection_id: int) -> None:
-        session.execute(
-            update(ImConnection)
-            .where(ImConnection.id == connection_id, ImConnection.deleted_at.is_(None))
-            .values(deleted_at=_now(), updated_at=_now())
-        )
+    def delete(self, session: Session, connection_id: int) -> None:
+        row = session.get(ImConnection, connection_id)
+        if row is not None:
+            session.delete(row)
 
     def set_desired_running(self, session: Session, connection_id: int, desired: bool) -> None:
         session.execute(

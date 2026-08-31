@@ -39,7 +39,6 @@ class ToolWhitelist(TimestampMixin, Base):
     arguments_schema_json: Mapped[str] = mapped_column(Text, nullable=False)
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ToolExecution(Base):

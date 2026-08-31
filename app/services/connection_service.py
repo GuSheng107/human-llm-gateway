@@ -235,13 +235,13 @@ class ConnectionService:
                 "连接仍被启用的 API Key 引用，请先改用 Web 入口或停用 Key",
                 status_code=409,
             )
-        # 先停止运行中的连接器，避免软删后线程/长连接泄漏并继续接收入站消息。
+        # 先停止运行中的连接器，避免删除后线程/长连接泄漏并继续接收入站消息。
         from ..connectors import connection_manager as manager
 
         await manager.stop(row.id)
         row.desired_running = False
         await run_in_threadpool(session.flush)
-        await run_in_threadpool(self.repo.soft_delete, session, row.id)
+        await run_in_threadpool(self.repo.delete, session, row.id)
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_DELETED,
@@ -249,7 +249,6 @@ class ConnectionService:
             resource_id=str(row.id),
             actor_user_id=actor_user_id,
             owner_user_id=row.owner_user_id,
-            metadata={"fields": ["deleted_at"]},
         )
 
     # ------------------------------------------------------------------

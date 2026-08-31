@@ -13,7 +13,6 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
-    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,7 +43,6 @@ class ApiKey(TimestampMixin, Base):
             "owner_user_id",
             "name",
             unique=True,
-            sqlite_where=text("deleted_at IS NULL"),
         ),
         Index("ix_api_keys_owner", "owner_user_id"),
         Index("ix_api_keys_owner_enabled", "owner_user_id", "is_enabled"),
@@ -68,7 +66,6 @@ class ApiKey(TimestampMixin, Base):
     human_timeout_seconds: Mapped[int] = mapped_column(Integer, default=300, nullable=False)
     model_group_id: Mapped[int | None] = mapped_column(ForeignKey("model_groups.id"), nullable=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ApiKeyFakeModel(Base):

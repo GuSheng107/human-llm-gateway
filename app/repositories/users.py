@@ -154,32 +154,26 @@ class UserRepository:
             "im_connections": count(
                 ImConnection,
                 ImConnection.owner_user_id == user_id,
-                ImConnection.deleted_at.is_(None),
             ),
             "llm_configs": count(
                 LlmConfig,
                 LlmConfig.owner_user_id == user_id,
-                LlmConfig.deleted_at.is_(None),
             ),
             "fake_models": count(
                 FakeModel,
                 FakeModel.owner_user_id == user_id,
-                FakeModel.deleted_at.is_(None),
             ),
             "model_groups": count(
                 ModelGroup,
                 ModelGroup.owner_user_id == user_id,
-                ModelGroup.deleted_at.is_(None),
             ),
             "api_keys": count(
                 ApiKey,
                 ApiKey.owner_user_id == user_id,
-                ApiKey.deleted_at.is_(None),
             ),
             "tasks": count(RequestTask, RequestTask.owner_user_id == user_id),
             "assistant_sessions": count(
                 AssistantSession,
                 AssistantSession.owner_user_id == user_id,
-                AssistantSession.deleted_at.is_(None),
             ),
         }

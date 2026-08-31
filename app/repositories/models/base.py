@@ -24,9 +24,5 @@ class TimestampMixin:
     )
 
 
-class SoftDeleteMixin:
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-
 class VersionMixin:
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)

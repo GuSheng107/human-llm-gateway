@@ -51,10 +51,7 @@ class AssistantService:
         return list(
             session.scalars(
                 select(AssistantSession)
-                .where(
-                    AssistantSession.owner_user_id == user.id,
-                    AssistantSession.deleted_at.is_(None),
-                )
+                .where(AssistantSession.owner_user_id == user.id)
                 .order_by(
                     AssistantSession.last_message_at.desc().nullslast(),
                     AssistantSession.id.desc(),
@@ -86,14 +83,14 @@ class AssistantService:
 
     def get_session(self, session: Session, *, user: User, session_id: int) -> AssistantSession:
         row = session.get(AssistantSession, session_id)
-        if row is None or row.deleted_at is not None or row.owner_user_id != user.id:
+        if row is None or row.owner_user_id != user.id:
             raise DomainError(DomainErrorCode.NOT_FOUND, "会话不存在", status_code=404)
         return row
 
     def delete_session(self, session: Session, *, user: User, session_id: int) -> None:
         row = self.get_session(session, user=user, session_id=session_id)
         begin_immediate_if_sqlite(session)
-        row.deleted_at = utc_now()
+        session.delete(row)
         session.flush()
 
     def list_messages(
@@ -325,11 +322,7 @@ class AssistantService:
         """落库 assistant 回复并推进会话 last_message_at（调用方负责提交）。"""
         begin_immediate_if_sqlite(session)
         current_session = session.get(AssistantSession, assistant_session_id, with_for_update=True)
-        if (
-            current_session is None
-            or current_session.deleted_at is not None
-            or current_session.owner_user_id != owner_user_id
-        ):
+        if current_session is None or current_session.owner_user_id != owner_user_id:
             raise DomainError(DomainErrorCode.NOT_FOUND, "会话不存在", status_code=404)
         reply_message = AssistantMessage(
             session_id=assistant_session_id,
@@ -557,10 +550,7 @@ def count_active_sessions(session: Session, user_id: int) -> int:
         session.scalar(
             select(func.count())
             .select_from(AssistantSession)
-            .where(
-                AssistantSession.owner_user_id == user_id,
-                AssistantSession.deleted_at.is_(None),
-            )
+            .where(AssistantSession.owner_user_id == user_id)
         )
         or 0
     )

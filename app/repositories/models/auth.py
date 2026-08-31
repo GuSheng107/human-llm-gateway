@@ -80,7 +80,6 @@ class InvitationCode(TimestampMixin, Base):
     used_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # 索引（模块级声明，绑定表）
@@ -92,9 +91,8 @@ Index(
     AuthSession.expires_at,
 )
 Index(
-    "ix_invitation_codes_expires_revoked_deleted",
+    "ix_invitation_codes_expires_revoked",
     InvitationCode.expires_at,
     InvitationCode.revoked_at,
-    InvitationCode.deleted_at,
 )
 Index("ix_invitation_codes_created_by", InvitationCode.created_by_user_id)

@@ -22,10 +22,7 @@ class ApiKeyRepository:
     # ------------------------------------------------------------------
 
     def get(self, session: Session, key_pk: int) -> ApiKey | None:
-        row = session.get(ApiKey, key_pk)
-        if row is None or row.deleted_at is not None:
-            return None
-        return row
+        return session.get(ApiKey, key_pk)
 
     def get_owned(self, session: Session, key_pk: int, owner_user_id: int) -> ApiKey | None:
         row = self.get(session, key_pk)
@@ -42,7 +39,7 @@ class ApiKeyRepository:
         owner_user_id: int | None = None,
         search: str | None = None,
     ) -> tuple[list[ApiKey], int]:
-        filters: list = [ApiKey.deleted_at.is_(None)]
+        filters: list = []
         if owner_user_id is not None:
             filters.append(ApiKey.owner_user_id == owner_user_id)
         if search:
@@ -68,7 +65,6 @@ class ApiKeyRepository:
             session.scalars(
                 select(ApiKey).where(
                     ApiKey.key_prefix == key_prefix,
-                    ApiKey.deleted_at.is_(None),
                 )
             )
         )
@@ -105,12 +101,10 @@ class ApiKeyRepository:
             update(ApiKey).where(ApiKey.id == key_pk).values(is_enabled=enabled, updated_at=_now())
         )
 
-    def soft_delete(self, session: Session, key_pk: int) -> None:
-        session.execute(
-            update(ApiKey)
-            .where(ApiKey.id == key_pk, ApiKey.deleted_at.is_(None))
-            .values(is_enabled=False, deleted_at=_now(), updated_at=_now())
-        )
+    def delete(self, session: Session, key_pk: int) -> None:
+        row = session.get(ApiKey, key_pk)
+        if row is not None:
+            session.delete(row)
 
     # ------------------------------------------------------------------
     # M3 治理支持（保留既有接口）
@@ -124,7 +118,6 @@ class ApiKeyRepository:
                 .where(
                     ApiKey.owner_user_id == user_id,
                     ApiKey.is_enabled.is_(True),
-                    ApiKey.deleted_at.is_(None),
                 )
             )
             or 0
@@ -136,7 +129,6 @@ class ApiKeyRepository:
             .where(
                 ApiKey.owner_user_id == user_id,
                 ApiKey.is_enabled.is_(True),
-                ApiKey.deleted_at.is_(None),
             )
             .values(is_enabled=False, updated_at=_now())
         )

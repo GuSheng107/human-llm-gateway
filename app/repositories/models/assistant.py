@@ -23,7 +23,7 @@ from .base import TimestampMixin, sa_enum, utc_now
 class AssistantSession(TimestampMixin, Base):
     __tablename__ = "assistant_sessions"
     __table_args__ = (
-        Index("ix_assistant_sessions_owner", "owner_user_id", "deleted_at", "last_message_at"),
+        Index("ix_assistant_sessions_owner", "owner_user_id", "last_message_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -31,7 +31,6 @@ class AssistantSession(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     llm_config_id: Mapped[int | None] = mapped_column(ForeignKey("llm_configs.id"), nullable=True)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class AssistantMessage(Base):

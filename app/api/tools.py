@@ -124,7 +124,7 @@ class ExecuteResultView(ExecutionView):
 
 def _get_tool(db: Session, tool_id: int) -> ToolWhitelist:
     row = db.get(ToolWhitelist, tool_id)
-    if row is None or row.deleted_at is not None:
+    if row is None:
         raise DomainError(DomainErrorCode.NOT_FOUND, "工具不存在", status_code=404)
     return row
 
