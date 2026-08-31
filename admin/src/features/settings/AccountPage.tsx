@@ -11,7 +11,21 @@ import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
 
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
-const MAX_AVATAR_BYTES = 256 * 1024;
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const AVATAR_TARGET_BYTES = 1024 * 1024;
+
+function drawCoverPng(img: HTMLImageElement, size: number): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("无法处理图片");
+  const min = Math.min(img.width, img.height);
+  const sx = (img.width - min) / 2;
+  const sy = (img.height - min) / 2;
+  ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
+  return canvas.toDataURL("image/png");
+}
 
 function resizeToPng(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -19,20 +33,20 @@ function resizeToPng(file: File): Promise<string> {
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const size = 160;
-        const canvas = document.createElement("canvas");
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          reject(new Error("无法处理图片"));
-          return;
+        try {
+          let result = drawCoverPng(img, 320);
+          // 输出超过 1MB 时降级到 200x200 再输出。
+          if (result.length > AVATAR_TARGET_BYTES) {
+            result = drawCoverPng(img, 200);
+          }
+          if (result.length > AVATAR_TARGET_BYTES * 2) {
+            reject(new Error("头像处理失败"));
+            return;
+          }
+          resolve(result);
+        } catch (error) {
+          reject(error);
         }
-        const min = Math.min(img.width, img.height);
-        const sx = (img.width - min) / 2;
-        const sy = (img.height - min) / 2;
-        ctx.drawImage(img, sx, sy, min, min, 0, 0, size, size);
-        resolve(canvas.toDataURL("image/png"));
       };
       img.onerror = () => reject(new Error("图片加载失败"));
       img.src = reader.result as string;
@@ -62,7 +76,7 @@ export function AccountPage() {
   const onAvatarChange = async (file: File | null) => {
     if (!file) return;
     if (file.size > MAX_AVATAR_BYTES) {
-      setError("头像原图需小于 256KB");
+      setError("头像原图需小于 2MB");
       return;
     }
     try {

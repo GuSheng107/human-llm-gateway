@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../../features/auth/AuthContext";
+import { BrandLogo } from "../brand/Brand";
 import { Icon } from "../../icons";
 import { canAccess, matchNavigation, NAVIGATION } from "../../navigation";
 
@@ -51,9 +52,7 @@ export function AppShell() {
     <div className="min-h-screen bg-page text-slate-700 lg:grid lg:grid-cols-[224px_minmax(0,1fr)]">
       <aside className="fixed inset-y-0 left-0 z-30 hidden w-56 flex-col bg-sidebar text-slate-300 shadow-modal lg:flex">
         <div className="flex h-16 items-center gap-3 border-b border-white/10 px-5">
-          <div className="grid h-9 w-9 place-items-center rounded-lg bg-primary font-mono text-sm font-bold text-white shadow-card">
-            H
-          </div>
+          <BrandLogo size="sm" />
           <div className="text-sm font-semibold tracking-wide text-white">能工智人</div>
         </div>
         {navBody}

@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { changePasswordForced } from "../../api/auth";
+import { Brand } from "../../components/brand/Brand";
 import { FormField } from "../../components/form/FormField";
 import { PasswordInput } from "../../components/form/PasswordInput";
 import { PasswordStrength, passwordValid } from "../../components/form/PasswordStrength";
@@ -50,8 +51,8 @@ export function ForcePasswordPage() {
       />
       <section className="relative w-full max-w-md animate-slide-up rounded-2xl border border-white/70 bg-white/80 p-8 shadow-modal backdrop-blur-xl">
         <div className="mb-6">
-          <div className="mb-4 grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-amber-400 to-amber-500 font-mono font-bold text-white shadow-card">
-            !
+          <div className="mb-4">
+            <Brand size="md" />
           </div>
           <h1 className="text-xl font-semibold text-slate-800">首次登录需要修改密码</h1>
           <p className="mt-2 text-xs leading-5 text-slate-400">改完即可进入控制台。</p>

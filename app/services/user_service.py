@@ -213,7 +213,7 @@ class UserService:
             if normalized_avatar is None:
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED,
-                    "头像需为 PNG/JPEG 且不超过 256KB",
+                    "头像需为 PNG/JPEG 且不超过 2MB",
                     status_code=400,
                 )
             user.avatar_base64 = normalized_avatar or None

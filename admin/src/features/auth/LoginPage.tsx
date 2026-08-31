@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../../api/client";
+import { Brand } from "../../components/brand/Brand";
 import { CaptchaInput } from "../../components/form/CaptchaInput";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
@@ -134,17 +135,7 @@ export function LoginPage() {
           />
 
           <div className="relative">
-            <div className="flex items-center gap-3">
-              <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-light text-white shadow-card">
-                <Icon name="gateway" className="h-6 w-6" strokeWidth={1.7} />
-              </div>
-              <div>
-                <div className="text-base font-semibold text-slate-800">能工智人</div>
-                <div className="mt-0.5 text-xs uppercase tracking-widest text-slate-400">
-                  operator console
-                </div>
-              </div>
-            </div>
+            <Brand size="lg" withText />
             <h1 className="mt-12 text-3xl font-semibold leading-tight text-slate-900">
               真人驱动的模型兼容网关
             </h1>
@@ -223,9 +214,7 @@ export function LoginPage() {
       <section className="relative flex items-center justify-center px-5 py-12">
         <div className="w-full max-w-[400px] animate-slide-up">
           <div className="mb-8 lg:hidden">
-            <div className="grid h-11 w-11 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-light text-white shadow-card">
-              <Icon name="gateway" className="h-6 w-6" strokeWidth={1.7} />
-            </div>
+            <Brand size="lg" />
           </div>
 
           <div className="rounded-2xl border border-white/70 bg-white/80 p-8 shadow-modal backdrop-blur-xl">

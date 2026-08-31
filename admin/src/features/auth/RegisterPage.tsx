@@ -1,6 +1,7 @@
 import { type FormEvent, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { registerAccount } from "../../api/auth";
+import { Brand } from "../../components/brand/Brand";
 import { CaptchaInput } from "../../components/form/CaptchaInput";
 import { FormField } from "../../components/form/FormField";
 import { PasswordInput } from "../../components/form/PasswordInput";
@@ -8,7 +9,6 @@ import { PasswordStrength, passwordValid } from "../../components/form/PasswordS
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { notify } from "../../components/feedback/Toast";
 import { Button } from "../../components/ui/Button";
-import { Icon } from "../../icons";
 
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
@@ -87,9 +87,7 @@ export function RegisterPage() {
 
       <section className="relative w-full max-w-lg animate-slide-up rounded-2xl border border-white/70 bg-white/80 p-8 shadow-modal backdrop-blur-xl">
         <div className="mb-7 flex items-center gap-3">
-          <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-primary to-primary-light text-white shadow-card">
-            <Icon name="gateway" className="h-5 w-5" strokeWidth={1.7} />
-          </div>
+          <Brand size="md" />
           <h1 className="text-xl font-semibold text-slate-800">使用邀请码注册</h1>
         </div>
         <form onSubmit={submit} className="space-y-4">

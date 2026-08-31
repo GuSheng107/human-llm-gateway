@@ -16,7 +16,7 @@ USERNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
 EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
 
 # 头像：base64 解码后（原图）上限 256 KiB。
-MAX_AVATAR_BYTES = 256 * 1024
+MAX_AVATAR_BYTES = 2 * 1024 * 1024
 
 _MIN_PASSWORD_CODEPOINTS = 10
 _MAX_PASSWORD_CODEPOINTS = 128

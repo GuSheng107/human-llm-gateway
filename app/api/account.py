@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/account", tags=["account"])
 class ProfileUpdate(StrictModel):
     display_name: str = Field(min_length=1, max_length=100)
     email: str | None = Field(default=None, max_length=255)
-    avatar_base64: str | None = Field(default=None, max_length=400_000)
+    avatar_base64: str | None = Field(default=None, max_length=2_000_000)
 
 
 class PasswordChange(StrictModel):
