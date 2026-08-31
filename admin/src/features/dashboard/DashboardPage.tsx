@@ -58,6 +58,7 @@ export function DashboardPage() {
       <PageHeader
         title={isAdmin ? "监管控制台" : "控制台"}
         description={isAdmin ? "全局运行概览与治理数据" : "账号与任务概览"}
+        dismissId="dashboard"
       />
 
       {error && <ErrorBanner message={error} />}

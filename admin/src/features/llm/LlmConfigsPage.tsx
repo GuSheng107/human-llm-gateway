@@ -213,6 +213,7 @@ export function LlmConfigsPage() {
       <PageHeader
         title="LLM 管理"
         description="配置转发用的真实 LLM：协议、地址、模型、超时与自定义 Header"
+        dismissId="llm-configs"
       />
 
       <Card>

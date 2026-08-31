@@ -136,6 +136,7 @@ export function ModelsPage() {
     <div className="space-y-5">
       <PageHeader
         title="模型目录"
+        dismissId="models"
         description={
           isAdmin
             ? "维护系统模型与分组"

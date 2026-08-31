@@ -65,6 +65,7 @@ export function TasksPage() {
       <PageHeader
         title="任务工作台"
         description={isAdmin ? "全部任务（只读）" : "处理你的人工任务并提交回复"}
+        dismissId="tasks"
       />
 
       <Card>

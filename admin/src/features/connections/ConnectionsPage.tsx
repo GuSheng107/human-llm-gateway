@@ -124,6 +124,7 @@ export function ConnectionsPage() {
       <PageHeader
         title="连接 IM"
         description={isAdmin ? "查看、检查、启停和删除全部连接" : "创建并管理自己的 IM 连接"}
+        dismissId="connections"
         actions={
           !isAdmin && (
             <Button onClick={() => setEditing(null)} disabled={platforms.length === 0}>
