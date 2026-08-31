@@ -79,3 +79,21 @@ export function createBinding(id: string): Promise<BindingCode> {
 export function bindingStatus(id: string): Promise<BindingStatus> {
   return api<BindingStatus>(`/api/im-connections/${id}/binding/status`);
 }
+
+export interface QrLoginStart {
+  qrcode: string;
+  qrcode_img_content: string;
+}
+
+export interface QrLoginPoll {
+  status: string;
+  bot_token?: string;
+}
+
+export function startQrLogin(id: string): Promise<QrLoginStart> {
+  return api<QrLoginStart>(`/api/im-connections/${id}/login`, { method: "POST" });
+}
+
+export function pollQrLogin(id: string): Promise<QrLoginPoll> {
+  return api<QrLoginPoll>(`/api/im-connections/${id}/login`);
+}

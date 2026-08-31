@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import inspect
 import json
@@ -392,6 +393,10 @@ class ConnectionService:
             )
         connector = self._ensure_connector(row)
         result = _run_coroutine(connector.start_login())
+        # qrcode_img_content 为 PNG bytes，转成 base64 供前端 data URL 渲染。
+        raw_img = result.get("qrcode_img_content")
+        if isinstance(raw_img, (bytes, bytearray)):
+            result["qrcode_img_content"] = base64.b64encode(bytes(raw_img)).decode("ascii")
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_LOGIN_STARTED,

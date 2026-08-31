@@ -128,7 +128,13 @@ def build_default_registry() -> ConnectorRegistry:
             supports_delivery=True,
             supports_login=True,
             config_fields=(
-                ConfigField(name="token", label="iLink Token", required=True, secret=True),
+                # token 非必填：扫码登录成功后由前端写回；也可手动粘贴已有 token。
+                ConfigField(
+                    name="token",
+                    label="iLink Token",
+                    secret=True,
+                    description="通过扫码登录自动获取，或手动粘贴已有 Token。",
+                ),
                 ConfigField(
                     name="base_url",
                     label="服务地址",

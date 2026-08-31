@@ -44,10 +44,8 @@ class WeComIlinkConnector(Connector):
 
     @classmethod
     def validate_config(cls, config: dict[str, Any]) -> list[str]:
-        problems: list[str] = []
-        if not config.get("token"):
-            problems.append("缺少 iLink Token")
-        return problems
+        # token 允许为空：扫码登录成功后再写回；缺失 token 仅影响 start。
+        return []
 
     def bind_inbound(self, callback) -> None:
         self._inbound = callback
@@ -61,7 +59,10 @@ class WeComIlinkConnector(Connector):
         self._thread_error = None
         self._loop = asyncio.get_running_loop()
         config = self.ctx.config
-        kwargs: dict[str, Any] = {"token": str(config["token"])}
+        token = str(config.get("token") or "")
+        if not token:
+            raise ConnectorError(ERROR_AUTH, "缺少 iLink Token，请先扫码登录")
+        kwargs: dict[str, Any] = {"token": token}
         if config.get("base_url"):
             kwargs["base_url"] = str(config["base_url"])
         self._client = Client(**kwargs)

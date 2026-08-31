@@ -27,6 +27,7 @@ import type {
   PlatformSpec,
 } from "../../types/gateway";
 import { ConnectionFormModal } from "./ConnectionFormModal";
+import { QrLoginDrawer } from "./QrLoginDrawer";
 
 const PAGE_SIZE = 20;
 
@@ -45,6 +46,7 @@ export function ConnectionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<ImConnection | null | undefined>(undefined);
+  const [qrConnection, setQrConnection] = useState<ImConnection | null>(null);
   const [health, setHealth] = useState<ConnectionHealth | null>(null);
   const [binding, setBinding] = useState<BindingStatusType | null>(null);
   const [bindingCode, setBindingCode] = useState("");
@@ -193,6 +195,13 @@ export function ConnectionsPage() {
                     </button>
                     {!isAdmin && (
                       <>
+                        {platforms
+                          .find((platform) => platform.code === item.platform)
+                          ?.supports_login && (
+                          <button onClick={() => setQrConnection(item)} className="text-primary">
+                            扫码
+                          </button>
+                        )}
                         <button onClick={() => void generateBinding(item)} className="text-primary">
                           绑定
                         </button>
@@ -293,6 +302,15 @@ export function ConnectionsPage() {
           </div>
         </Modal>
       )}
+
+      <QrLoginDrawer
+        connection={qrConnection}
+        onClose={() => setQrConnection(null)}
+        onSaved={() => {
+          notify("扫码登录成功，凭据已保存");
+          void load();
+        }}
+      />
     </div>
   );
 }

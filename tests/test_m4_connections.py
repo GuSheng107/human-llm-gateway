@@ -227,6 +227,56 @@ def test_delete_blocked_while_enabled_api_key_references_connection(client, admi
     assert client.delete(f"/api/im-connections/{connection_id}", headers=headers).status_code == 204
 
 
+def test_qr_login_returns_base64_qrcode_and_token_writeback(
+    client, admin_headers, monkeypatch
+) -> None:
+    """扫码登录：二维码 bytes 转 base64；confirmed 后前端可把 bot_token 写回 config。"""
+    import base64 as b64
+
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-owner")
+    created = _create_connection(
+        client,
+        headers,
+        name="ilink-qr",
+        platform="wecom_ilink",
+        config={"token": ""},
+    )
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {"status": "confirmed", "bot_token": "bot-token-1"}
+
+    monkeypatch.setattr(ConnectionService, "_ensure_connector", lambda self, row: _FakeConnector())
+
+    started = client.post(f"/api/im-connections/{created['id']}/login", headers=headers)
+    assert started.status_code == 200, started.text
+    body = started.json()
+    assert body["qrcode"] == "QR-DATA"
+    assert body["qrcode_img_content"] == b64.b64encode(b"\x89PNG-fake").decode("ascii")
+
+    polled = client.get(f"/api/im-connections/{created['id']}/login", headers=headers)
+    assert polled.status_code == 200
+    assert polled.json()["bot_token"] == "bot-token-1"
+
+    # 前端把 bot_token 写回 config（secret 字段：空串跳过、新值覆盖）。
+    patched = client.patch(
+        f"/api/im-connections/{created['id']}",
+        headers=headers,
+        json={"config": {"token": "bot-token-1"}},
+    )
+    assert patched.status_code == 200, patched.text
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, int(created["id"]))
+        assert row is not None
+        decrypted = ConnectionService().decrypt_config(row)
+        assert decrypted.get("token") == "bot-token-1"
+
+
 def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
     headers = _create_user(client, admin_headers, "conn-owner-5")
     created = _create_connection(client, headers, name="binding")
