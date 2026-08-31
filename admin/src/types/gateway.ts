@@ -84,6 +84,17 @@ export interface FakeModel {
   description: string | null;
   sort_order: number;
   is_enabled: boolean;
+  input_price_per_million: number | null;
+  output_price_per_million: number | null;
+  cached_input_price_per_million: number | null;
+  cached_write_price_per_million: number | null;
+  context_window: number | null;
+  max_output_tokens: number | null;
+  capabilities: string[];
+  billing_tier: string;
+  endpoint_type: string;
+  logo_url: string | null;
+  tags: string[];
   created_at: string;
 }
 

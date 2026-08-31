@@ -41,6 +41,98 @@ def _model(client, headers, model_id: str, **extra) -> dict:
     return response.json()
 
 
+def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
+    """模型广场：种子模型带价格/能力元数据；多维筛选与 include_disabled 生效。"""
+    listed = client.get("/api/fake-models", headers=admin_headers).json()
+    seeded = {item["model_id"]: item for item in listed["items"]}
+    assert "deepseek-v4-pro" in seeded
+    pro = seeded["deepseek-v4-pro"]
+    assert pro["input_price_per_million"] == 4.0
+    assert pro["output_price_per_million"] == 16.0
+    assert pro["cached_input_price_per_million"] == 0.4
+    assert pro["context_window"] == 128_000
+    assert "tools" in pro["capabilities"]
+    assert pro["billing_tier"] == "pay_as_you_go"
+    assert pro["endpoint_type"] == "openai_chat"
+    claude = seeded["claude-fable-5"]
+    assert claude["endpoint_type"] == "anthropic_messages"
+
+    # 端点筛选。
+    anthropic_only = client.get(
+        "/api/fake-models", headers=admin_headers, params={"endpoint_type": "anthropic_messages"}
+    ).json()
+    assert {item["model_id"] for item in anthropic_only["items"]} == {
+        "claude-fable-5",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    }
+
+    # 能力筛选。
+    vision = client.get(
+        "/api/fake-models", headers=admin_headers, params={"capability": "vision"}
+    ).json()
+    assert all("vision" in item["capabilities"] for item in vision["items"])
+    assert len(vision["items"]) > 0
+
+    # 供应商筛选。
+    deepseek = client.get(
+        "/api/fake-models", headers=admin_headers, params={"provider": "deepseek"}
+    ).json()
+    assert {item["model_id"] for item in deepseek["items"]} == {
+        "deepseek-v4-pro",
+        "deepseek-v4-flash",
+    }
+
+    # 创建带完整元数据的模型 + 更新价格。
+    created = client.post(
+        "/api/fake-models",
+        headers=admin_headers,
+        json={
+            "model_id": "market-test-model",
+            "display_name": "广场测试",
+            "pricing": {"input": 1.5, "output": 6, "cached_input": 0.15},
+            "context_window": 200_000,
+            "max_output_tokens": 32_000,
+            "capabilities": ["tools", "vision"],
+            "billing_tier": "subscription",
+            "endpoint_type": "openai_responses",
+            "tags": ["测试", "多模态"],
+        },
+    ).json()
+    assert created["input_price_per_million"] == 1.5
+    assert created["billing_tier"] == "subscription"
+    assert created["endpoint_type"] == "openai_responses"
+    assert created["tags"] == ["测试", "多模态"]
+
+    updated = client.patch(
+        f"/api/fake-models/{created['id']}",
+        headers=admin_headers,
+        json={"input_price_per_million": 2.5, "tags": ["更新"]},
+    ).json()
+    assert updated["input_price_per_million"] == 2.5
+    assert updated["tags"] == ["更新"]
+
+    # 标签筛选 + 搜索（model_id/显示名/描述/标签）。
+    by_tag = client.get("/api/fake-models", headers=admin_headers, params={"tag": "更新"}).json()
+    assert {item["model_id"] for item in by_tag["items"]} == {"market-test-model"}
+    by_search = client.get(
+        "/api/fake-models", headers=admin_headers, params={"search": "广场测试"}
+    ).json()
+    assert "market-test-model" in {item["model_id"] for item in by_search["items"]}
+
+    # 停用后默认不出现，include_disabled=true 时出现。
+    client.patch(
+        f"/api/fake-models/{created['id']}", headers=admin_headers, json={"enabled": False}
+    )
+    default_list = client.get("/api/fake-models", headers=admin_headers).json()
+    assert "market-test-model" not in {item["model_id"] for item in default_list["items"]}
+    with_disabled = client.get(
+        "/api/fake-models", headers=admin_headers, params={"include_disabled": True}
+    ).json()
+    assert "market-test-model" in {item["model_id"] for item in with_disabled["items"]}
+
+
 def test_user_sees_system_models_and_own_private_models(client, admin_headers) -> None:
     headers = _create_user(client, admin_headers, "model-user")
     listed = client.get("/api/fake-models", headers=headers).json()

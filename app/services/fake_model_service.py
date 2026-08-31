@@ -7,13 +7,20 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.db import begin_immediate_if_sqlite
-from ..domain.enums import AuditAction, FakeModelScope, UserRole
+from ..domain.enums import (
+    AuditAction,
+    BillingTier,
+    FakeModelScope,
+    ModelEndpointType,
+    UserRole,
+)
 from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.catalog import FakeModelRepository
 from ..repositories.models import FakeModel, ModelGroup, User
@@ -21,6 +28,45 @@ from ..repositories.system import AuditRepository
 
 # 对外 model 字符串：兼容 OpenAI 常见命名习惯。
 MODEL_ID_PATTERN = re.compile(r"^[\w.\-/]{1,255}$")
+
+# 模型能力标签白名单（超出部分忽略）。
+ALLOWED_CAPABILITIES = {
+    "vision",
+    "tools",
+    "thinking",
+    "image_gen",
+    "audio",
+    "video",
+    "streaming",
+    "function_calling",
+}
+
+
+def _to_decimal(value: Any) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    try:
+        result = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED, "价格必须是数字", status_code=400
+        ) from exc
+    if result < 0:
+        raise DomainError(DomainErrorCode.VALIDATION_FAILED, "价格不能为负数", status_code=400)
+    return result
+
+
+def _clean_tags(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            result.append(normalized)
+    return result[:20]
 
 
 def _validate_model_id(model_id: str) -> str:
@@ -44,25 +90,67 @@ class FakeModelService:
     # ------------------------------------------------------------------
 
     def list_for_user(
-        self, session: Session, user: User, *, search: str | None = None
+        self,
+        session: Session,
+        user: User,
+        *,
+        search: str | None = None,
+        filters: dict[str, str] | None = None,
     ) -> list[FakeModel]:
         """普通用户：系统模型 + 自己的私有模型（私有遮蔽同名系统模型）。"""
         rows = self.catalog.visible_models(session, user.id, only_enabled=False)
-        if search:
-            term = search.strip().lower()
-            rows = [
-                row
-                for row in rows
-                if term in row.model_id.lower()
-                or (row.display_name and term in row.display_name.lower())
-            ]
-        return rows
+        return self._filter_rows(rows, search=search, filters=filters)
 
     def list_governance(
-        self, session: Session, *, page: int, page_size: int, search: str | None = None
+        self,
+        session: Session,
+        *,
+        page: int,
+        page_size: int,
+        search: str | None = None,
+        filters: dict[str, str] | None = None,
     ) -> tuple[list[FakeModel], int]:
-        """管理员治理列表：全部模型。"""
-        return self.catalog.list_governance(session, page=page, page_size=page_size, search=search)
+        """管理员治理列表：全部模型（元数据维度过滤在内存完成后再分页）。"""
+        rows = self.catalog.list_all_governance(session)
+        filtered = self._filter_rows(rows, search=search, filters=filters)
+        total = len(filtered)
+        return filtered[(page - 1) * page_size : page * page_size], total
+
+    @staticmethod
+    def _filter_rows(
+        rows: list[FakeModel],
+        *,
+        search: str | None,
+        filters: dict[str, str] | None,
+    ) -> list[FakeModel]:
+        result = rows
+        if search:
+            term = search.strip().lower()
+            result = [
+                row
+                for row in result
+                if term in row.model_id.lower()
+                or (row.display_name and term in row.display_name.lower())
+                or (row.description and term in row.description.lower())
+                or any(term in tag.lower() for tag in (row.tags or []))
+            ]
+        if filters:
+            provider = filters.get("provider")
+            if provider:
+                result = [row for row in result if row.owned_by == provider]
+            billing = filters.get("billing_tier")
+            if billing:
+                result = [row for row in result if row.billing_tier.value == billing]
+            endpoint = filters.get("endpoint_type")
+            if endpoint:
+                result = [row for row in result if row.endpoint_type.value == endpoint]
+            capability = filters.get("capability")
+            if capability:
+                result = [row for row in result if capability in (row.capabilities or [])]
+            tag = filters.get("tag")
+            if tag:
+                result = [row for row in result if tag in (row.tags or [])]
+        return result
 
     def get_visible(self, session: Session, user: User, model_pk: int) -> FakeModel:
         row = self.catalog.get(session, model_pk)
@@ -89,6 +177,14 @@ class FakeModelService:
         description: str | None = None,
         sort_order: int = 0,
         is_enabled: bool = True,
+        pricing: dict[str, Any] | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
+        capabilities: list[str] | None = None,
+        billing_tier: str | None = None,
+        endpoint_type: str | None = None,
+        logo_url: str | None = None,
+        tags: list[str] | None = None,
     ) -> FakeModel:
         begin_immediate_if_sqlite(session)
         normalized = _validate_model_id(model_id)
@@ -102,6 +198,7 @@ class FakeModelService:
         else:
             if self.catalog.find_private_by_model_id(session, actor.id, normalized) is not None:
                 raise DomainError(DomainErrorCode.CONFLICT, "你已存在同名私有模型", status_code=409)
+        pricing = pricing or {}
         row = FakeModel(
             scope=scope,
             owner_user_id=owner_user_id,
@@ -112,6 +209,17 @@ class FakeModelService:
             sort_order=sort_order,
             is_enabled=is_enabled,
             created_by_user_id=actor.id,
+            input_price_per_million=_to_decimal(pricing.get("input")),
+            output_price_per_million=_to_decimal(pricing.get("output")),
+            cached_input_price_per_million=_to_decimal(pricing.get("cached_input")),
+            cached_write_price_per_million=_to_decimal(pricing.get("cached_write")),
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            capabilities=_clean_tags(capabilities),
+            billing_tier=BillingTier(billing_tier or BillingTier.PAY_AS_YOU_GO.value),
+            endpoint_type=ModelEndpointType(endpoint_type or ModelEndpointType.OPENAI_CHAT.value),
+            logo_url=(logo_url or "").strip() or None,
+            tags=_clean_tags(tags),
         )
         self.catalog.add(session, row)
         try:
@@ -138,14 +246,47 @@ class FakeModelService:
         fields: dict[str, Any],
     ) -> FakeModel:
         self._ensure_manageable(row, actor)
-        allowed = {"display_name", "description", "sort_order", "is_enabled"}
+        allowed = {
+            "display_name",
+            "description",
+            "sort_order",
+            "is_enabled",
+            "context_window",
+            "max_output_tokens",
+            "capabilities",
+            "billing_tier",
+            "endpoint_type",
+            "logo_url",
+            "tags",
+        }
+        pricing_names = {
+            "input_price_per_million",
+            "output_price_per_million",
+            "cached_input_price_per_million",
+            "cached_write_price_per_million",
+        }
         changed: list[str] = []
         for name in allowed:
             if name not in fields:
                 continue
             value = fields[name]
-            if name == "display_name":
+            if name == "display_name" or name == "logo_url":
                 value = (value or "").strip() or None
+            elif name == "capabilities":
+                value = [item for item in (value or []) if item in ALLOWED_CAPABILITIES]
+            elif name == "tags":
+                value = _clean_tags(value)
+            elif name == "billing_tier" and value is not None:
+                value = BillingTier(value)
+            elif name == "endpoint_type" and value is not None:
+                value = ModelEndpointType(value)
+            if getattr(row, name) != value:
+                setattr(row, name, value)
+                changed.append(name)
+        for name in pricing_names:
+            if name not in fields:
+                continue
+            value = _to_decimal(fields[name])
             if getattr(row, name) != value:
                 setattr(row, name, value)
                 changed.append(name)

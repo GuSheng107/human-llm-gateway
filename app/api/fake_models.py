@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
@@ -23,12 +24,27 @@ _models = FakeModelService()
 _groups = ModelGroupService()
 
 
+class ModelPricing(StrictModel):
+    input: Decimal | None = None
+    output: Decimal | None = None
+    cached_input: Decimal | None = None
+    cached_write: Decimal | None = None
+
+
 class FakeModelCreate(StrictModel):
     model_id: str = Field(min_length=1, max_length=255)
     display_name: str | None = Field(default=None, max_length=255)
     description: str | None = None
     sort_order: int = 0
     enabled: bool = True
+    pricing: ModelPricing | None = None
+    context_window: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    capabilities: list[str] = Field(default_factory=list, max_length=16)
+    billing_tier: str | None = None
+    endpoint_type: str | None = None
+    logo_url: str | None = Field(default=None, max_length=512)
+    tags: list[str] = Field(default_factory=list, max_length=20)
 
 
 class FakeModelUpdate(StrictModel):
@@ -36,6 +52,17 @@ class FakeModelUpdate(StrictModel):
     description: str | None = None
     sort_order: int | None = None
     enabled: bool | None = None
+    input_price_per_million: Decimal | None = None
+    output_price_per_million: Decimal | None = None
+    cached_input_price_per_million: Decimal | None = None
+    cached_write_price_per_million: Decimal | None = None
+    context_window: int | None = Field(default=None, ge=1)
+    max_output_tokens: int | None = Field(default=None, ge=1)
+    capabilities: list[str] | None = Field(default=None, max_length=16)
+    billing_tier: str | None = None
+    endpoint_type: str | None = None
+    logo_url: str | None = Field(default=None, max_length=512)
+    tags: list[str] | None = Field(default=None, max_length=20)
 
 
 class FakeModelView(BaseModel):
@@ -48,6 +75,17 @@ class FakeModelView(BaseModel):
     description: str | None
     sort_order: int
     is_enabled: bool
+    input_price_per_million: float | None
+    output_price_per_million: float | None
+    cached_input_price_per_million: float | None
+    cached_write_price_per_million: float | None
+    context_window: int | None
+    max_output_tokens: int | None
+    capabilities: list[str]
+    billing_tier: str
+    endpoint_type: str
+    logo_url: str | None
+    tags: list[str]
     created_at: str
 
 
@@ -102,6 +140,31 @@ def _model_view(row: FakeModel) -> FakeModelView:
         description=row.description,
         sort_order=row.sort_order,
         is_enabled=row.is_enabled,
+        input_price_per_million=(
+            float(row.input_price_per_million) if row.input_price_per_million is not None else None
+        ),
+        output_price_per_million=(
+            float(row.output_price_per_million)
+            if row.output_price_per_million is not None
+            else None
+        ),
+        cached_input_price_per_million=(
+            float(row.cached_input_price_per_million)
+            if row.cached_input_price_per_million is not None
+            else None
+        ),
+        cached_write_price_per_million=(
+            float(row.cached_write_price_per_million)
+            if row.cached_write_price_per_million is not None
+            else None
+        ),
+        context_window=row.context_window,
+        max_output_tokens=row.max_output_tokens,
+        capabilities=list(row.capabilities or []),
+        billing_tier=row.billing_tier.value,
+        endpoint_type=row.endpoint_type.value,
+        logo_url=row.logo_url,
+        tags=list(row.tags or []),
         created_at=iso_utc(row.created_at) or "",
     )
 
@@ -129,15 +192,39 @@ def list_fake_models(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=100, ge=1, le=100),
     search: str | None = Query(default=None, max_length=255),
+    provider: str | None = Query(default=None, max_length=100),
+    billing_tier: str | None = Query(default=None, max_length=32),
+    endpoint_type: str | None = Query(default=None, max_length=32),
+    capability: str | None = Query(default=None, max_length=32),
+    tag: str | None = Query(default=None, max_length=64),
+    include_disabled: bool = Query(default=False),
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
     from ..domain.enums import UserRole
 
+    filters = {
+        key: value
+        for key, value in {
+            "provider": provider,
+            "billing_tier": billing_tier,
+            "endpoint_type": endpoint_type,
+            "capability": capability,
+            "tag": tag,
+        }.items()
+        if value
+    }
     if user.role is UserRole.ADMIN:
-        rows, total = _models.list_governance(db, page=page, page_size=page_size, search=search)
+        rows, total = _models.list_governance(
+            db, page=page, page_size=page_size, search=search, filters=filters
+        )
+        if not include_disabled:
+            rows = [row for row in rows if row.is_enabled]
+            total = len(rows)
     else:
-        rows = _models.list_for_user(db, user, search=search)
+        rows = _models.list_for_user(db, user, search=search, filters=filters)
+        if not include_disabled:
+            rows = [row for row in rows if row.is_enabled]
         total = len(rows)
         rows = rows[(page - 1) * page_size : page * page_size]
     return FakeModelPage(
@@ -159,6 +246,23 @@ def create_fake_model(
         description=payload.description,
         sort_order=payload.sort_order,
         is_enabled=payload.enabled,
+        pricing=(
+            {
+                "input": payload.pricing.input,
+                "output": payload.pricing.output,
+                "cached_input": payload.pricing.cached_input,
+                "cached_write": payload.pricing.cached_write,
+            }
+            if payload.pricing
+            else None
+        ),
+        context_window=payload.context_window,
+        max_output_tokens=payload.max_output_tokens,
+        capabilities=payload.capabilities,
+        billing_tier=payload.billing_tier,
+        endpoint_type=payload.endpoint_type,
+        logo_url=payload.logo_url,
+        tags=payload.tags,
     )
     db.commit()
     db.refresh(row)

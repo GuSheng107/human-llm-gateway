@@ -9,12 +9,13 @@ effective = grouped ∩ key.selected（未选择时为 grouped）
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from sqlalchemy import func, or_, select, update
 from sqlalchemy.orm import Session
 
 from ..core.time import utc_now
-from ..domain.enums import FakeModelScope
+from ..domain.enums import BillingTier, FakeModelScope, ModelEndpointType
 from .models import ApiKeyFakeModel, FakeModel, ModelGroup, ModelGroupItem
 
 # 默认系统 Fake Model 种子（全新数据库初始化时写入一次）。
@@ -22,67 +23,355 @@ from .models import ApiKeyFakeModel, FakeModel, ModelGroup, ModelGroupItem
 # 按母公司划分：分组是第一层候选集，模型选择只能在分组内收窄。
 # 模型一律为 system scope（owner_user_id 为空），因此对所有用户可见可用；
 # 分组挂在管理员名下仅因为 model_groups.owner_user_id 非空约束，不影响模型可见性。
+# meta：模型广场展示属性（价格单位：元 / 1M tokens；capabilities/tags 为标签）。
 DEFAULT_MODEL_GROUPS: list[dict] = [
     {
         "name": "DeepSeek",
         "owned_by": "deepseek",
-        "models": ["deepseek-v4-pro", "deepseek-v4-flash"],
+        "models": {
+            "deepseek-v4-pro": {
+                "input": 4,
+                "output": 16,
+                "cached": 0.4,
+                "context": 128_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "thinking", "streaming"],
+                "tags": ["代码", "推理"],
+            },
+            "deepseek-v4-flash": {
+                "input": 0.5,
+                "output": 2,
+                "cached": 0.05,
+                "context": 128_000,
+                "max_output": 16_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["性价比"],
+            },
+        },
     },
     {
         "name": "OpenAI",
         "owned_by": "openai",
-        "models": ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"],
+        "models": {
+            "gpt-5.6-sol": {
+                "input": 27,
+                "output": 108,
+                "cached": 2.7,
+                "context": 400_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "tags": ["旗舰", "多模态"],
+            },
+            "gpt-5.6-terra": {
+                "input": 14,
+                "output": 56,
+                "cached": 1.4,
+                "context": 400_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "tags": ["均衡"],
+            },
+            "gpt-5.6-luna": {
+                "input": 7,
+                "output": 28,
+                "cached": 0.7,
+                "context": 400_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "streaming"],
+                "tags": ["轻量"],
+            },
+            "gpt-5.5": {
+                "input": 5,
+                "output": 20,
+                "cached": 0.5,
+                "context": 256_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "streaming"],
+                "tags": [],
+            },
+            "gpt-5.4": {
+                "input": 2.5,
+                "output": 10,
+                "context": 128_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["入门"],
+            },
+        },
     },
     {
         "name": "Claude",
         "owned_by": "claude",
-        "models": [
-            "claude-fable-5",
-            "claude-opus-5",
-            "claude-sonnet-5",
-            "claude-haiku-4-5",
-        ],
+        "models": {
+            "claude-fable-5": {
+                "input": 30,
+                "output": 120,
+                "cached": 3,
+                "cached_write": 37.5,
+                "context": 500_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoint": "anthropic_messages",
+                "tags": ["旗舰", "长文本"],
+            },
+            "claude-opus-5": {
+                "input": 21,
+                "output": 105,
+                "cached": 2.1,
+                "cached_write": 26.25,
+                "context": 400_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoint": "anthropic_messages",
+                "tags": ["推理"],
+            },
+            "claude-sonnet-5": {
+                "input": 10.5,
+                "output": 42,
+                "cached": 1.05,
+                "cached_write": 13.1,
+                "context": 400_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoint": "anthropic_messages",
+                "tags": ["均衡"],
+            },
+            "claude-haiku-4-5": {
+                "input": 5,
+                "output": 20,
+                "cached": 0.5,
+                "cached_write": 6.25,
+                "context": 200_000,
+                "max_output": 32_000,
+                "capabilities": ["vision", "tools", "streaming"],
+                "endpoint": "anthropic_messages",
+                "tags": ["轻量"],
+            },
+        },
     },
     {
         "name": "Kimi",
         "owned_by": "kimi",
-        "models": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"],
+        "models": {
+            "kimi-k3": {
+                "input": 8,
+                "output": 32,
+                "context": 256_000,
+                "max_output": 64_000,
+                "capabilities": ["tools", "thinking", "streaming"],
+                "tags": ["长文本"],
+            },
+            "kimi-k2.7-code": {
+                "input": 4,
+                "output": 16,
+                "context": 256_000,
+                "max_output": 64_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["代码"],
+            },
+            "kimi-k2.7-code-highspeed": {
+                "input": 8,
+                "output": 32,
+                "context": 256_000,
+                "max_output": 64_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["代码", "高速"],
+            },
+            "kimi-k2.6": {
+                "input": 2,
+                "output": 8,
+                "context": 128_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["性价比"],
+            },
+        },
     },
     {
         "name": "MiniMax",
         "owned_by": "minimax",
-        "models": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
+        "models": {
+            "MiniMax-M3": {
+                "input": 3,
+                "output": 12,
+                "context": 200_000,
+                "max_output": 64_000,
+                "capabilities": ["tools", "thinking", "streaming"],
+                "tags": ["推理"],
+            },
+            "MiniMax-M2.7": {
+                "input": 1.5,
+                "output": 6,
+                "context": 200_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["性价比"],
+            },
+            "MiniMax-M2.7-highspeed": {
+                "input": 3,
+                "output": 12,
+                "context": 200_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["高速"],
+            },
+        },
     },
     {
         "name": "Grok",
         "owned_by": "grok",
-        "models": ["grok-4.6", "grok-4.5", "grok-4.3"],
+        "models": {
+            "grok-4.6": {
+                "input": 18,
+                "output": 72,
+                "context": 256_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "tags": ["旗舰"],
+            },
+            "grok-4.5": {
+                "input": 9,
+                "output": 36,
+                "context": 256_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "streaming"],
+                "tags": ["均衡"],
+            },
+            "grok-4.3": {
+                "input": 4.5,
+                "output": 18,
+                "context": 131_072,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["轻量"],
+            },
+        },
     },
     {
         "name": "Qwen",
         "owned_by": "qwen",
-        "models": [
-            "qwen3.8-max",
-            "qwen3.8-flash",
-            "qwen3.7-max",
-            "qwen3.7-plus",
-            "qwen3.7-flash",
-        ],
+        "models": {
+            "qwen3.8-max": {
+                "input": 6,
+                "output": 24,
+                "context": 256_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "tags": ["旗舰"],
+            },
+            "qwen3.8-flash": {
+                "input": 1,
+                "output": 4,
+                "context": 256_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["性价比"],
+            },
+            "qwen3.7-max": {
+                "input": 4.8,
+                "output": 19.2,
+                "context": 131_072,
+                "max_output": 32_000,
+                "capabilities": ["vision", "tools", "streaming"],
+                "tags": [],
+            },
+            "qwen3.7-plus": {
+                "input": 1.6,
+                "output": 6.4,
+                "context": 131_072,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": [],
+            },
+            "qwen3.7-flash": {
+                "input": 0.4,
+                "output": 1.6,
+                "context": 131_072,
+                "max_output": 16_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["入门"],
+            },
+        },
     },
     {
         "name": "GLM",
         "owned_by": "glm",
-        "models": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-4.7"],
+        "models": {
+            "glm-5.3": {
+                "input": 3.5,
+                "output": 14,
+                "context": 200_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "tags": ["代码", "推理"],
+            },
+            "glm-5.3-flash": {
+                "input": 0.7,
+                "output": 2.8,
+                "context": 200_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["免费试用"],
+            },
+            "glm-5.2": {
+                "input": 2,
+                "output": 8,
+                "context": 128_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": [],
+            },
+            "glm-4.7": {
+                "input": 1,
+                "output": 4,
+                "context": 128_000,
+                "max_output": 16_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["入门"],
+            },
+        },
     },
     {
         "name": "Gemini",
         "owned_by": "gemini",
-        "models": [
-            "gemini-3.7-flash",
-            "gemini-3.6-flash",
-            "gemini-3.5-flash",
-            "gemini-3.5-flash-lite",
-        ],
+        "models": {
+            "gemini-3.7-flash": {
+                "input": 2.1,
+                "output": 8.4,
+                "cached": 0.5,
+                "context": 1_000_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "tags": ["长文本"],
+            },
+            "gemini-3.6-flash": {
+                "input": 1.75,
+                "output": 7,
+                "cached": 0.44,
+                "context": 1_000_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "streaming"],
+                "tags": ["性价比"],
+            },
+            "gemini-3.5-flash": {
+                "input": 1,
+                "output": 4,
+                "cached": 0.25,
+                "context": 1_000_000,
+                "max_output": 32_000,
+                "capabilities": ["vision", "tools", "streaming"],
+                "tags": ["性价比"],
+            },
+            "gemini-3.5-flash-lite": {
+                "input": 0.35,
+                "output": 1.4,
+                "cached": 0.09,
+                "context": 1_000_000,
+                "max_output": 32_000,
+                "capabilities": ["tools", "streaming"],
+                "tags": ["入门"],
+            },
+        },
     },
 ]
 
@@ -155,6 +444,16 @@ class FakeModelRepository:
             result.append(row)
         result.sort(key=lambda r: (r.sort_order, r.id))
         return result
+
+    def list_all_governance(self, session: Session) -> list[FakeModel]:
+        """治理列表全量行（搜索与多维筛选由服务层统一完成）。"""
+        return list(
+            session.scalars(
+                select(FakeModel)
+                .where(FakeModel.deleted_at.is_(None))
+                .order_by(FakeModel.scope, FakeModel.sort_order, FakeModel.id)
+            )
+        )
 
     def list_governance(
         self, session: Session, *, page: int, page_size: int, search: str | None = None
@@ -322,6 +621,17 @@ class FakeModelRepository:
         display_name: str,
         owned_by: str,
         created_by_user_id: int,
+        description: str | None = None,
+        input_price_per_million: Decimal | None = None,
+        output_price_per_million: Decimal | None = None,
+        cached_input_price_per_million: Decimal | None = None,
+        cached_write_price_per_million: Decimal | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
+        capabilities: list[str] | None = None,
+        billing_tier: BillingTier = BillingTier.PAY_AS_YOU_GO,
+        endpoint_type: ModelEndpointType = ModelEndpointType.OPENAI_CHAT,
+        tags: list[str] | None = None,
     ) -> FakeModel:
         row = FakeModel(
             scope=FakeModelScope.SYSTEM,
@@ -329,7 +639,18 @@ class FakeModelRepository:
             model_id=model_id,
             display_name=display_name,
             owned_by=owned_by,
+            description=description,
             created_by_user_id=created_by_user_id,
+            input_price_per_million=input_price_per_million,
+            output_price_per_million=output_price_per_million,
+            cached_input_price_per_million=cached_input_price_per_million,
+            cached_write_price_per_million=cached_write_price_per_million,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            capabilities=capabilities or [],
+            billing_tier=billing_tier,
+            endpoint_type=endpoint_type,
+            tags=tags or [],
         )
         session.add(row)
         return row
@@ -348,15 +669,36 @@ class FakeModelRepository:
                 self.add_group(session, group)
                 session.flush()
             model_pks: list[int] = []
-            for model_id in spec["models"]:
+            for model_id, meta in spec["models"].items():
                 model = self.find_system_by_model_id(session, model_id)
                 if model is None:
                     model = self.create_system_model(
                         session,
                         model_id=model_id,
-                        display_name=model_id,
+                        display_name=meta.get("display_name", model_id),
                         owned_by=spec["owned_by"],
                         created_by_user_id=admin_id,
+                        description=meta.get("description"),
+                        input_price_per_million=(
+                            Decimal(str(meta["input"])) if meta.get("input") is not None else None
+                        ),
+                        output_price_per_million=(
+                            Decimal(str(meta["output"])) if meta.get("output") is not None else None
+                        ),
+                        cached_input_price_per_million=(
+                            Decimal(str(meta["cached"])) if meta.get("cached") is not None else None
+                        ),
+                        cached_write_price_per_million=(
+                            Decimal(str(meta["cached_write"]))
+                            if meta.get("cached_write") is not None
+                            else None
+                        ),
+                        context_window=meta.get("context"),
+                        max_output_tokens=meta.get("max_output"),
+                        capabilities=meta.get("capabilities", []),
+                        billing_tier=BillingTier(meta.get("billing", "pay_as_you_go")),
+                        endpoint_type=ModelEndpointType(meta.get("endpoint", "openai_chat")),
+                        tags=meta.get("tags", []),
                     )
                     session.flush()
                 model_pks.append(model.id)

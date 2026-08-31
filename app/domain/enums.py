@@ -41,6 +41,19 @@ class FakeModelScope(StrEnum):
     PRIVATE = "private"
 
 
+class BillingTier(StrEnum):
+    PAY_AS_YOU_GO = "pay_as_you_go"
+    SUBSCRIPTION = "subscription"
+    FREE = "free"
+    DYNAMIC = "dynamic"
+
+
+class ModelEndpointType(StrEnum):
+    OPENAI_CHAT = "openai_chat"
+    OPENAI_RESPONSES = "openai_responses"
+    ANTHROPIC_MESSAGES = "anthropic_messages"
+
+
 class DeliveryMode(StrEnum):
     WEB = "web"
     IM = "im"
