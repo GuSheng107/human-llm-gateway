@@ -41,8 +41,14 @@ const FEATURES: Record<string, FeatureSpec> = {
     },
   },
   task_detail: {
-    match: (p) => p === "/tasks", // 详情由 drawer 打开（route 仍为 /tasks）；桥在编辑器打开时提供 task 信息
-    resource: () => ({}),
+    // 详情由 drawer 打开（route 仍为 /tasks）；独立回复页有真实路由 /tasks/:id/reply。
+    match: (p) => p === "/tasks" || /^\/tasks\/[^/]+\/reply$/.test(p),
+    resource: (p): Record<string, string> => {
+      const out: Record<string, string> = {};
+      const taskId = p.match(/^\/tasks\/([^/]+)\/reply$/)?.[1];
+      if (taskId) out.task_id = taskId;
+      return out;
+    },
   },
   api_keys: {
     match: (p) => p === "/api-keys",

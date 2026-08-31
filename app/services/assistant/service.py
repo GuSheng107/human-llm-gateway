@@ -5,19 +5,21 @@
   落库）；切换页面不回写历史消息。
 - LLM 调用复用用户的 llm_configs（解密凭据仅在服务端内存使用），
   历史消息以 Chat 形态送上游（含上下文快照摘要注入 user 消息）。
+- 支持同步与 SSE 流式两种回复取回方式（共用同一条落库路径）。
 - 第一阶段只生成文本与建议，不提供可执行系统工具。
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ...core.db import begin_immediate_if_sqlite
-from ...core.time import utc_now
+from ...core.time import iso_utc, utc_now
 from ...domain.enums import AssistantRole, LLMProtocol
 from ...domain.errors import DomainError, DomainErrorCode
 from ...repositories.llm_configs import LlmConfigRepository
@@ -106,7 +108,7 @@ class AssistantService:
         )
 
     # ------------------------------------------------------------------
-    # 消息发送（含 LLM 调用）
+    # 消息发送（含 LLM 调用）：同步与流式共用同一条落库路径
     # ------------------------------------------------------------------
 
     async def send_message(
@@ -119,9 +121,141 @@ class AssistantService:
         page_context_raw: dict[str, Any] | None,
     ) -> AssistantMessage:
         """发送 user 消息并同步取回 LLM 回复；两步在同一事务落库。"""
-        begin_immediate_if_sqlite(session)
-        owner_id = user.id
+        context_json = self._save_user_message(
+            session,
+            user=user,
+            session_row=session_row,
+            text=text,
+            page_context_raw=page_context_raw,
+        )
+        reply_text, metadata = await self._call_llm(
+            session,
+            user=user,
+            config_id=session_row.llm_config_id,
+            context_json=context_json,
+            session_id=session_row.id,
+        )
+        return self._append_reply_message(
+            session,
+            owner_user_id=user.id,
+            assistant_session_id=session_row.id,
+            reply_text=reply_text,
+            metadata=metadata,
+        )
+
+    async def stream_message(
+        self,
+        session: Session,
+        *,
+        user: User,
+        session_row: AssistantSession,
+        text: str,
+        page_context_raw: dict[str, Any] | None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """流式发送：user 消息落库后逐段转发上游增量，结束后落库回复。
+
+        事件协议（API 层负责 SSE 编码）：
+        - ``{"type": "delta", "text": ...}``：回复增量。
+        - ``{"type": "done", "message": {...}}``：回复已落库，附完整消息。
+        异常经 DomainError 抛出（API 层转 error 事件）。
+        """
+        context_json = self._save_user_message(
+            session,
+            user=user,
+            session_row=session_row,
+            text=text,
+            page_context_raw=page_context_raw,
+        )
         assistant_session_id = session_row.id
+        owner_user_id = user.id
+        (
+            protocol,
+            base_url,
+            secret,
+            headers,
+            timeout_seconds,
+            request_body,
+        ) = await self._build_request(
+            session,
+            user=user,
+            config_id=session_row.llm_config_id,
+            context_json=context_json,
+            session_id=assistant_session_id,
+        )
+        if protocol is LLMProtocol.OPENAI_CHAT:
+            chunk_iter: AsyncIterator[llm_upstream.UpstreamChunk] = (
+                llm_upstream.stream_chat_completions(
+                    base_url=base_url,
+                    api_key=secret,
+                    request_body=request_body,
+                    extra_headers=headers,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+        elif protocol is LLMProtocol.OPENAI_RESPONSES:
+            chunk_iter = llm_upstream.stream_responses(
+                base_url=base_url,
+                api_key=secret,
+                request_body=request_body,
+                extra_headers=headers,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            chunk_iter = llm_upstream.stream_anthropic_messages(
+                base_url=base_url,
+                api_key=secret,
+                request_body=request_body,
+                extra_headers=headers,
+                timeout_seconds=timeout_seconds,
+            )
+        collected: dict[str, Any] = {}
+        async for chunk in chunk_iter:
+            llm_upstream.collect_chunk(collected, chunk)
+            if chunk.text:
+                yield {"type": "delta", "text": chunk.text}
+        summary = llm_upstream.finalize_collected(collected)
+        reply_text = summary.get("final_text") or ""
+        if not reply_text and not summary.get("reasoning") and not summary.get("tool_calls"):
+            raise DomainError(
+                DomainErrorCode.UPSTREAM_ERROR, "上游响应缺少回复内容", status_code=502
+            )
+        metadata = {"finish_reason": "stop", "usage": {}}
+        reply_message = self._append_reply_message(
+            session,
+            owner_user_id=owner_user_id,
+            assistant_session_id=assistant_session_id,
+            reply_text=reply_text,
+            metadata=metadata,
+        )
+        # 流式端点没有 API 层的收尾 commit，这里自行提交。
+        session.commit()
+        yield {
+            "type": "done",
+            "message": {
+                "id": str(reply_message.id),
+                "role": "assistant",
+                "text": reply_text,
+                "page_context": None,
+                "upstream_metadata": metadata,
+                "created_at": iso_utc(reply_message.created_at) or "",
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # 内部
+    # ------------------------------------------------------------------
+
+    def _save_user_message(
+        self,
+        session: Session,
+        *,
+        user: User,
+        session_row: AssistantSession,
+        text: str,
+        page_context_raw: dict[str, Any] | None,
+    ) -> str | None:
+        """校验 + 脱敏 + 落库 user 消息（独立事务提交）；返回 context_json。"""
+        begin_immediate_if_sqlite(session)
         cleaned_text = (text or "").strip()
         if not cleaned_text:
             raise DomainError(DomainErrorCode.VALIDATION_FAILED, "消息不能为空", status_code=400)
@@ -177,24 +311,24 @@ class AssistantService:
         # 用户消息先独立持久化，随后释放 SQLite 写锁再调用慢上游；上游失败时
         # 也保留这条消息，便于用户重试，而不会锁住全站写请求。
         session.commit()
+        return context_json
 
-        # LLM 回复：同步调用（第一阶段无流式）；失败时 user 消息仍保留，
-        # 错误透传给前端（不吞消息）。历史（含刚写入的干净 user 消息）
-        # 由 _call_llm 自行加载。
-        config_id = session_row.llm_config_id
-        reply_text, metadata = await self._call_llm(
-            session,
-            user=user,
-            config_id=config_id,
-            context_json=context_json,
-            session_id=session_row.id,
-        )
+    def _append_reply_message(
+        self,
+        session: Session,
+        *,
+        owner_user_id: int,
+        assistant_session_id: int,
+        reply_text: str,
+        metadata: dict[str, Any],
+    ) -> AssistantMessage:
+        """落库 assistant 回复并推进会话 last_message_at（调用方负责提交）。"""
         begin_immediate_if_sqlite(session)
         current_session = session.get(AssistantSession, assistant_session_id, with_for_update=True)
         if (
             current_session is None
             or current_session.deleted_at is not None
-            or current_session.owner_user_id != owner_id
+            or current_session.owner_user_id != owner_user_id
         ):
             raise DomainError(DomainErrorCode.NOT_FOUND, "会话不存在", status_code=404)
         reply_message = AssistantMessage(
@@ -207,10 +341,6 @@ class AssistantService:
         current_session.last_message_at = utc_now()
         session.flush()
         return reply_message
-
-    # ------------------------------------------------------------------
-    # 内部
-    # ------------------------------------------------------------------
 
     def _validate_llm_config(
         self, session: Session, user: User, llm_config_id: int | None
@@ -232,7 +362,7 @@ class AssistantService:
             )
         return llm_config_id
 
-    async def _call_llm(
+    async def _build_request(
         self,
         session: Session,
         *,
@@ -240,8 +370,12 @@ class AssistantService:
         config_id: int | None,
         context_json: str | None,
         session_id: int,
-    ) -> tuple[str, dict[str, Any]]:
-        """调用用户 LLM 配置生成回复；返回 (回复文本, 脱敏元数据)。"""
+    ) -> tuple[LLMProtocol, str, str, dict[str, str], float, dict[str, Any]]:
+        """加载配置与历史并组装上游请求（同步/流式共用）。
+
+        返回 (protocol, base_url, api_key, headers, timeout, request_body)；
+        网络 I/O 前结束读取事务（rollback），历史与凭据均已复制到局部。
+        """
         if config_id is None:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
@@ -325,6 +459,32 @@ class AssistantService:
         _apply_config(request_body, cfg)
         # 历史与配置均已复制到局部变量；网络 I/O 前结束读取事务。
         session.rollback()
+        return protocol, base_url, secret, headers, float(timeout_seconds), request_body
+
+    async def _call_llm(
+        self,
+        session: Session,
+        *,
+        user: User,
+        config_id: int | None,
+        context_json: str | None,
+        session_id: int,
+    ) -> tuple[str, dict[str, Any]]:
+        """调用用户 LLM 配置生成回复；返回 (回复文本, 脱敏元数据)。"""
+        (
+            protocol,
+            base_url,
+            secret,
+            headers,
+            timeout_seconds,
+            request_body,
+        ) = await self._build_request(
+            session,
+            user=user,
+            config_id=config_id,
+            context_json=context_json,
+            session_id=session_id,
+        )
         if protocol is LLMProtocol.OPENAI_CHAT:
             upstream = await llm_upstream.post_chat_completions(
                 base_url=base_url,

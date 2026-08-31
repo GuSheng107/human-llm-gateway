@@ -215,7 +215,9 @@ def _view(
         is_enabled=row.is_enabled,
         api_key_set=bool(row.secret_ciphertext),
         headers=[LlmConfigHeaderView(name=n, value_set=True) for n in header_names],
-        default_temperature=float(row.default_temperature) if row.default_temperature is not None else None,
+        default_temperature=float(row.default_temperature)
+        if row.default_temperature is not None
+        else None,
         default_top_p=float(row.default_top_p) if row.default_top_p is not None else None,
         default_top_k=row.default_top_k,
         max_output_tokens=row.max_output_tokens,

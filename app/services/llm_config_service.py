@@ -1,8 +1,8 @@
-"""LLM 配置用例：CRUD、Secret 加密、连通性测试与引用安全删除（M7-A）。
+"""LLM 配置用例：CRUD、Secret 加密、连通性测试与引用安全删除（M7-A）�?
 
-LLM Secret 和自定义 Header 整体按 Secret 处理：服务端加密落库，
-任何响应（列表 / 详情 / 连通性测试）只返回"已设置 / 未设置"标记，
-绝不回显明文。被 API Key 或活动任务引用的配置不允许删除，返回 409。
+LLM Secret 和自定义 Header 整体�?Secret 处理：服务端加密落库�?
+任何响应（列�?/ 详情 / 连通性测试）只返�?已设�?/ 未设�?标记�?
+绝不回显明文。被 API Key 或活动任务引用的配置不允许删除，返回 409�?
 """
 
 from __future__ import annotations
@@ -45,12 +45,12 @@ _LLM_SECRET_PURPOSE = "llm-config"
 
 
 def _normalize_base_url(raw: str, protocol: LLMProtocol | None = None) -> str:
-    """去尾斜杠与空白；要求 http(s) scheme + host。
+    """去尾斜杠与空白；要求 http(s) scheme + host�?
 
-    Anthropic 协议自动补齐 /v1 前缀（官方 SDK base_url 即 https://host，
-    endpoint 为 /v1/messages）：填 https://host 或 https://host/v1 均可，
-    统一归一为后者，消除"OpenAI 要带 /v1、Anthropic 不带"的不对称。
-    OpenAI 兼容协议保持用户原样（生态中网关路径不一，不做猜测）。
+    Anthropic 协议自动补齐 /v1 前缀（官�?SDK base_url �?https://host�?
+    endpoint �?/v1/messages）：�?https://host �?https://host/v1 均可�?
+    统一归一为后者，消除"OpenAI 要带 /v1、Anthropic 不带"的不对称�?
+    OpenAI 兼容协议保持用户原样（生态中网关路径不一，不做猜测）�?
     """
     value = (raw or "").strip()
     if not value:
@@ -65,7 +65,7 @@ def _normalize_base_url(raw: str, protocol: LLMProtocol | None = None) -> str:
     if parsed.scheme not in ("http", "https"):
         raise DomainError(
             DomainErrorCode.VALIDATION_FAILED,
-            "base_url 必须使用 http 或 https scheme",
+            "base_url 必须使用 http �?https scheme",
             status_code=400,
         )
     if not parsed.netloc:
@@ -74,13 +74,13 @@ def _normalize_base_url(raw: str, protocol: LLMProtocol | None = None) -> str:
         )
     cleaned = value.rstrip("/")
     if protocol is LLMProtocol.ANTHROPIC_MESSAGES:
-        # path 为空或已是 /v1（或 /v1/ 结尾已 rstrip）时补齐/保持；
-        # 其他自定义 path（代理场景）原样保留。
+        # path 为空或已�?/v1（或 /v1/ 结尾�?rstrip）时补齐/保持�?
+        # 其他自定�?path（代理场景）原样保留�?
         path = parsed.path.rstrip("/")
         if path == "":
             cleaned = f"{cleaned}/v1"
-    # SSRF 分档校验：云元数据无条件拒；私有段受配置开关控制。
-    # 域名走 getaddrinfo 全量解析（含 rebinding fail-closed）。
+    # SSRF 分档校验：云元数据无条件拒；私有段受配置开关控制�?
+    # 域名�?getaddrinfo 全量解析（含 rebinding fail-closed）�?
     from ..core.ssrf import SsrfViolation, validate_base_url
 
     try:
@@ -96,7 +96,7 @@ def _normalize_headers(raw: dict[str, str] | None) -> dict[str, str]:
     if len(raw) > LLM_MAX_HEADERS:
         raise DomainError(
             DomainErrorCode.VALIDATION_FAILED,
-            f"自定义 Header 数量不能超过 {LLM_MAX_HEADERS}",
+            f"自定�?Header 数量不能超过 {LLM_MAX_HEADERS}",
             status_code=400,
         )
     normalized: dict[str, str] = {}
@@ -104,7 +104,7 @@ def _normalize_headers(raw: dict[str, str] | None) -> dict[str, str]:
         if not isinstance(key, str) or not isinstance(value, str):
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                "自定义 Header 必须为字符串键值对",
+                "自定�?Header 必须为字符串键值对",
                 status_code=400,
             )
         cleaned_key = key.strip()
@@ -112,33 +112,33 @@ def _normalize_headers(raw: dict[str, str] | None) -> dict[str, str]:
         if not cleaned_key:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                "自定义 Header 名不能为空",
+                "自定�?Header 名不能为�?,
                 status_code=400,
             )
         if len(cleaned_key) > LLM_HEADER_NAME_MAX_LENGTH:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header 名长度不能超过 {LLM_HEADER_NAME_MAX_LENGTH}",
+                f"自定�?Header 名长度不能超�?{LLM_HEADER_NAME_MAX_LENGTH}",
                 status_code=400,
             )
         if len(cleaned_value) > LLM_HEADER_VALUE_MAX_LENGTH:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header 值长度不能超过 {LLM_HEADER_VALUE_MAX_LENGTH}",
+                f"自定�?Header 值长度不能超�?{LLM_HEADER_VALUE_MAX_LENGTH}",
                 status_code=400,
             )
         if cleaned_key.lower() in {"authorization", "x-api-key"}:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header {cleaned_key} 不允许（API Key 通过 api_key 字段管理）",
+                f"自定�?Header {cleaned_key} 不允许（API Key 通过 api_key 字段管理�?,
                 status_code=400,
             )
-        # 大小写不敏感去重：Foo 与 foo 在 HTTP 语义中同名，显式拒绝
-        # 而非静默覆盖。
+        # 大小写不敏感去重：Foo �?foo �?HTTP 语义中同名，显式拒绝
+        # 而非静默覆盖�?
         if cleaned_key.lower() in {k.lower() for k in normalized}:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header {cleaned_key} 与已有 Header 大小写冲突",
+                f"自定�?Header {cleaned_key} 与已�?Header 大小写冲�?,
                 status_code=400,
             )
         normalized[cleaned_key] = cleaned_value
@@ -171,14 +171,14 @@ class LlmConfigService:
     def get_owned(self, session: Session, config_id: int, user: User) -> LlmConfig:
         row = self.repo.get(session, config_id)
         if row is None or (user.role is not UserRole.ADMIN and row.owner_user_id != user.id):
-            raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存在", status_code=404)
+            raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存�?, status_code=404)
         return row
 
     @staticmethod
     def get_secret_pair(session: Session, row: LlmConfig) -> tuple[str, dict[str, str]]:
-        """解密配置的 Secret 与自定义 Header（服务层内部共用）。
+        """解密配置�?Secret 与自定义 Header（服务层内部共用）�?
 
-        不做归属校验（调用方已完成）；Secret 仅在内存使用，不进入响应。
+        不做归属校验（调用方已完成）；Secret 仅在内存使用，不进入响应�?
         """
         try:
             secret = decrypt_secret(
@@ -200,7 +200,7 @@ class LlmConfigService:
             except (ValueError, json.JSONDecodeError) as exc:
                 raise DomainError(
                     DomainErrorCode.CONFLICT,
-                    "LLM 自定义 Header 解密失败，请重新保存配置",
+                    "LLM 自定�?Header 解密失败，请重新保存配置",
                     status_code=409,
                 ) from exc
         return secret, headers
@@ -208,9 +208,9 @@ class LlmConfigService:
     def get_owned_with_secret(
         self, session: Session, config_id: int, user: User
     ) -> tuple[LlmConfig, str, dict[str, str]]:
-        """取配置并解密 Secret / Headers。仅供服务层内部调用（如连通性测试）。
+        """取配置并解密 Secret / Headers。仅供服务层内部调用（如连通性测试）�?
 
-        Secret 与 Header 不进入响应，由调用方使用后丢弃。
+        Secret �?Header 不进入响应，由调用方使用后丢弃�?
         """
         row = self.get_owned(session, config_id, user)
         try:
@@ -235,7 +235,7 @@ class LlmConfigService:
             except Exception as exc:
                 raise DomainError(
                     DomainErrorCode.CONFLICT,
-                    "LLM 自定义 Header 解密失败，请重新保存配置",
+                    "LLM 自定�?Header 解密失败，请重新保存配置",
                     status_code=409,
                 ) from exc
         return row, secret, headers
@@ -287,7 +287,7 @@ class LlmConfigService:
         normalized_extra = extra_body or {}
         if not isinstance(normalized_extra, dict):
             raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED, "extra_body 必须是 JSON 对象", status_code=400
+                DomainErrorCode.VALIDATION_FAILED, "extra_body 必须�?JSON 对象", status_code=400
             )
         normalized_headers = _normalize_headers(headers)
         if not api_key:
@@ -299,7 +299,7 @@ class LlmConfigService:
         if self.repo.get_by_name(session, owner_user_id=owner.id, name=name.strip()):
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "同名 LLM 配置已存在",
+                "同名 LLM 配置已存�?,
                 status_code=409,
             )
         row = LlmConfig(
@@ -340,7 +340,7 @@ class LlmConfigService:
             session.flush()
         except IntegrityError as exc:
             raise DomainError(
-                DomainErrorCode.CONFLICT, "同名 LLM 配置已存在", status_code=409
+                DomainErrorCode.CONFLICT, "同名 LLM 配置已存�?, status_code=409
             ) from exc
         self.audit.add(
             session,
@@ -386,7 +386,7 @@ class LlmConfigService:
                 if self.repo.get_by_name(session, owner_user_id=owner_id, name=new_name):
                     raise DomainError(
                         DomainErrorCode.CONFLICT,
-                        "同名 LLM 配置已存在",
+                        "同名 LLM 配置已存�?,
                         status_code=409,
                     )
                 row.name = new_name
@@ -406,14 +406,14 @@ class LlmConfigService:
                 changed.append("protocol")
 
         if "base_url" in fields and fields["base_url"] is not None:
-            # 协议字段（若同请求更新）已先行写入 row，归一化按目标协议执行；
-            # 协议切换后旧 base_url 形态会被重新归一（如 anthropic 补 /v1）。
+            # 协议字段（若同请求更新）已先行写�?row，归一化按目标协议执行�?
+            # 协议切换后旧 base_url 形态会被重新归一（如 anthropic �?/v1）�?
             normalized = _normalize_base_url(fields["base_url"], row.protocol)
             if normalized != row.base_url:
                 row.base_url = normalized
                 changed.append("base_url")
         elif "protocol" in fields and changed and "protocol" in changed:
-            # 仅切协议未提交 base_url：对既有 base_url 按新协议重新归一。
+            # 仅切协议未提�?base_url：对既有 base_url 按新协议重新归一�?
             renormalized = _normalize_base_url(row.base_url, row.protocol)
             if renormalized != row.base_url:
                 row.base_url = renormalized
@@ -440,8 +440,8 @@ class LlmConfigService:
 
         if "api_key" in fields:
             new_key = fields["api_key"]
-            # PATCH 语义：None / 空串 / 纯空白一律视为"保留旧值"（与前端
-            # "留空表示保留旧值"提示一致）；仅显式提交非空字符串才轮换密钥。
+            # PATCH 语义：None / 空串 / 纯空白一律视�?保留旧�?（与前端
+            # "留空表示保留旧�?提示一致）；仅显式提交非空字符串才轮换密钥�?
             if isinstance(new_key, str) and new_key.strip():
                 row.secret_ciphertext = encrypt_secret(
                     new_key.strip(), get_settings().app_secret, _LLM_SECRET_PURPOSE
@@ -460,7 +460,7 @@ class LlmConfigService:
                 row.headers_ciphertext = None
             changed.append("headers")
 
-        # ---- 采样参数（None 表示清空，缺省 key 表示保留）----
+        # ---- 采样参数（None 表示清空，缺�?key 表示保留�?---
         for field_name in (
             "default_temperature",
             "default_top_p",
@@ -501,7 +501,7 @@ class LlmConfigService:
             except ValueError as exc:
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED,
-                    f"不支持的思考模式: {fields['thinking_mode']}",
+                    f"不支持的思考模�? {fields['thinking_mode']}",
                     status_code=400,
                 ) from exc
             if new_mode != row.thinking_mode:
@@ -516,7 +516,7 @@ class LlmConfigService:
             except ValueError as exc:
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED,
-                    f"不支持的思考等级: {fields['thinking_level']}",
+                    f"不支持的思考等�? {fields['thinking_level']}",
                     status_code=400,
                 ) from exc
             if new_level != row.thinking_level:
@@ -528,14 +528,14 @@ class LlmConfigService:
             if not isinstance(new_extra, dict):
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED,
-                    "extra_body 必须是 JSON 对象",
+                    "extra_body 必须�?JSON 对象",
                     status_code=400,
                 )
             if new_extra != row.extra_body:
                 row.extra_body = new_extra
                 changed.append("extra_body")
 
-        # 采样区间 + 思考等级联动校验（协议可能同请求切换，以行终态为准）。
+        # 采样区间 + 思考等级联动校验（协议可能同请求切换，以行终态为准）�?
         self._validate_sampling(
             temperature=row.default_temperature,
             top_p=row.default_top_p,
@@ -551,7 +551,7 @@ class LlmConfigService:
             session.flush()
         except IntegrityError as exc:
             raise DomainError(
-                DomainErrorCode.CONFLICT, "同名 LLM 配置已存在", status_code=409
+                DomainErrorCode.CONFLICT, "同名 LLM 配置已存�?, status_code=409
             ) from exc
         if changed:
             self.audit.add(
@@ -566,7 +566,7 @@ class LlmConfigService:
         return row
 
     # ------------------------------------------------------------------
-    # 删除（被引用时拒绝，软删除并清空 Secret）
+    # 删除（被引用时拒绝，软删除并清空 Secret�?
     # ------------------------------------------------------------------
 
     def delete(self, session: Session, *, row: LlmConfig, actor: User) -> None:
@@ -577,9 +577,9 @@ class LlmConfigService:
             raise DomainError(
                 DomainErrorCode.CONFLICT,
                 (
-                    f"LLM 配置仍被 {key_refs} 个 API Key"
-                    + (f" 与 {task_refs} 个活动任务" if task_refs else "")
-                    + " 引用，无法删除"
+                    f"LLM 配置仍被 {key_refs} �?API Key"
+                    + (f" �?{task_refs} 个活动任�? if task_refs else "")
+                    + " 引用，无法删�?
                 ),
                 status_code=409,
             )
@@ -625,7 +625,7 @@ class LlmConfigService:
         if seconds < LLM_TIMEOUT_MIN_SECONDS or seconds > LLM_TIMEOUT_MAX_SECONDS:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                f"timeout_seconds 必须在 {LLM_TIMEOUT_MIN_SECONDS} 到 {LLM_TIMEOUT_MAX_SECONDS} 之间",
+                f"timeout_seconds 必须�?{LLM_TIMEOUT_MIN_SECONDS} �?{LLM_TIMEOUT_MAX_SECONDS} 之间",
                 status_code=400,
             )
 
@@ -646,11 +646,11 @@ class LlmConfigService:
             )
 
         if temperature is not None and not (0 <= temperature <= 2):
-            raise bad("temperature", "必须在 0.00-2.00")
+            raise bad("temperature", "必须�?0.00-2.00")
         if top_p is not None and not (0 <= top_p <= 1):
-            raise bad("top_p", "必须在 0.00-1.00")
+            raise bad("top_p", "必须�?0.00-1.00")
         if top_k is not None and not (1 <= top_k <= 100):
-            raise bad("top_k", "必须在 1-100")
+            raise bad("top_k", "必须�?1-100")
         for field_name, value in (
             ("max_output_tokens", max_output_tokens),
             ("context_window_input", context_window_input),
@@ -677,7 +677,7 @@ class LlmConfigService:
         ):
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                "开启思考模式时必须指定思考等级",
+                "开启思考模式时必须指定思考等�?,
                 status_code=400,
             )
 
@@ -689,7 +689,7 @@ class LlmConfigService:
             return Decimal(str(value))
         except InvalidOperation as exc:
             raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED, f"{field} 必须是数字", status_code=400
+                DomainErrorCode.VALIDATION_FAILED, f"{field} 必须是数�?, status_code=400
             ) from exc
 
 

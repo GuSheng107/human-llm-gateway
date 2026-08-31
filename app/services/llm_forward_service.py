@@ -1,16 +1,16 @@
-"""LLM 自动转发服务（M7-C）。
+"""LLM 自动转发服务（M7-C）�?
 
-- `llm` 策略：任务创建后直接进入转发（不经 WAITING_HUMAN），结果写回
-  RESPONSE_READY，由推理端点既有伪流式路径输出。
+- `llm` 策略：任务创建后直接进入转发（不�?WAITING_HUMAN），结果写回
+  RESPONSE_READY，由推理端点既有伪流式路径输出�?
 - `human_fallback_llm` 策略：人工等待超时后通过 claim_fallback 原子声明
-  一次转发权（WAITING_HUMAN -> FORWARDING_LLM），失败即终态 TIMED_OUT，
-  不重试。
+  一次转发权（WAITING_HUMAN -> FORWARDING_LLM），失败即终�?TIMED_OUT�?
+  不重试�?
 - 仅同协议转发（Chat/Responses -> openai_chat；Anthropic -> anthropic）；
-  跨协议返回 400 `unsupported_parameter`（完整字段矩阵见 docs/API_CONTRACT.md
-  §12.6，跨协议转换在后续阶段逐项开放）。
-- 身份 system 指令：从 Fake Model description 派生，追加在调用方已有
-  system 内容之后（§12.4 请求保真）。
-- 上游响应解析为统一 ReplyDraft；响应 model 由既有渲染器改写为 Fake Model。
+  跨协议返�?400 `unsupported_parameter`（完整字段矩阵见 docs/API_CONTRACT.md
+  §12.6，跨协议转换在后续阶段逐项开放）�?
+- 身份 system 指令：从 Fake Model description 派生，追加在调用方已�?
+  system 内容之后（�?2.4 请求保真）�?
+- 上游响应解析为统一 ReplyDraft；响�?model 由既有渲染器改写�?Fake Model�?
 """
 
 from __future__ import annotations
@@ -47,24 +47,24 @@ from .llm_draft_service import (
     _parse_responses_response,
 )
 
-# Inference protocol -> 允许的 LLM 协议（chat 与 responses 上游结果解析统一）。
+# Inference protocol -> 允许�?LLM 协议（chat �?responses 上游结果解析统一）�?
 _INFERENCE_TO_LLM: dict[InferenceProtocol, LLMProtocol] = {
     InferenceProtocol.OPENAI_CHAT: LLMProtocol.OPENAI_CHAT,
     InferenceProtocol.OPENAI_RESPONSES: LLMProtocol.OPENAI_RESPONSES,
     InferenceProtocol.ANTHROPIC_MESSAGES: LLMProtocol.ANTHROPIC_MESSAGES,
 }
 
-# 身份指令兜底（Fake Model 无 description 时）。
+# 身份指令兜底（Fake Model �?description 时）�?
 _IDENTITY_FALLBACK = (
     "You are a helpful assistant. Respond naturally and concisely in the language the user uses."
 )
 
 
 def identity_system_message(fake_model: FakeModel | None, model_id: str) -> str:
-    """从 Fake Model description 派生身份 system 指令（§12.4）。
+    """�?Fake Model description 派生身份 system 指令（�?2.4）�?
 
-    description 已声明模型人格/能力时直接使用；否则使用通用兜底文案。
-    指令在协议适配器中追加到调用方已有 system 内容之后。
+    description 已声明模型人�?能力时直接使用；否则使用通用兜底文案�?
+    指令在协议适配器中追加到调用方已有 system 内容之后�?
     """
     description = (fake_model.description or "").strip() if fake_model else ""
     if description:
@@ -73,7 +73,7 @@ def identity_system_message(fake_model: FakeModel | None, model_id: str) -> str:
 
 
 def _inject_identity_chat(body: dict[str, Any], identity: str) -> dict[str, Any]:
-    """Chat 请求：身份指令追加在已有 system 内容之后。"""
+    """Chat 请求：身份指令追加在已有 system 内容之后�?""
     messages = list(body.get("messages") or [])
     for index, message in enumerate(messages):
         if message.get("role") == "system":
@@ -88,7 +88,7 @@ def _inject_identity_chat(body: dict[str, Any], identity: str) -> dict[str, Any]
 
 
 def _inject_identity_anthropic(body: dict[str, Any], identity: str) -> dict[str, Any]:
-    """Anthropic 请求：system 为字符串时追加；块数组时附加文本块。"""
+    """Anthropic 请求：system 为字符串时追加；块数组时附加文本块�?""
     system = body.get("system")
     if system is None:
         return {**body, "system": identity}
@@ -112,10 +112,10 @@ class LlmForwardService:
     def resolve_config(
         self, session: Session, task: RequestTask
     ) -> tuple[LlmConfig, FakeModel | None]:
-        """按任务快照解析 LLM 配置与 Fake Model（协议任意组合）。
+        """按任务快照解�?LLM 配置�?Fake Model（协议任意组合）�?
 
-        同协议走既有直拼路径；跨协议由 cross 矩阵逐项转换或拒绝
-        （docs/API_CONTRACT.md §12.6）。
+        同协议走既有直拼路径；跨协议�?cross 矩阵逐项转换或拒�?
+        （docs/API_CONTRACT.md §12.6）�?
         """
         config_id = task.llm_config_id_snapshot
         if config_id is None:
@@ -141,10 +141,10 @@ class LlmForwardService:
     async def forward(
         self, session: Session, task: RequestTask, *, reason: str
     ) -> tuple[bool, ReplyDraft | None, str | None]:
-        """执行一次转发（非流式上游）；返回 (accepted, draft, error_code)。
+        """执行一次转发（非流式上游）；返�?(accepted, draft, error_code)�?
 
-        accepted=False 表示声明失败（他人已裁决）或转发失败；
-        调用方据此推进终态。转发失败不重试（fallback 只转发一次）。
+        accepted=False 表示声明失败（他人已裁决）或转发失败�?
+        调用方据此推进终态。转发失败不重试（fallback 只转发一次）�?
         """
         result = await self._forward_inner(session, task, reason=reason, stream=False)
         return result
@@ -152,19 +152,19 @@ class LlmForwardService:
     async def forward_stream(
         self, session: Session, task: RequestTask, *, reason: str
     ) -> tuple[bool, list[Any] | None, str | None]:
-        """执行一次流式转发；返回 (accepted, chunks, error_code)。
+        """执行一次流式转发；返回 (accepted, chunks, error_code)�?
 
-        上游以 SSE 接收，增量归一为 UpstreamChunk 列表；接收完成后聚合为
-        ReplyDraft 并按既有原子裁决写回（完整结果先持久化，§13.3 伪流式
-        输出前已落库的语义保持）。调用方拿到 chunks 后即可回放输出。
+        上游�?SSE 接收，增量归一�?UpstreamChunk 列表；接收完成后聚合�?
+        ReplyDraft 并按既有原子裁决写回（完整结果先持久化，§13.3 伪流�?
+        输出前已落库的语义保持）。调用方拿到 chunks 后即可回放输出�?
         """
         return await self._forward_inner(session, task, reason=reason, stream=True)
 
     async def _forward_inner(
         self, session: Session, task: RequestTask, *, reason: str, stream: bool
     ) -> tuple[bool, Any, str | None]:
-        """转发内核：声明 -> 上游（流式/非流式）-> 原子接受。"""
-        # 原子声明转发权：WAITING_HUMAN -> FORWARDING_LLM（唯一入口）。
+        """转发内核：声�?-> 上游（流�?非流式）-> 原子接受�?""
+        # 原子声明转发权：WAITING_HUMAN -> FORWARDING_LLM（唯一入口）�?
         if not self.tasks.claim_fallback(session, task.id):
             return False, None, "claim_lost"
         session.commit()
@@ -187,7 +187,7 @@ class LlmForwardService:
             return False, None, exc.code.value
 
         if stream:
-            # 聚合流式增量为 ReplyDraft（完整结果先持久化再回放，§13.3）。
+            # 聚合流式增量�?ReplyDraft（完整结果先持久化再回放，�?3.3）�?
             collected: dict[str, Any] = {}
             for chunk in chunks:
                 llm_upstream.collect_chunk(collected, chunk)
@@ -199,8 +199,8 @@ class LlmForwardService:
             )
 
         payload = draft.model_dump_json(exclude_none=True)
-        # 不依赖 ORM 缓存版本：以 claim 后的 DB 实际版本为准（SQLite RETURNING
-        # 或 flush 回填都可能使 ORM 值漂移，读库最稳）。
+        # 不依�?ORM 缓存版本：以 claim 后的 DB 实际版本为准（SQLite RETURNING
+        # �?flush 回填都可能使 ORM 值漂移，读库最稳）�?
         current_version = session.execute(
             select(RequestTask.version).where(RequestTask.id == task.id)
         ).scalar_one()
@@ -239,7 +239,7 @@ class LlmForwardService:
         fake_model: FakeModel | None,
         normalized: dict[str, Any],
     ) -> dict[str, Any]:
-        """构造目标协议请求体：同协议直拼，跨协议走 cross 矩阵。"""
+        """构造目标协议请求体：同协议直拼，跨协议�?cross 矩阵�?""
         from ..protocols import cross
 
         expected = _INFERENCE_TO_LLM.get(task.protocol)
@@ -269,7 +269,9 @@ class LlmForwardService:
                 return _inject_identity_anthropic(body, identity)
         if cfg.protocol is LLMProtocol.OPENAI_CHAT:
             if expected in (LLMProtocol.OPENAI_CHAT, LLMProtocol.OPENAI_RESPONSES):
-                body = _build_chat_request(real_model=cfg.real_model, normalized=normalized, cfg=cfg)
+                body = _build_chat_request(
+                    real_model=cfg.real_model, normalized=normalized, cfg=cfg
+                )
             else:
                 body = cross.to_chat_request(normalized, cfg.real_model)
                 _apply_config(body, cfg)
@@ -277,12 +279,10 @@ class LlmForwardService:
         if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
             body = cross.to_responses_request(normalized, cfg.real_model)
             _apply_config(body, cfg)
-            # Responses 原生支持 instructions；身份指令追加，保留调用方内容。
+            # Responses 原生支持 instructions；身份指令追加，保留调用方内容�?
             existing = body.get("instructions")
             body["instructions"] = (
-                f"{existing}\n\n{identity}"
-                if isinstance(existing, str) and existing
-                else identity
+                f"{existing}\n\n{identity}" if isinstance(existing, str) and existing else identity
             )
             return body
         if expected is LLMProtocol.ANTHROPIC_MESSAGES:
@@ -344,7 +344,7 @@ class LlmForwardService:
         cfg: LlmConfig,
         fake_model: FakeModel | None,
     ) -> list[Any]:
-        """流式接收上游增量（UpstreamChunk 列表），由内核统一聚合接受。"""
+        """流式接收上游增量（UpstreamChunk 列表），由内核统一聚合接受�?""
         from ..services.llm_upstream import UpstreamChunk
 
         secret, headers = _decrypt_config(cfg)

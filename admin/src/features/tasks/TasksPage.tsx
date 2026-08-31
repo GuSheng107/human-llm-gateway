@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { listTasks } from "../../api/tasks";
 import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
@@ -9,6 +10,7 @@ import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type { TaskItem, TaskState } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
+import { DeadlineBadge } from "./DeadlineBadge";
 import { TaskDetailDrawer } from "./TaskDetailDrawer";
 import {
   DELIVERY_MODE_LABELS,
@@ -16,14 +18,31 @@ import {
   REPLY_STRATEGY_LABELS,
   STATE_FILTER_OPTIONS,
   formatDateTime,
-  formatDeadline,
 } from "./labels";
 
 const PAGE_SIZE = 20;
 
+type Bucket = "all" | "in_progress" | "finished" | "failed";
+
+const BUCKETS: { value: Bucket; label: string }[] = [
+  { value: "in_progress", label: "进行中" },
+  { value: "finished", label: "已完成" },
+  { value: "failed", label: "失败" },
+  { value: "all", label: "全部" },
+];
+
+const DEFAULT_BUCKET: Bucket = "in_progress";
+
 export function TasksPage() {
   const { user: currentUser } = useAuth();
   const isAdmin = currentUser?.role === "admin";
+  const [searchParams, setSearchParams] = useSearchParams();
+  const bucketParam = searchParams.get("bucket") as Bucket | null;
+  const bucket: Bucket =
+    bucketParam && BUCKETS.some((option) => option.value === bucketParam)
+      ? bucketParam
+      : DEFAULT_BUCKET;
+  const deepLinkTask = searchParams.get("task");
   const [items, setItems] = useState<TaskItem[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -32,7 +51,15 @@ export function TasksPage() {
   const [stateFilter, setStateFilter] = useState<TaskState | "">("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [detailId, setDetailId] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(deepLinkTask);
+
+  const updateBucket = (next: Bucket) => {
+    setPage(1);
+    const params = new URLSearchParams(searchParams);
+    if (next === DEFAULT_BUCKET) params.delete("bucket");
+    else params.set("bucket", next);
+    setSearchParams(params, { replace: true });
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -42,6 +69,7 @@ export function TasksPage() {
         page,
         search,
         state: stateFilter || undefined,
+        bucket: bucket === "all" ? undefined : bucket,
       });
       setItems(result.items);
       setTotal(result.total);
@@ -50,7 +78,7 @@ export function TasksPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, stateFilter]);
+  }, [page, search, stateFilter, bucket]);
 
   useEffect(() => void load(), [load]);
 
@@ -60,45 +88,71 @@ export function TasksPage() {
     setSearch(input.trim());
   };
 
+  const closeDetail = () => {
+    setDetailId(null);
+    if (deepLinkTask) {
+      const params = new URLSearchParams(searchParams);
+      params.delete("task");
+      setSearchParams(params, { replace: true });
+    }
+  };
+
   return (
     <div className="space-y-5">
       <PageHeader
-        title="任务工作台"
-        description={isAdmin ? "全部任务（只读）" : "处理你的人工任务并提交回复"}
+        title="任务记录"
+        description={
+          isAdmin ? "全部任务（只读）" : "查看任务记录，回复归属于自己的进行中任务"
+        }
         dismissId="tasks"
       />
 
       <Card>
-        <form
-          onSubmit={submitSearch}
-          className="flex flex-wrap gap-2 border-b border-slate-100 p-4"
-        >
-          <input
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            className="field-input min-w-0 flex-1 sm:max-w-sm"
-            placeholder="搜索任务编号或模型"
-          />
-          <select
-            value={stateFilter}
-            onChange={(event) => {
-              setStateFilter(event.target.value as TaskState | "");
-              setPage(1);
-            }}
-            className="field-input sm:w-44"
-          >
-            <option value="">全部状态</option>
-            {STATE_FILTER_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
+        <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-4 py-3">
+          <div className="flex rounded-md border border-slate-200 p-0.5">
+            {BUCKETS.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => updateBucket(option.value)}
+                className={`rounded px-3 py-1 text-xs transition ${
+                  bucket === option.value
+                    ? "bg-primary text-white"
+                    : "text-slate-500 hover:text-slate-700"
+                }`}
+              >
                 {option.label}
-              </option>
+              </button>
             ))}
-          </select>
-          <Button variant="ghost" type="submit">
-            <Icon name="search" className="h-3.5 w-3.5" />
-            搜索
-          </Button>
-        </form>
+          </div>
+          <form onSubmit={submitSearch} className="flex min-w-0 flex-1 gap-2">
+            <input
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              className="field-input min-w-0 flex-1 sm:max-w-sm"
+              placeholder="搜索任务编号或模型"
+            />
+            <select
+              value={stateFilter}
+              onChange={(event) => {
+                setStateFilter(event.target.value as TaskState | "");
+                setPage(1);
+              }}
+              className="field-input sm:w-44"
+            >
+              <option value="">全部状态</option>
+              {STATE_FILTER_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <Button variant="ghost" type="submit">
+              <Icon name="search" className="h-3.5 w-3.5" />
+              搜索
+            </Button>
+          </form>
+        </div>
         {error && <ErrorBanner message={error} className="m-4" />}
         <div className="overflow-x-auto">
           <table className="min-w-[960px] w-full text-left text-xs">
@@ -148,10 +202,8 @@ export function TasksPage() {
                   <td className="px-4 py-3 text-slate-500">
                     {formatDateTime(task.created_at)}
                   </td>
-                  <td className="px-4 py-3 text-slate-500">
-                    {task.human_deadline_at
-                      ? formatDeadline(task.human_deadline_at)
-                      : "-"}
+                  <td className="px-4 py-3">
+                    <DeadlineBadge deadline={task.human_deadline_at} />
                   </td>
                   {isAdmin && (
                     <td className="px-4 py-3 text-slate-500">
@@ -186,7 +238,7 @@ export function TasksPage() {
       {detailId && (
         <TaskDetailDrawer
           taskId={detailId}
-          onClose={() => setDetailId(null)}
+          onClose={closeDetail}
           onChanged={() => void load()}
         />
       )}

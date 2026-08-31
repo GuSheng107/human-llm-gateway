@@ -1,12 +1,12 @@
-"""M7-C LLM 自动转发测试（llm / human_fallback_llm 策略）。
+"""M7-C LLM 自动转发测试（llm / human_fallback_llm 策略）�?
 
-覆盖：
-- llm 策略：任务创建后直接转发，不经人工等待，响应使用 Fake Model 标识。
-- human_fallback_llm：人工超时后触发一次 fallback；人工先到则不触发。
-- fallback 转发失败（上游错误/声明丢失）走终态，不重试。
-- 身份 system 指令：description 派生 + 兜底；追加在调用方 system 之后。
-- 跨协议转发按矩阵返回 unsupported（对外通用 500，不暴露细节）。
-- 上游 tool call 只写入 ReplyDraft，不被执行。
+覆盖�?
+- llm 策略：任务创建后直接转发，不经人工等待，响应使用 Fake Model 标识�?
+- human_fallback_llm：人工超时后触发一�?fallback；人工先到则不触发�?
+- fallback 转发失败（上游错�?声明丢失）走终态，不重试�?
+- 身份 system 指令：description 派生 + 兜底；追加在调用�?system 之后�?
+- 跨协议转发按矩阵返回 unsupported（对外通用 500，不暴露细节）�?
+- 上游 tool call 只写�?ReplyDraft，不被执行�?
 """
 
 from __future__ import annotations
@@ -130,11 +130,11 @@ def test_identity_message_from_description() -> None:
         model_id="deepseek-v4-pro",
         display_name="网关模型",
         owned_by="gateway",
-        description="你是专业翻译助手。",
+        description="你是专业翻译助手�?,
     )
     message = identity_system_message(model, "deepseek-v4-pro")
     assert message.startswith("[deepseek-v4-pro]")
-    assert "你是专业翻译助手。" in message
+    assert "你是专业翻译助手�? in message
 
 
 def test_identity_message_fallback_without_description() -> None:
@@ -197,7 +197,7 @@ def test_inject_identity_anthropic_no_system() -> None:
 
 
 # ----------------------------------------------------------------------
-# llm 策略：直接转发
+# llm 策略：直接转�?
 # ----------------------------------------------------------------------
 
 
@@ -231,7 +231,7 @@ def test_llm_strategy_direct_forward_non_stream(client, created_user) -> None:
 
 
 def test_llm_strategy_direct_forward_stream(client, created_user) -> None:
-    """stream=true 时上游走 SSE 流式接收，聚合后伪流式输出（§13.3）。"""
+    """stream=true 时上游走 SSE 流式接收，聚合后伪流式输出（§13.3）�?""
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     key = _create_strategy_key(
         client,
@@ -243,7 +243,7 @@ def test_llm_strategy_direct_forward_stream(client, created_user) -> None:
     from app.services.llm_upstream import UpstreamChunk
 
     async def fake_stream(**kwargs: Any):
-        # stream=true 由 stream_chat_completions 内部注入（body 收到时未带）。
+        # stream=true �?stream_chat_completions 内部注入（body 收到时未带）�?
         for chunk in (
             UpstreamChunk(text="流式"),
             UpstreamChunk(text="回答"),
@@ -300,7 +300,7 @@ def test_llm_strategy_upstream_failure_returns_500(client, created_user) -> None
 
 
 def test_llm_strategy_task_state_transitions(client, created_user) -> None:
-    """llm 策略任务最终 COMPLETED。"""
+    """llm 策略任务最�?COMPLETED�?""
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     key = _create_strategy_key(
         client,
@@ -328,7 +328,7 @@ def test_llm_strategy_task_state_transitions(client, created_user) -> None:
 
 
 # ----------------------------------------------------------------------
-# human_fallback_llm：超时触发一次
+# human_fallback_llm：超时触发一�?
 # ----------------------------------------------------------------------
 
 
@@ -381,7 +381,7 @@ def test_fallback_triggers_once_after_human_timeout(client, created_user) -> Non
         assert draft.final_text == "上游转发回答"
         assert call_count["n"] == 1
 
-        # 第二次 forward 声明丢失（已 FORWARDING_LLM / RESPONSE_READY）
+        # 第二�?forward 声明丢失（已 FORWARDING_LLM / RESPONSE_READY�?
         accepted2, _draft2, error2 = run_forward()
         assert accepted2 is False
         assert error2 == "claim_lost"
@@ -389,7 +389,7 @@ def test_fallback_triggers_once_after_human_timeout(client, created_user) -> Non
 
 
 def test_fallback_not_triggered_when_human_replies_first(client, created_user) -> None:
-    """人工先到：任务 RESPONSE_READY，fallback 声明失败，上游从未被调用。"""
+    """人工先到：任�?RESPONSE_READY，fallback 声明失败，上游从未被调用�?""
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     key = _create_strategy_key(
         client,
@@ -427,7 +427,7 @@ def test_fallback_not_triggered_when_human_replies_first(client, created_user) -
 
 
 def test_fallback_upstream_failure_keeps_timeout_terminal(client, created_user) -> None:
-    """fallback 上游失败：不重试，调用方按终态处理。"""
+    """fallback 上游失败：不重试，调用方按终态处理�?""
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     key = _create_strategy_key(
         client,
@@ -453,12 +453,12 @@ def test_fallback_upstream_failure_keeps_timeout_terminal(client, created_user) 
 
 
 # ----------------------------------------------------------------------
-# 跨协议转发
+# 跨协议转�?
 # ----------------------------------------------------------------------
 
 
 def test_cross_protocol_forward_chat_to_anthropic(client, created_user) -> None:
-    """M7-D：Chat 任务 + Anthropic LLM 跨协议转发经 cross 矩阵转换成功。"""
+    """M7-D：Chat 任务 + Anthropic LLM 跨协议转发经 cross 矩阵转换成功�?""
     cfg = _create_llm_config(
         client,
         created_user.headers,
@@ -473,12 +473,12 @@ def test_cross_protocol_forward_chat_to_anthropic(client, created_user) -> None:
 
     async def fake_post(**kwargs: Any) -> dict[str, Any]:
         body = kwargs["request_body"]
-        # cross 矩阵转换出的 Anthropic 请求体
+        # cross 矩阵转换出的 Anthropic 请求�?
         assert body["model"] == "claude-3-5-sonnet"
         assert any(m == {"role": "user", "content": "hi"} for m in body["messages"])
         return {
             "id": "msg_cross",
-            "content": [{"type": "text", "text": "跨协议转发回答"}],
+            "content": [{"type": "text", "text": "跨协议转发回�?}],
         }
 
     with patch(_UPSTREAM_ANTHROPIC, side_effect=fake_post):
@@ -491,16 +491,16 @@ def test_cross_protocol_forward_chat_to_anthropic(client, created_user) -> None:
             },
         )
     assert resp.status_code == 200, resp.text
-    # 响应仍是调用方协议（Chat），model 为 Fake Model
+    # 响应仍是调用方协议（Chat），model �?Fake Model
     body = resp.json()
     assert body["model"] == "deepseek-v4-pro"
-    assert body["choices"][0]["message"]["content"] == "跨协议转发回答"
+    assert body["choices"][0]["message"]["content"] == "跨协议转发回�?
     row = _latest_task(int(key["id"]))
     assert row.state is TaskState.COMPLETED
 
 
 def test_cross_protocol_forward_rejects_unequivalent_field(client, created_user) -> None:
-    """跨协议不可等价字段（response_format 转 Anthropic）整请求拒绝。"""
+    """跨协议不可等价字段（response_format �?Anthropic）整请求拒绝�?""
     cfg = _create_llm_config(
         client,
         created_user.headers,
@@ -526,25 +526,23 @@ def test_cross_protocol_forward_rejects_unequivalent_field(client, created_user)
                 "response_format": {"type": "json_object"},
             },
         )
-    # 上游不可达 -> 转发失败 -> 对外通用 500（不暴露 matrix 细节）
+    # 上游不可�?-> 转发失败 -> 对外通用 500（不暴露 matrix 细节�?
     assert resp.status_code == 500
     row = _latest_task(int(key["id"]))
     assert row.state is TaskState.FAILED
 
 
 def test_inference_to_llm_protocol_mapping() -> None:
-    """协议映射表：Chat/Responses -> openai_chat；Anthropic -> anthropic。"""
+    """协议映射表：Chat/Responses -> openai_chat；Anthropic -> anthropic�?""
     from app.services.llm_forward_service import _INFERENCE_TO_LLM
 
     assert _INFERENCE_TO_LLM[InferenceProtocol.OPENAI_CHAT].value == "openai_chat"
     assert _INFERENCE_TO_LLM[InferenceProtocol.OPENAI_RESPONSES].value == "openai_responses"
-    assert (
-        _INFERENCE_TO_LLM[InferenceProtocol.ANTHROPIC_MESSAGES].value == "anthropic_messages"
-    )
+    assert _INFERENCE_TO_LLM[InferenceProtocol.ANTHROPIC_MESSAGES].value == "anthropic_messages"
 
 
 # ----------------------------------------------------------------------
-# 上游 tool call 只写入草稿
+# 上游 tool call 只写入草�?
 # ----------------------------------------------------------------------
 
 
@@ -596,7 +594,7 @@ def test_forward_upstream_tool_calls_recorded_not_executed(client, created_user)
 
 
 def test_forward_missing_config_snapshot_fails(client, created_user) -> None:
-    """快照缺失（理论不可达）：转发失败返回 upstream_error。"""
+    """快照缺失（理论不可达）：转发失败返回 upstream_error�?""
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     key = _create_strategy_key(
         client,

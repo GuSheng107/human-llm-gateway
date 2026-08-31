@@ -294,12 +294,7 @@ def dashboard(
 
     scope = [] if is_admin else [RequestTask.owner_user_id == user.id]
     recent_rows = list(
-        db.scalars(
-            select(RequestTask)
-            .where(*scope)
-            .order_by(RequestTask.id.desc())
-            .limit(8)
-        )
+        db.scalars(select(RequestTask).where(*scope).order_by(RequestTask.id.desc()).limit(8))
     )
     start_day = (utc_now() - timedelta(days=6)).date()
     daily_counts = {
@@ -313,9 +308,7 @@ def dashboard(
     protocol_counts = [
         ProtocolCount(protocol=protocol.value, count=int(count))
         for protocol, count in db.execute(
-            select(RequestTask.protocol, func.count())
-            .where(*scope)
-            .group_by(RequestTask.protocol)
+            select(RequestTask.protocol, func.count()).where(*scope).group_by(RequestTask.protocol)
         )
     ]
     urgent_rows = list(
@@ -335,9 +328,7 @@ def dashboard(
             select(RequestTask)
             .where(
                 *scope,
-                RequestTask.state.in_(
-                    [TaskState.FAILED, TaskState.TIMED_OUT, TaskState.CANCELLED]
-                ),
+                RequestTask.state.in_([TaskState.FAILED, TaskState.TIMED_OUT, TaskState.CANCELLED]),
             )
             .order_by(RequestTask.id.desc())
             .limit(5)

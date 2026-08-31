@@ -24,6 +24,7 @@ _RESTRICTED_SESSION_ALLOWLIST: frozenset[tuple[str, str]] = frozenset(
     }
 )
 
+
 def require_current_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     db: Session = Depends(get_db),

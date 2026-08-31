@@ -1,12 +1,12 @@
-"""M12 工具沙箱测试（docs/ROADMAP.md M12）。
+"""M12 工具沙箱测试（docs/ROADMAP.md M12）�?
 
-覆盖：
-- 白名单 CRUD：管理员专属、模板占位符校验、shell 元字符拒绝、schema
-  仅 string 属性、同名冲突、用户视图不返回命令模板
-- 执行：显式确认缺失拒绝并审计、停用工具拒绝、参数缺失/未声明/非字符串
-  拒绝、成功执行（echo 命令）结果落库、执行历史隔离
-- 沙箱：超时终止、输出截断 limit_exceeded、临时目录隔离（cwd 不含网关目录）、
-  环境变量清零（工具读不到任何网关环境）
+覆盖�?
+- 白名�?CRUD：管理员专属、模板占位符校验、shell 元字符拒绝、schema
+  �?string 属性、同名冲突、用户视图不返回命令模板
+- 执行：显式确认缺失拒绝并审计、停用工具拒绝、参数缺�?未声�?非字符串
+  拒绝、成功执行（echo 命令）结果落库、执行历史隔�?
+- 沙箱：超时终止、输出截�?limit_exceeded、临时目录隔离（cwd 不含网关目录）�?
+  环境变量清零（工具读不到任何网关环境�?
 - 永不自动执行：协议层 tool_calls 数据转发不受沙箱影响（既有测试覆盖，
   此处验证 /v1 路径与工具执行互不侵扰）
 """
@@ -43,7 +43,7 @@ def _create_tool(client, admin_headers, body: dict[str, Any]) -> dict[str, Any]:
 
 
 # ----------------------------------------------------------------------
-# 白名单 CRUD
+# 白名�?CRUD
 # ----------------------------------------------------------------------
 
 
@@ -57,7 +57,7 @@ def test_create_tool_admin_only(client, admin_headers, created_user) -> None:
 
 
 def test_create_tool_rejects_shell_metacharacters(client, admin_headers) -> None:
-    # `;` 允许（python -c 需要；argv 直传无 shell 语义）；其余元字符拒绝。
+    # `;` 允许（python -c 需要；argv 直传�?shell 语义）；其余元字符拒绝�?
     for template in ("echo {text} | wc", "echo $(whoami)", "echo `whoami`"):
         resp = client.post(
             "/api/tools",
@@ -84,7 +84,7 @@ def test_create_tool_rejects_non_string_schema(client, admin_headers) -> None:
         "properties": {"count": {"type": "number"}},
     }
     resp = client.post("/api/tools", headers=admin_headers, json=body)
-    # Pydantic 模式（type 仅 string）422 或服务层校验 400 均合法。
+    # Pydantic 模式（type �?string�?22 或服务层校验 400 均合法�?
     assert resp.status_code in (400, 422)
 
 
@@ -109,7 +109,7 @@ def test_tool_update_and_delete(client, admin_headers) -> None:
     updated = client.patch(
         f"/api/tools/{created['id']}",
         headers=admin_headers,
-        json={"is_enabled": False, "description": "已停用"},
+        json={"is_enabled": False, "description": "已停�?},
     )
     assert updated.status_code == 200
     assert updated.json()["is_enabled"] is False
@@ -124,7 +124,7 @@ def test_tool_update_and_delete(client, admin_headers) -> None:
 
 
 def test_execute_requires_confirmation(client, admin_headers, created_user) -> None:
-    """confirmed=False -> 拒绝 + 拒绝审计（显式确认语义）。"""
+    """confirmed=False -> 拒绝 + 拒绝审计（显式确认语义）�?""
     tool = _create_tool(client, admin_headers, _tool_body())
     resp = client.post(
         f"/api/tools/{tool['id']}/execute",
@@ -152,7 +152,7 @@ def test_execute_disabled_tool_rejected(client, admin_headers, created_user) -> 
 
 def test_execute_invalid_arguments_rejected(client, admin_headers, created_user) -> None:
     tool = _create_tool(client, admin_headers, _tool_body())
-    # 缺必填
+    # 缺必�?
     missing = client.post(
         f"/api/tools/{tool['id']}/execute",
         headers=created_user.headers,
@@ -193,7 +193,7 @@ def test_execute_succeeds_with_audit(client, admin_headers, created_user) -> Non
     assert body["exit_code"] == 0
     assert "sandbox-ok" in (body["stdout"] or "")
     assert body["duration_ms"] is not None
-    # 审计含执行记录
+    # 审计含执行记�?
     with database.SessionLocal() as session:
         executed = session.scalars(
             select(AuditLog).where(AuditLog.action == AuditAction.TOOL_EXECUTED.value)
@@ -222,7 +222,7 @@ def test_execution_history_owner_isolated(client, admin_headers, created_user) -
 
 
 def test_sandbox_timeout_kills_process(client, admin_headers, created_user) -> None:
-    """超时硬终止（ping 循环 -> timed_out）。"""
+    """超时硬终止（ping 循环 -> timed_out）�?""
     body = _tool_body(name="sleep-tool", template="ping -n 30 127.0.0.1")
     body["arguments_schema"] = {"type": "object", "properties": {}}
     body["timeout_seconds"] = 2
@@ -239,7 +239,7 @@ def test_sandbox_timeout_kills_process(client, admin_headers, created_user) -> N
 
 
 def test_sandbox_output_truncation(client, admin_headers, created_user) -> None:
-    """输出超 64KiB -> limit_exceeded 且截断保存。"""
+    """输出�?64KiB -> limit_exceeded 且截断保存�?""
     body = _tool_body(
         name="flood-tool",
         template="ping -n 20 127.0.0.1",
@@ -254,13 +254,13 @@ def test_sandbox_output_truncation(client, admin_headers, created_user) -> None:
     )
     assert resp.status_code == 201
     result = resp.json()
-    # ping 输出有限可能先超时；仅验证状态合法与 stdout 有界。
+    # ping 输出有限可能先超时；仅验证状态合法与 stdout 有界�?
     assert result["state"] in ("succeeded", "failed", "limit_exceeded", "timed_out")
     assert len(result["stdout"] or "") <= 64 * 1024
 
 
 def test_sandbox_empty_environment(client, admin_headers, created_user) -> None:
-    """工具进程环境变量清零：读不到 APP_SECRET/ADMIN_PASSWORD 等网关环境。"""
+    """工具进程环境变量清零：读不到 APP_SECRET/ADMIN_PASSWORD 等网关环境�?""
     body = _tool_body(
         name="env-tool",
         template='python -c "import os; print(sorted(os.environ.keys()))"',
@@ -279,7 +279,7 @@ def test_sandbox_empty_environment(client, admin_headers, created_user) -> None:
 
 
 def test_sandbox_temp_working_directory(client, admin_headers, created_user) -> None:
-    """工作目录为专用临时目录，非网关目录。"""
+    """工作目录为专用临时目录，非网关目录�?""
     body = _tool_body(
         name="cwd-tool",
         template='python -c "import os; print(os.getcwd())"',
@@ -303,7 +303,7 @@ def test_sandbox_temp_working_directory(client, admin_headers, created_user) -> 
 
 
 def test_protocol_tool_calls_never_execute(client, created_user, created_key) -> None:
-    """/v1 协议层的 tool call 只做数据转发：不产生任何工具执行记录。"""
+    """/v1 协议层的 tool call 只做数据转发：不产生任何工具执行记录�?""
     from unittest.mock import patch
 
     from tests.test_m7_llm_forward import (
@@ -360,7 +360,7 @@ def test_protocol_tool_calls_never_execute(client, created_user, created_key) ->
     assert resp.status_code == 200
     # tool_calls 原样转发给调用方
     assert resp.json()["choices"][0]["message"]["tool_calls"]
-    # 不产生任何沙箱执行
+    # 不产生任何沙箱执�?
     with database.SessionLocal() as session:
         count = len(session.scalars(select(ToolExecution)).all())
         assert count == 0

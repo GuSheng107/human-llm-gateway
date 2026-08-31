@@ -17,6 +17,7 @@ import { ToolsPage } from "./features/tools/ToolsPage";
 import { AssistantPanel } from "./features/assistant/AssistantPanel";
 import { AssistantProvider } from "./features/assistant/AssistantContext";
 import { AccountPage } from "./features/settings/AccountPage";
+import { ReplyPage } from "./features/tasks/ReplyPage";
 import { TasksPage } from "./features/tasks/TasksPage";
 import { UsersPage } from "./features/users/UsersPage";
 import { APP_ROUTES, type AppRouteId } from "./navigation";
@@ -156,6 +157,8 @@ export default function App() {
               }
             />
           ))}
+          {/* 独立回复页（需求 10）：沉浸式编辑思考链 / 正式回复 / 工具调用。 */}
+          <Route path="/tasks/:id/reply" element={<ReplyPage />} />
           <Route path="/forbidden" element={<ForbiddenPage />} />
         </Route>
         <Route path="/" element={<Navigate to="/console" replace />} />

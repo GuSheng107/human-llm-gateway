@@ -50,6 +50,7 @@ class TaskService:
         page_size: int,
         search: str | None = None,
         state: TaskState | None = None,
+        states: list[TaskState] | None = None,
     ) -> tuple[list[RequestTask], int]:
         owner_filter = None if user.role is UserRole.ADMIN else user.id
         return self.repo.list_page(
@@ -59,6 +60,7 @@ class TaskService:
             owner_user_id=owner_filter,
             search=search,
             state=state,
+            states=states,
         )
 
     def get_owned_task(self, session: Session, task_id: int, user: User) -> RequestTask:

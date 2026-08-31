@@ -219,12 +219,15 @@ class TaskRepository:
         owner_user_id: int | None = None,
         search: str | None = None,
         state: TaskState | None = None,
+        states: list[TaskState] | None = None,
     ) -> tuple[list[RequestTask], int]:
         """分页查询任务；普通用户按 owner 过滤，管理员传 None 看全部。"""
         filters: list = []
         if owner_user_id is not None:
             filters.append(RequestTask.owner_user_id == owner_user_id)
-        if state is not None:
+        if states:
+            filters.append(RequestTask.state.in_(states))
+        elif state is not None:
             filters.append(RequestTask.state == state)
         if search:
             term = search.strip()

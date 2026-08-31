@@ -38,11 +38,16 @@ export const NAVIGATION: NavigationGroup[] = [
         description: "运行概览",
         icon: "dashboard",
       },
+    ],
+  },
+  {
+    label: "任务",
+    items: [
       {
         id: "tasks",
         path: "/tasks",
-        label: "任务工作台",
-        description: "人工任务与回复提交",
+        label: "任务记录",
+        description: "查看全部任务，回复归属于自己的进行中任务",
         icon: "reply",
       },
     ],
@@ -69,7 +74,7 @@ export const NAVIGATION: NavigationGroup[] = [
       {
         id: "models",
         path: "/models",
-        label: "模型目录",
+        label: "模型广场",
         description: "Fake Model 与模型分组",
         icon: "cpu",
         capability: "model.manage",

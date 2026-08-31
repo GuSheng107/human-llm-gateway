@@ -1,24 +1,24 @@
-"""跨协议字段转换矩阵（docs/API_CONTRACT.md §12.6，M7-D）。
+"""跨协议字段转换矩阵（docs/API_CONTRACT.md §12.6，M7-D）�?
 
 把任务的规范化请求转换为目标 LLM 协议（openai_chat / anthropic）的
-请求体。每个字段只有四种处理：透传、等价转换、网关消费、拒绝 400；
-禁止"忽略""尽量转换"或塞进 metadata。
+请求体。每个字段只有四种处理：透传、等价转换、网关消费、拒�?400�?
+禁止"忽略""尽量转换"或塞�?metadata�?
 
-支持转换：
-- 系统指令 / 用户助手内容（文本与角色）
-- 输出上限（max_tokens <-> max_completion_tokens / max_output_tokens）
-- 采样参数（temperature / top_p）
-- 停止序列（stop 字符串 <-> 单元素数组 <-> stop_sequences）
-- 函数工具 Schema（function.parameters <-> input_schema）
-- 工具选择（none/auto；required <-> any；指定函数 <-> tool{name}）
-- 并行工具（parallel_tool_calls <-> disable_parallel_tool_use 取反）
+支持转换�?
+- 系统指令 / 用户助手内容（文本与角色�?
+- 输出上限（max_tokens <-> max_completion_tokens / max_output_tokens�?
+- 采样参数（temperature / top_p�?
+- 停止序列（stop 字符�?<-> 单元素数�?<-> stop_sequences�?
+- 函数工具 Schema（function.parameters <-> input_schema�?
+- 工具选择（none/auto；required <-> any；指定函�?<-> tool{name}�?
+- 并行工具（parallel_tool_calls <-> disable_parallel_tool_use 取反�?
 - metadata（user / metadata.user_id 等价键）
 
-拒绝 400 `unsupported_parameter`：
-- reasoning 请求控制跨协议（thinking <-> reasoning）
-- 结构化输出转 Anthropic（response_format / text.format）
+拒绝 400 `unsupported_parameter`�?
+- reasoning 请求控制跨协议（thinking <-> reasoning�?
+- 结构化输出转 Anthropic（response_format / text.format�?
 - cache_control / prompt cache 类供应商专有
-- service_tier 等计费层参数跨协议
+- service_tier 等计费层参数跨协�?
 - 托管工具（file search / computer use 等）
 - 其余未知字段
 """
@@ -39,12 +39,12 @@ def _unsupported(field: str, reason: str) -> DomainError:
 
 
 # ----------------------------------------------------------------------
-# 内容块转换
+# 内容块转�?
 # ----------------------------------------------------------------------
 
 
 def _chat_content_to_text(content: Any) -> str:
-    """Chat content（字符串或 parts 数组）-> 纯文本。非文本 part 拒绝。"""
+    """Chat content（字符串�?parts 数组�?> 纯文本。非文本 part 拒绝�?""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -59,7 +59,7 @@ def _chat_content_to_text(content: Any) -> str:
 
 
 def _anthropic_blocks_to_text(blocks: Any) -> str:
-    """Anthropic content blocks -> 纯文本；非 text/thinking 之外的块拒绝。"""
+    """Anthropic content blocks -> 纯文本；�?text/thinking 之外的块拒绝�?""
     if isinstance(blocks, str):
         return blocks
     if not isinstance(blocks, list):
@@ -79,7 +79,7 @@ def _anthropic_blocks_to_text(blocks: Any) -> str:
 
 
 def _has_cache_control(value: Any) -> bool:
-    """检测内容块 / 工具定义中是否携带 cache_control。"""
+    """检测内容块 / 工具定义中是否携�?cache_control�?""
     if isinstance(value, dict):
         if "cache_control" in value:
             return True
@@ -90,12 +90,12 @@ def _has_cache_control(value: Any) -> bool:
 
 
 # ----------------------------------------------------------------------
-# 消息（context）转换
+# 消息（context）转�?
 # ----------------------------------------------------------------------
 
 
 def _context_to_chat_messages(normalized: dict[str, Any]) -> list[dict[str, Any]]:
-    """规范化 context -> Chat messages（文本与角色等价转换）。"""
+    """规范�?context -> Chat messages（文本与角色等价转换）�?""
     context = normalized.get("context") or []
     messages: list[dict[str, Any]] = []
     instructions = normalized.get("instructions")
@@ -113,8 +113,8 @@ def _context_to_chat_messages(normalized: dict[str, Any]) -> list[dict[str, Any]
             raise _unsupported("cache_control", "prompt cache is provider-specific")
         role = item.get("role")
         if role == "tool":
-            # Chat tool role -> 保持（同协议语义）；跨协议到 Anthropic 由
-            # _context_to_anthropic_messages 处理，此处仅 Chat 目标使用。
+            # Chat tool role -> 保持（同协议语义）；跨协议到 Anthropic �?
+            # _context_to_anthropic_messages 处理，此处仅 Chat 目标使用�?
             messages.append(
                 {
                     "role": "tool",
@@ -141,7 +141,7 @@ def _context_to_chat_messages(normalized: dict[str, Any]) -> list[dict[str, Any]
 
 
 def _looks_like_anthropic_blocks(content: Any) -> bool:
-    """启发式判断 content 是否为 Anthropic 块数组（type=text 等结构）。"""
+    """启发式判�?content 是否�?Anthropic 块数组（type=text 等结构）�?""
     if not isinstance(content, list):
         return False
     return all(
@@ -151,7 +151,7 @@ def _looks_like_anthropic_blocks(content: Any) -> bool:
 
 
 def _context_to_anthropic_messages(normalized: dict[str, Any]) -> list[dict[str, Any]]:
-    """规范化 context -> Anthropic messages（user/assistant 文本等价）。"""
+    """规范�?context -> Anthropic messages（user/assistant 文本等价）�?""
     context = normalized.get("context") or []
     messages: list[dict[str, Any]] = []
     for item in context:
@@ -161,7 +161,7 @@ def _context_to_anthropic_messages(normalized: dict[str, Any]) -> list[dict[str,
             raise _unsupported("cache_control", "prompt cache is provider-specific")
         role = item.get("role")
         if role == "tool":
-            # Chat tool 结果 -> user 的 tool_result 块（先于 role 白名单判定）
+            # Chat tool 结果 -> user �?tool_result 块（先于 role 白名单判定）
             messages.append(
                 {
                     "role": "user",
@@ -179,7 +179,7 @@ def _context_to_anthropic_messages(normalized: dict[str, Any]) -> list[dict[str,
             raise _unsupported(f"role '{role}'", "anthropic messages only accept user/assistant")
         content = item.get("content")
         if role == "assistant" and item.get("tool_calls"):
-            # Chat assistant tool_calls -> tool_use 块
+            # Chat assistant tool_calls -> tool_use �?
             blocks: list[dict[str, Any]] = []
             text = (
                 _anthropic_blocks_to_text(content)
@@ -233,7 +233,7 @@ def json_loads(value: str) -> Any:
 
 
 def _tools_to_chat(normalized: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """规范化 tools -> Chat tools（Responses function tool -> function 形态）。"""
+    """规范�?tools -> Chat tools（Responses function tool -> function 形态）�?""
     tools = normalized.get("tools")
     if not tools:
         return None
@@ -243,7 +243,7 @@ def _tools_to_chat(normalized: dict[str, Any]) -> list[dict[str, Any]] | None:
             raise _unsupported("tool", "invalid structure")
         ttype = tool.get("type")
         if ttype == "function" and isinstance(tool.get("function"), dict):
-            converted.append(tool)  # 已是 Chat 形态
+            converted.append(tool)  # 已是 Chat 形�?
         elif ttype == "function" and tool.get("name"):
             # Responses 形态：{type: function, name, parameters, ...}
             converted.append(
@@ -264,7 +264,7 @@ def _tools_to_chat(normalized: dict[str, Any]) -> list[dict[str, Any]] | None:
 
 
 def _tools_to_anthropic(normalized: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """规范化 tools -> Anthropic tools（name/description/input_schema）。"""
+    """规范�?tools -> Anthropic tools（name/description/input_schema）�?""
     tools = normalized.get("tools")
     if not tools:
         return None
@@ -310,7 +310,7 @@ def _tool_choice_to_chat(normalized: dict[str, Any]) -> Any:
     if isinstance(choice, dict):
         ctype = choice.get("type")
         if ctype == "function":
-            return choice  # Chat 指定函数形态
+            return choice  # Chat 指定函数形�?
         if ctype == "tool":
             # Anthropic {type: tool, name} -> Chat 指定函数
             return {
@@ -403,15 +403,15 @@ _LIMIT_KEYS = ("max_completion_tokens", "max_tokens", "max_output_tokens")
 
 
 def _output_limit(normalized: dict[str, Any]) -> int | None:
-    """提取输出上限：max_completion_tokens / max_tokens / max_output_tokens。
+    """提取输出上限：max_completion_tokens / max_tokens / max_output_tokens�?
 
-    §12.6 输出上限行：同一请求同时给出多个上限键时返回 400——即使数值
-    相同也不静默择一（调用方无法确认语义）。
+    §12.6 输出上限行：同一请求同时给出多个上限键时返回 400——即使数�?
+    相同也不静默择一（调用方无法确认语义）�?
     """
     options = _extract_options(normalized)
     present = [key for key in _LIMIT_KEYS if key in options and options[key] is not None]
-    # normalized["max_tokens"]（Anthropic 顶级字段）与 options 中的键
-    # 同属输出上限语义，纳入冲突检测。
+    # normalized["max_tokens"]（Anthropic 顶级字段）与 options 中的�?
+    # 同属输出上限语义，纳入冲突检测�?
     top_level_present = normalized.get("max_tokens") is not None
     if len(present) + (1 if top_level_present and "max_tokens" not in present else 0) > 1:
         raise _unsupported(
@@ -439,7 +439,7 @@ def _metadata_to_chat(normalized: dict[str, Any]) -> dict[str, Any]:
             raise _unsupported("metadata", "must be an object")
         extra = set(metadata) - {"user_id"}
         if extra:
-            # 额外键不静默丢弃，整请求拒绝（§12.6 metadata 行）。
+            # 额外键不静默丢弃，整请求拒绝（�?2.6 metadata 行）�?
             raise _unsupported(
                 f"metadata key '{min(extra)}'",
                 "only metadata.user_id has a cross-protocol equivalent",
@@ -473,7 +473,7 @@ def _metadata_to_anthropic(normalized: dict[str, Any]) -> dict[str, Any]:
 
 
 def _reject_cross_protocol_extras(normalized: dict[str, Any], allow: set[str]) -> None:
-    """拒绝未在矩阵声明等价的 option 字段（严格模式，不静默忽略）。"""
+    """拒绝未在矩阵声明等价�?option 字段（严格模式，不静默忽略）�?""
     options = _extract_options(normalized)
     for key in options:
         if key not in allow:
@@ -503,8 +503,8 @@ _ANTHROPIC_ALLOWED = {
     "user",
     "metadata",
     "parallel_tool_calls",
-    # 以下字段在 to_anthropic_request 内显式拒绝（带明确错误消息），
-    # 需要先通过 extras 检查才能命中具体拒绝分支。
+    # 以下字段�?to_anthropic_request 内显式拒绝（带明确错误消息）�?
+    # 需要先通过 extras 检查才能命中具体拒绝分支�?
     "reasoning",
     "thinking",
     "response_format",
@@ -524,11 +524,11 @@ _RESPONSES_ALLOWED = {
 
 
 def to_chat_request(normalized: dict[str, Any], real_model: str) -> dict[str, Any]:
-    """规范化请求 -> OpenAI Chat Completions 请求体（跨协议严格矩阵）。"""
+    """规范化请�?-> OpenAI Chat Completions 请求体（跨协议严格矩阵）�?""
     _reject_cross_protocol_extras(normalized, _CHAT_ALLOWED)
     if normalized.get("text") or _extract_options(normalized).get("text"):
-        # Responses text.format（结构化输出）-> Chat response_format 可转换，
-        # 但 M7-D 仅处理基础字段；声明为后续开放。
+        # Responses text.format（结构化输出�?> Chat response_format 可转换，
+        # �?M7-D 仅处理基础字段；声明为后续开放�?
         raise _unsupported("text.format", "structured output conversion pending")
     body: dict[str, Any] = {
         "model": real_model,
@@ -555,7 +555,7 @@ def to_chat_request(normalized: dict[str, Any], real_model: str) -> dict[str, An
 
 
 def to_anthropic_request(normalized: dict[str, Any], real_model: str) -> dict[str, Any]:
-    """规范化请求 -> Anthropic Messages 请求体（跨协议严格矩阵）。"""
+    """规范化请�?-> Anthropic Messages 请求体（跨协议严格矩阵）�?""
     _reject_cross_protocol_extras(normalized, _ANTHROPIC_ALLOWED)
     options = _extract_options(normalized)
     for rejected in ("reasoning", "thinking", "response_format", "text", "service_tier"):
@@ -584,7 +584,7 @@ def to_anthropic_request(normalized: dict[str, Any], real_model: str) -> dict[st
         and not bool(options["parallel_tool_calls"])
     ):
         # Chat parallel_tool_calls=false -> Anthropic disable_parallel_tool_use=true
-        # （布尔取反）；true 对应 Anthropic 默认允许，无需附加字段。
+        # （布尔取反）；true 对应 Anthropic 默认允许，无需附加字段�?
         existing = body.get("tool_choice")
         if isinstance(existing, dict):
             existing["disable_parallel_tool_use"] = True
@@ -599,15 +599,15 @@ def to_anthropic_request(normalized: dict[str, Any], real_model: str) -> dict[st
 
 
 def to_responses_request(normalized: dict[str, Any], real_model: str) -> dict[str, Any]:
-    """规范化请求 -> OpenAI Responses 请求体（跨协议严格矩阵）。
+    """规范化请�?-> OpenAI Responses 请求体（跨协议严格矩阵）�?
 
-    input 用消息项数组：{role, content:[{type:"input_text", text}]}。
-    reasoning effort 仅由 LLM 配置决定，不进跨协议矩阵。
+    input 用消息项数组：{role, content:[{type:"input_text", text}]}�?
+    reasoning effort 仅由 LLM 配置决定，不进跨协议矩阵�?
     """
     _reject_cross_protocol_extras(normalized, _RESPONSES_ALLOWED)
     options = _extract_options(normalized)
     if options.get("reasoning") is not None:
-        raise _unsupported("reasoning", "thinking 由 LLM 配置控制，不支持请求级透传")
+        raise _unsupported("reasoning", "thinking �?LLM 配置控制，不支持请求级透传")
     input_items: list[dict[str, Any]] = []
     instructions = normalized.get("instructions")
     if isinstance(instructions, str) and instructions.strip():
@@ -621,10 +621,12 @@ def to_responses_request(normalized: dict[str, Any], real_model: str) -> dict[st
         role = item.get("role")
         if role not in {"user", "assistant", "system"}:
             continue
-        text = item.get("content") if isinstance(item.get("content"), str) else str(item.get("content") or "")
-        input_items.append(
-            {"role": role, "content": [{"type": "input_text", "text": text}]}
+        text = (
+            item.get("content")
+            if isinstance(item.get("content"), str)
+            else str(item.get("content") or "")
         )
+        input_items.append({"role": role, "content": [{"type": "input_text", "text": text}]})
     body: dict[str, Any] = {"model": real_model, "input": input_items}
     tools = _tools_to_chat(normalized)
     if tools:

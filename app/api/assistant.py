@@ -1,8 +1,9 @@
 """Web 小助手 API（docs/API_CONTRACT.md §10，M8-A）。
 
 会话与消息严格按 owner 隔离；页面上下文经封闭 schema + 正则擦洗双层
-过滤后落库（app/services/assistant/redaction.py）。第一阶段只生成文本
-与建议，不提供可执行系统工具。
+过滤后落库（app/services/assistant/redaction.py）。回复支持同步 JSON 与
+SSE 流式两种取回方式（共用同一条落库路径）。第一阶段只生成文本与
+建议，不提供可执行系统工具。
 """
 
 from __future__ import annotations
@@ -11,11 +12,13 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..core.time import iso_utc
+from ..domain.errors import DomainError
 from ..repositories.models import AssistantMessage, AssistantSession, User
 from ..services.assistant.service import AssistantService
 from .common import StrictModel
@@ -232,6 +235,19 @@ def delete_session(
     return Response(status_code=204)
 
 
+def _context_raw_from_payload(payload: MessageSend) -> dict[str, Any] | None:
+    if payload.page_context is None:
+        return None
+    edit = payload.page_context.unsaved_edit
+    return {
+        "route": payload.page_context.route,
+        "feature": payload.page_context.feature,
+        "resource": payload.page_context.resource,
+        "context_version": payload.page_context.context_version,
+        "unsaved_edit": edit.model_dump() if edit is not None else None,
+    }
+
+
 @router.post("/sessions/{session_id}/messages", response_model=MessageView, status_code=201)
 async def send_message(
     session_id: int,
@@ -240,16 +256,7 @@ async def send_message(
     db: Session = Depends(get_db),
 ) -> MessageView:
     session_row = _service.get_session(db, user=user, session_id=session_id)
-    context_raw = None
-    if payload.page_context is not None:
-        edit = payload.page_context.unsaved_edit
-        context_raw = {
-            "route": payload.page_context.route,
-            "feature": payload.page_context.feature,
-            "resource": payload.page_context.resource,
-            "context_version": payload.page_context.context_version,
-            "unsaved_edit": edit.model_dump() if edit is not None else None,
-        }
+    context_raw = _context_raw_from_payload(payload)
     reply = await _service.send_message(
         db,
         user=user,
@@ -260,3 +267,43 @@ async def send_message(
     db.commit()
     db.refresh(reply)
     return _message_view(reply)
+
+
+@router.post("/sessions/{session_id}/messages/stream")
+async def send_message_stream(
+    session_id: int,
+    payload: MessageSend,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    """SSE 流式发送：data 事件依次为 delta / done / error。
+
+    会话与上下文校验在响应开始前完成（404/400 走统一错误结构）；
+    流中的 DomainError 转为 error 事件（HTTP 已 200，无法改状态码）。
+    """
+    session_row = _service.get_session(db, user=user, session_id=session_id)
+    context_raw = _context_raw_from_payload(payload)
+
+    async def event_stream():
+        try:
+            async for event in _service.stream_message(
+                db,
+                user=user,
+                session_row=session_row,
+                text=payload.text,
+                page_context_raw=context_raw,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except DomainError as exc:
+            error_event = {
+                "type": "error",
+                "code": str(exc.code),
+                "message": exc.message or str(exc.code),
+            }
+            yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

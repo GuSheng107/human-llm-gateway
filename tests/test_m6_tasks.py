@@ -617,6 +617,35 @@ def test_task_list_filter_by_state(client, created_user, created_key) -> None:
     assert str(waiting_id) not in done_ids
 
 
+def test_task_list_bucket_filter(client, created_user, created_key) -> None:
+    waiting_id = _make_waiting_task(created_key.id, created_user.user_id)
+    done_id = _make_waiting_task(created_key.id, created_user.user_id)
+    client.post(
+        f"/api/tasks/{done_id}/reply",
+        headers=created_user.headers,
+        json=_draft_body(final_text="完成"),
+    )
+    # reply 只推进到 response_ready；直接置 completed 以稳定验证分段筛选。
+    with database.SessionLocal() as session:
+        row = session.get(RequestTask, done_id)
+        assert row is not None
+        row.state = TaskState.COMPLETED
+        session.commit()
+
+    in_progress = client.get("/api/tasks?bucket=in_progress", headers=created_user.headers).json()
+    ids = [item["id"] for item in in_progress["items"]]
+    assert str(waiting_id) in ids
+    assert str(done_id) not in ids
+
+    finished = client.get("/api/tasks?bucket=finished", headers=created_user.headers).json()
+    done_ids = [item["id"] for item in finished["items"]]
+    assert str(done_id) in done_ids
+    assert str(waiting_id) not in done_ids
+
+    failed = client.get("/api/tasks?bucket=failed", headers=created_user.headers).json()
+    assert failed["total"] == 0
+
+
 def test_task_list_search_by_model(client, created_user, created_key) -> None:
     _make_waiting_task(created_key.id, created_user.user_id)
     resp = client.get(

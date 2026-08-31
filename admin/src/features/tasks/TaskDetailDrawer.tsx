@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { generateDraft, getTask } from "../../api/tasks";
 import { listLlmConfigs } from "../../api/llmConfigs";
 import { Card } from "../../components/data-display/Card";
@@ -22,7 +23,6 @@ import {
   formatDateTime,
   formatDeadline,
 } from "./labels";
-import { ReplyEditor } from "./ReplyEditor";
 
 function MetaCell({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -70,10 +70,10 @@ export function TaskDetailDrawer({
   onChanged: () => void;
 }) {
   const { user: currentUser } = useAuth();
+  const navigate = useNavigate();
   const isAdmin = currentUser?.role === "admin";
   const [detail, setDetail] = useState<TaskDetail | null>(null);
   const [error, setError] = useState("");
-  const [editing, setEditing] = useState(false);
   const [llmConfigs, setLlmConfigs] = useState<LlmConfig[]>([]);
   const [generating, setGenerating] = useState(false);
   const [generateError, setGenerateError] = useState("");
@@ -181,7 +181,12 @@ export function TaskDetailDrawer({
                     生成草稿
                   </Button>
                 )}
-                <Button onClick={() => setEditing(true)}>
+                <Button
+                  onClick={() => {
+                    onClose();
+                    navigate(`/tasks/${detail.id}/reply`);
+                  }}
+                >
                   <Icon name="reply" className="h-4 w-4" />
                   撰写回复
                 </Button>
@@ -385,7 +390,7 @@ export function TaskDetailDrawer({
       {generatedDraftId && detail && (
         <Modal
           title="草稿已生成"
-          description="上游结果已保存为可编辑草稿，进入编辑器调整后提交。"
+          description="上游结果已保存为可编辑草稿，进入回复页调整后提交。"
           onClose={() => setGeneratedDraftId(null)}
         >
           <div className="flex justify-end gap-2 p-6">
@@ -395,7 +400,8 @@ export function TaskDetailDrawer({
             <Button
               onClick={() => {
                 setGeneratedDraftId(null);
-                setEditing(true);
+                onClose();
+                navigate(`/tasks/${detail.id}/reply`);
               }}
             >
               <Icon name="reply" className="h-4 w-4" />
@@ -403,18 +409,6 @@ export function TaskDetailDrawer({
             </Button>
           </div>
         </Modal>
-      )}
-
-      {editing && detail && (
-        <ReplyEditor
-          task={detail}
-          onClose={() => setEditing(false)}
-          onSubmitted={() => {
-            setEditing(false);
-            void load();
-            onChanged();
-          }}
-        />
       )}
     </>
   );

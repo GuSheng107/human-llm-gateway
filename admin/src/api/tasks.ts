@@ -14,12 +14,14 @@ export interface TaskListParams {
   page: number;
   search?: string;
   state?: TaskState;
+  bucket?: "in_progress" | "finished" | "failed";
 }
 
 export function listTasks(params: TaskListParams): Promise<Page<TaskItem>> {
   const query = new URLSearchParams({ page: String(params.page), page_size: "20" });
   if (params.search && params.search.trim()) query.set("search", params.search.trim());
   if (params.state) query.set("state", params.state);
+  if (params.bucket) query.set("bucket", params.bucket);
   return api<Page<TaskItem>>(`/api/tasks?${query}`);
 }
 
