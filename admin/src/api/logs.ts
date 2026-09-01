@@ -20,11 +20,13 @@ export interface AppLogItem {
   event: string;
   message: string;
   request_id: string | null;
+  logger?: string | null;
   user_id: string | null;
   task_id: string | null;
   api_key_id: string | null;
   connection_id: string | null;
   created_at: string;
+  context?: Record<string, unknown> | null;
 }
 
 export interface DashboardStats {
@@ -99,6 +101,7 @@ export interface AppLogQuery {
   connection_id?: number;
   request_id?: string;
   hours?: number;
+  with_context?: boolean;
 }
 
 export function listAuditLogs(query: AuditLogQuery): Promise<{
@@ -131,6 +134,7 @@ export function listAppLogs(query: AppLogQuery): Promise<{
   if (query.connection_id) params.set("connection_id", String(query.connection_id));
   if (query.request_id) params.set("request_id", query.request_id);
   if (query.hours) params.set("hours", String(query.hours));
+  if (query.with_context) params.set("with_context", "true");
   return api(`/api/app-logs?${params}`);
 }
 

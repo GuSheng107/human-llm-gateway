@@ -63,6 +63,8 @@ class AppLog(Base):
         Index("ix_app_logs_task", "task_id"),
         Index("ix_app_logs_api_key", "api_key_id"),
         Index("ix_app_logs_connection", "connection_id"),
+        Index("ix_app_logs_request", "request_id", "created_at"),
+        Index("ix_app_logs_event_created", "event", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -70,6 +72,7 @@ class AppLog(Base):
     event: Mapped[str] = mapped_column(String(100), default="", nullable=False)
     message: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    logger: Mapped[str | None] = mapped_column(String(100), nullable=True)
     user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     task_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     api_key_id: Mapped[int | None] = mapped_column(Integer, nullable=True)

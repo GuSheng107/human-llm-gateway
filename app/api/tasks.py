@@ -283,7 +283,6 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
     drafts: list[DraftView] = []
     active_draft_id: str | None = None
     result_draft: ReplyDraftView | None = None
-    raw_request: dict[str, Any] | None = None
     if is_owner:
         draft_rows = _service.drafts(session, task=task)
         drafts = [_draft_view(row) for row in draft_rows]
@@ -296,10 +295,6 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
                 tool_calls=[_tool_call_view(c) for c in result.tool_calls],
                 final_text=result.final_text,
             )
-        try:
-            raw_request = json.loads(task.raw_payload_json)
-        except (ValueError, TypeError):
-            raw_request = None
     events, events_total = _service.list_events(session, task=task, page=1, page_size=50)
     previous_public_id = _service.repo.get_previous_public_id(session, task)
     return TaskDetail(
@@ -308,9 +303,10 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
         can_edit=(
             is_owner and task.state is TaskState.WAITING_HUMAN and user.role is not UserRole.ADMIN
         ),
+        # 所有者可查看完整提示词（Agent 海量上下文不截断）；非归属用户仅摘要前 200 字。
         prompt_text=prompt if is_owner else (prompt[:200] if prompt else ""),
         tool_names=tool_names,
-        raw_request=raw_request,
+        raw_request=None,
         previous_task_id=previous_public_id,
         drafts=drafts,
         active_draft_id=active_draft_id,
@@ -400,6 +396,23 @@ def get_task(
 ) -> TaskDetail:
     task = _get_task(db, task_id, user)
     return _detail_view(db, task, user)
+
+
+@router.get("/{task_id}/raw-request")
+def get_task_raw_request(
+    task_id: int,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """原始请求 JSON 按需加载（超大请求不随详情页传输）；仅所有者。"""
+    task = _get_task(db, task_id, user)
+    if task.owner_user_id != user.id and user.role is not UserRole.ADMIN:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "仅所有者可查看原始请求", status_code=403)
+    try:
+        raw = json.loads(task.raw_payload_json) if task.raw_payload_json else None
+    except (ValueError, TypeError):
+        raw = None
+    return {"task_id": str(task.id), "raw_request": raw}
 
 
 @router.get("/{task_id}/events", response_model=EventPage)

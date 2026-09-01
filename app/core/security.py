@@ -175,6 +175,31 @@ def verify_api_key(secret: str, encoded: str) -> bool:
     return _verify_salted_digest(secret, encoded)
 
 
+# ---------------------------------------------------------------------------
+# 网关自签 IM 接入 Token（hllm- 前缀，URL-safe 43 字符）
+# ---------------------------------------------------------------------------
+
+IM_CONNECTION_TOKEN_PREFIX = "hllm-"
+IM_CONNECTION_TOKEN_RANDOM_BYTES = 32
+IM_CONNECTION_TOKEN_PATTERN = re.compile(
+    rf"{re.escape(IM_CONNECTION_TOKEN_PREFIX)}[A-Za-z0-9_-]{{43}}"
+)
+
+
+def generate_im_connection_token() -> str:
+    """生成网关自签 IM 接入 Token：`hllm-` + 43 位 URL-safe 随机字符。
+
+    该函数是 IM 接入 Token 的唯一生成入口；其他模块禁止直接调用
+    secrets.token_urlsafe() 生成 IM Token。
+    """
+    return IM_CONNECTION_TOKEN_PREFIX + secrets.token_urlsafe(IM_CONNECTION_TOKEN_RANDOM_BYTES)
+
+
+def is_im_connection_token(value: object) -> bool:
+    """校验统一格式：`^hllm-[A-Za-z0-9_-]{43}$`。"""
+    return isinstance(value, str) and IM_CONNECTION_TOKEN_PATTERN.fullmatch(value) is not None
+
+
 def generate_invitation_code(length: int = 16) -> tuple[str, str, str]:
     """返回 (明文邀请码, 前缀, 哈希)。"""
     alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

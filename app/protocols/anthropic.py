@@ -2,6 +2,10 @@
 
 鉴权接受官方 `x-api-key` 头；同协议专有块（如 cache_control）保留在
 原始 payload 与规范化投影中，人工流程不执行其语义。
+
+thinking 处理：Anthropic 的 thinking block 需要真实模型返回的加密签名，
+人工内容无法生成有效 signature —— 人工路径不返回 thinking block（内部
+工作台仍可见 reasoning）；正文与 tool_use 照常输出。
 """
 
 from __future__ import annotations
@@ -85,10 +89,12 @@ def parse_request(raw: bytes) -> AnthropicRequest:
 
 
 def content_blocks(draft: ReplyDraft) -> list[dict[str, Any]]:
-    """ReplyDraft -> 内容块：thinking / tool_use / text（§15.2）。"""
+    """ReplyDraft -> 内容块：tool_use / text（人工路径不返回 thinking block）。
+
+    Anthropic thinking block 需要真实模型签名（signature），人工内容无法
+    生成有效签名；reasoning 仅在内部工作台展示（§15.2 决策）。
+    """
     blocks: list[dict[str, Any]] = []
-    if draft.reasoning:
-        blocks.append({"type": "thinking", "thinking": draft.reasoning, "signature": ""})
     for call in draft.tool_calls:
         blocks.append(
             {
@@ -102,8 +108,15 @@ def content_blocks(draft: ReplyDraft) -> list[dict[str, Any]]:
     return blocks
 
 
-def render_response(model: str, draft: ReplyDraft) -> dict[str, Any]:
+def render_response(
+    model: str,
+    draft: ReplyDraft,
+    *,
+    usage: dict[str, int] | None = None,
+) -> dict[str, Any]:
     blocks = content_blocks(draft)
+    input_tokens = (usage or {}).get("input_tokens", 0)
+    output_tokens = (usage or {}).get("output_tokens", 0)
     return {
         "id": f"msg_{secrets.token_hex(12)}",
         "type": "message",
@@ -112,20 +125,29 @@ def render_response(model: str, draft: ReplyDraft) -> dict[str, Any]:
         "content": blocks,
         "stop_reason": "tool_use" if draft.tool_calls else "end_turn",
         "stop_sequence": None,
-        "usage": {"input_tokens": 0, "output_tokens": max(1, len(draft.final_text or "") // 4)},
+        "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
     }
 
 
-def stream_events(model: str, draft: ReplyDraft) -> Iterator[ServerSentEvent]:
+def stream_events(
+    model: str,
+    draft: ReplyDraft,
+    *,
+    usage: dict[str, int] | None = None,
+) -> Iterator[ServerSentEvent]:
     """人工伪流式（§15.3）：message_start -> 块序列 -> message_delta -> message_stop。"""
     blocks = content_blocks(draft)
+    input_tokens = (usage or {}).get("input_tokens", 0)
+    output_tokens = (usage or {}).get("output_tokens", 0)
     message = {
         "id": f"msg_{secrets.token_hex(12)}",
         "type": "message",
         "role": "assistant",
         "model": model,
         "content": [],
-        "usage": {"input_tokens": 0, "output_tokens": 0},
+        "stop_reason": None,
+        "stop_sequence": None,
+        "usage": {"input_tokens": input_tokens, "output_tokens": 0},
     }
 
     def frame(event: str, data: dict[str, Any]) -> ServerSentEvent:
@@ -133,33 +155,14 @@ def stream_events(model: str, draft: ReplyDraft) -> Iterator[ServerSentEvent]:
         data.setdefault("type", event)
         return ServerSentEvent(event=event, data=json.dumps(data, ensure_ascii=False))
 
-    start_payload = {
-        "thinking": {"type": "thinking", "thinking": ""},
-        "tool_use": None,  # tool_use 块完整声明（空 input）
-        "text": {"type": "text", "text": ""},
-    }
     yield frame("message_start", {"message": message})
     for index, block in enumerate(blocks):
         if block["type"] == "tool_use":
             start_block = {**block, "input": {}}
         else:
-            start_block = start_payload[block["type"]]
+            start_block = {**block, "text": ""}
         yield frame("content_block_start", {"index": index, "content_block": start_block})
-        if block["type"] == "thinking":
-            text = draft.reasoning or ""
-            for i in range(0, len(text), 200):
-                yield frame(
-                    "content_block_delta",
-                    {
-                        "index": index,
-                        "delta": {"type": "thinking_delta", "thinking": text[i : i + 200]},
-                    },
-                )
-            yield frame(
-                "content_block_delta",
-                {"index": index, "delta": {"type": "signature_delta", "signature": ""}},
-            )
-        elif block["type"] == "tool_use":
+        if block["type"] == "tool_use":
             partial = json.dumps(block["input"], ensure_ascii=False)
             for i in range(0, max(len(partial), 1), 200):
                 yield frame(
@@ -177,7 +180,10 @@ def stream_events(model: str, draft: ReplyDraft) -> Iterator[ServerSentEvent]:
             for i in range(0, len(text), 200):
                 yield frame(
                     "content_block_delta",
-                    {"index": index, "delta": {"type": "text_delta", "text": text[i : i + 200]}},
+                    {
+                        "index": index,
+                        "delta": {"type": "text_delta", "text": text[i : i + 200]},
+                    },
                 )
         yield frame("content_block_stop", {"index": index})
     yield frame(
@@ -187,7 +193,7 @@ def stream_events(model: str, draft: ReplyDraft) -> Iterator[ServerSentEvent]:
                 "stop_reason": "tool_use" if draft.tool_calls else "end_turn",
                 "stop_sequence": None,
             },
-            "usage": {"output_tokens": max(1, len(draft.final_text or "") // 4)},
+            "usage": {"output_tokens": output_tokens},
         },
     )
     yield frame("message_stop", {})

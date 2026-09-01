@@ -9,6 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..core.security import is_im_connection_token
 from ..domain.connections import ConnectorError
 from .base import Connector
 
@@ -22,6 +23,10 @@ class ConfigField:
     secret: bool = False
     description: str = ""
     user_configurable: bool = True
+    # 网关自签接入 Token（hllm- 前缀）：留空自动生成、校验统一格式。
+    credential_kind: str = ""  # "gateway_token" | ""
+    auto_generate: bool = False
+    required_at_runtime: bool = False
 
 
 @dataclass(frozen=True)
@@ -47,6 +52,8 @@ class PlatformSpec:
                 "required": f.required,
                 "secret": f.secret,
                 "description": f.description,
+                "credential_kind": f.credential_kind,
+                "auto_generate": f.auto_generate,
             }
             for f in self.config_fields
             if f.user_configurable
@@ -54,6 +61,14 @@ class PlatformSpec:
 
     def user_config_field_names(self) -> set[str]:
         return {field.name for field in self.config_fields if field.user_configurable}
+
+    def gateway_token_fields(self) -> list[ConfigField]:
+        """声明为网关自签接入 Token 的可配置字段。"""
+        return [
+            field
+            for field in self.config_fields
+            if field.credential_kind == "gateway_token" and field.user_configurable
+        ]
 
 
 class ConnectorRegistry:
@@ -88,7 +103,11 @@ class ConnectorRegistry:
         return factory(ctx)
 
     def validate_config(self, code: str, config: dict[str, Any]) -> list[str]:
-        """按平台 Schema 校验配置（类型、必填），返回问题列表。"""
+        """按平台 Schema 校验配置（类型、必填），返回问题列表。
+
+        gateway_token 字段例外：留空视为待服务端自动生成，不报缺失
+        （数据库中的最终配置始终完整）。
+        """
         spec = self._specs.get(code)
         if spec is None:
             return [f"未知平台: {code}"]
@@ -96,10 +115,15 @@ class ConnectorRegistry:
         for f in spec.config_fields:
             value = config.get(f.name)
             missing = value is None or (isinstance(value, str) and value == "")
-            if f.required and missing:
+            if f.required and missing and not (f.auto_generate and f.credential_kind):
                 problems.append(f"缺少必填配置: {f.label}")
                 continue
             if missing:
+                continue
+            if f.credential_kind == "gateway_token" and not is_im_connection_token(value):
+                problems.append(
+                    f"{f.label} 格式不合法（应留空自动生成或为 hllm- 前缀的 43 位随机字符）"
+                )
                 continue
             if f.field_type == "int" and not isinstance(value, int):
                 problems.append(f"配置 {f.label} 必须是整数")
@@ -182,7 +206,15 @@ def build_default_registry() -> ConnectorRegistry:
             supports_delivery=True,
             binding_command="connect webhook",
             config_fields=(
-                ConfigField(name="inbound_token", label="入站 Token", required=True, secret=True),
+                ConfigField(
+                    name="inbound_token",
+                    label="入站 Token",
+                    required=True,
+                    secret=True,
+                    credential_kind="gateway_token",
+                    auto_generate=True,
+                    required_at_runtime=True,
+                ),
                 ConfigField(name="outbound_url", label="推送 URL", field_type="url", required=True),
                 ConfigField(name="outbound_token", label="推送 Token", secret=True),
             ),
@@ -199,7 +231,13 @@ def build_default_registry() -> ConnectorRegistry:
             binding_command="connect websocket",
             config_fields=(
                 ConfigField(
-                    name="connection_token", label="连接 Token", required=True, secret=True
+                    name="connection_token",
+                    label="连接 Token",
+                    required=True,
+                    secret=True,
+                    credential_kind="gateway_token",
+                    auto_generate=True,
+                    required_at_runtime=True,
                 ),
             ),
         ),
@@ -213,7 +251,15 @@ def build_default_registry() -> ConnectorRegistry:
             kind="server",
             supports_delivery=False,
             config_fields=(
-                ConfigField(name="pull_token", label="拉取 Token", required=True, secret=True),
+                ConfigField(
+                    name="pull_token",
+                    label="拉取 Token",
+                    required=True,
+                    secret=True,
+                    credential_kind="gateway_token",
+                    auto_generate=True,
+                    required_at_runtime=True,
+                ),
             ),
         ),
         HttpPollConnector,

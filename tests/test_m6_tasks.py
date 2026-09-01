@@ -99,16 +99,24 @@ def test_task_detail_owner_sees_full_fields(client, created_user, created_key) -
     body = resp.json()
     assert body["is_owner"] is True
     assert body["can_edit"] is True
-    assert body["raw_request"] is not None
+    # 原始请求按需加载：详情响应不再携带（独立端点）。
+    assert body["raw_request"] is None
+    # 所有者可查看完整提示词，无截断。
+    assert body["prompt_text"] == "hello"
     assert body["drafts"] == []
     assert body["active_draft_id"] is None
     assert body["result_draft"] is None
-    assert body["prompt_text"] == "hello"
     assert body["tool_names"] == []
     assert body["public_error_code"] is None
     assert body["cancel_reason_code"] is None
     assert len(body["events"]) >= 1
     assert body["events"][0]["event_type"] == "created"
+    # 按需端点：所有者取回完整原始请求。
+    raw_resp = client.get(f"/api/tasks/{task_id}/raw-request", headers=created_user.headers)
+    assert raw_resp.status_code == 200, raw_resp.text
+    raw_body = raw_resp.json()
+    assert raw_body["task_id"] == str(task_id)
+    assert raw_body["raw_request"]["messages"][0]["content"] == "hello"
 
 
 def test_task_detail_admin_sees_owner_but_cannot_edit(
@@ -138,6 +146,63 @@ def test_task_detail_non_owner_returns_404(
 def test_task_detail_requires_auth(client, created_key) -> None:
     resp = client.get("/api/tasks/1")
     assert resp.status_code == 401
+
+
+def test_task_raw_request_owner_only(client, created_user, created_key, admin_headers) -> None:
+    """原始请求按需端点：非所有者（普通用户）403；管理员可监管查看。"""
+
+    task_id = _make_waiting_task(created_key.id, created_user.user_id)
+    # 另一个普通用户不可见（get_owned_task 已 404）。
+    other_headers = _create_other_user_headers(client, admin_headers)
+    resp = client.get(f"/api/tasks/{task_id}/raw-request", headers=other_headers)
+    assert resp.status_code == 404
+    # 管理员可以监管查看。
+    admin_resp = client.get(f"/api/tasks/{task_id}/raw-request", headers=admin_headers)
+    assert admin_resp.status_code == 200
+    assert admin_resp.json()["raw_request"] is not None
+
+
+def _create_other_user_headers(client, admin_headers) -> dict:
+    import secrets as _secrets
+
+    username = f"other-{_secrets.token_hex(4)}"
+    created = client.post(
+        "/api/users",
+        headers=admin_headers,
+        json={
+            "username": username,
+            "display_name": username,
+            "password": "Other-Pass1!",
+        },
+    )
+    assert created.status_code == 201, created.text
+    resp = client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": "Other-Pass1!",
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    token = resp.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    changed = client.post(
+        "/api/account/password",
+        headers=headers,
+        json={"current_password": "Other-Pass1!", "new_password": "Changed-Pass1!"},
+    )
+    assert changed.status_code == 200, changed.text
+    resp = client.post(
+        "/api/auth/login",
+        json={
+            "username": username,
+            "password": "Changed-Pass1!",
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    return {"Authorization": f"Bearer {resp.json()['access_token']}"}
 
 
 # ======================================================================

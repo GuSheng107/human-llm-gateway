@@ -57,6 +57,12 @@ class ChatCompletionsRequest:
                 )
         self.messages = messages
         self.stream = bool(payload.get("stream", False))
+        stream_options = payload.get("stream_options")
+        if stream_options is not None and not isinstance(stream_options, dict):
+            raise DomainError(
+                DomainErrorCode.INVALID_REQUEST, "stream_options 必须是对象", status_code=400
+            )
+        self.stream_options = stream_options
         self.tools = payload.get("tools")
         self.tool_choice = payload.get("tool_choice")
         self.options = {key: value for key, value in payload.items() if key not in _CONSUMED_FIELDS}
@@ -84,20 +90,16 @@ def _chat_id() -> str:
     return "chatcmpl-" + secrets.token_hex(12)
 
 
-def _fake_usage(draft: ReplyDraft) -> dict[str, int]:
-    completion_chars = len(draft.final_text or "") + len(draft.reasoning or "")
-    return {
-        "prompt_tokens": 0,
-        "completion_tokens": max(1, completion_chars // 4),
-        "total_tokens": max(1, completion_chars // 4),
-    }
-
-
 def _finish_reason(draft: ReplyDraft) -> str:
     return "tool_calls" if draft.tool_calls else "stop"
 
 
-def render_response(model: str, draft: ReplyDraft) -> dict[str, Any]:
+def render_response(
+    model: str,
+    draft: ReplyDraft,
+    *,
+    usage: dict[str, int] | None = None,
+) -> dict[str, Any]:
     """非流式 chat.completion 响应；model 始终为请求的 Fake Model。"""
     tool_calls = [
         {
@@ -127,37 +129,58 @@ def render_response(model: str, draft: ReplyDraft) -> dict[str, Any]:
                 "finish_reason": _finish_reason(draft),
             }
         ],
-        "usage": _fake_usage(draft),
+        "usage": usage
+        or {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        },
     }
 
 
 def _chunk(
-    chat_id: str, model: str, delta: dict[str, Any], finish: str | None = None
+    chat_id: str,
+    model: str,
+    created: int,
+    delta: dict[str, Any],
+    finish: str | None = None,
 ) -> ServerSentEvent:
     payload = {
         "id": chat_id,
         "object": "chat.completion.chunk",
-        "created": int(time.time()),
+        "created": created,
         "model": model,
         "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
     }
     return ServerSentEvent(data=json.dumps(payload, ensure_ascii=False))
 
 
-def stream_frames(model: str, draft: ReplyDraft) -> Iterator[ServerSentEvent]:
-    """人工伪流式：角色 -> reasoning -> tool calls -> 正文 -> 结束块 + [DONE]（§13.3）。"""
+def stream_frames(
+    model: str,
+    draft: ReplyDraft,
+    *,
+    usage: dict[str, int] | None = None,
+    include_usage: bool = False,
+) -> Iterator[ServerSentEvent]:
+    """人工伪流式：角色 -> reasoning -> tool calls -> 正文 -> 结束块 + [DONE]。
+
+    同一次流式响应保持稳定的 id 与 created；``include_usage`` 时在 finish
+    帧后追加带 usage 的空 choices 帧（OpenAI stream_options 语义）。
+    """
     chat_id = _chat_id()
-    yield _chunk(chat_id, model, {"role": "assistant"})
+    created = int(time.time())
+    yield _chunk(chat_id, model, created, {"role": "assistant"})
     if draft.reasoning:
         for index in range(0, len(draft.reasoning), 200):
             yield _chunk(
-                chat_id, model, {"reasoning_content": draft.reasoning[index : index + 200]}
+                chat_id, model, created, {"reasoning_content": draft.reasoning[index : index + 200]}
             )
     for position, call in enumerate(draft.tool_calls):
         call_id = call.id or f"call_{secrets.token_hex(12)}"
         yield _chunk(
             chat_id,
             model,
+            created,
             {
                 "tool_calls": [
                     {
@@ -174,6 +197,7 @@ def stream_frames(model: str, draft: ReplyDraft) -> Iterator[ServerSentEvent]:
             yield _chunk(
                 chat_id,
                 model,
+                created,
                 {
                     "tool_calls": [
                         {
@@ -185,8 +209,20 @@ def stream_frames(model: str, draft: ReplyDraft) -> Iterator[ServerSentEvent]:
             )
     if draft.final_text:
         for index in range(0, len(draft.final_text), 200):
-            yield _chunk(chat_id, model, {"content": draft.final_text[index : index + 200]})
-    yield _chunk(chat_id, model, {}, finish=_finish_reason(draft))
+            yield _chunk(
+                chat_id, model, created, {"content": draft.final_text[index : index + 200]}
+            )
+    yield _chunk(chat_id, model, created, {}, finish=_finish_reason(draft))
+    if include_usage and usage:
+        payload = {
+            "id": chat_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [],
+            "usage": usage,
+        }
+        yield ServerSentEvent(data=json.dumps(payload, ensure_ascii=False))
     yield ServerSentEvent(data="[DONE]")
 
 

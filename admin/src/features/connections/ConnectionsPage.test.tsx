@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TOKEN_KEY } from "../../api/client";
@@ -18,7 +18,18 @@ const platforms: PlatformSpec[] = [
     supports_login: false,
     requires_binding: false,
     binding_command: null,
-    config_schema: [],
+    config_schema: [
+      {
+        name: "pull_token",
+        label: "拉取 Token",
+        type: "string",
+        required: true,
+        secret: true,
+        description: "",
+        credential_kind: "gateway_token",
+        auto_generate: true,
+      },
+    ],
   },
   {
     code: "webhook",
@@ -29,7 +40,26 @@ const platforms: PlatformSpec[] = [
     supports_login: false,
     requires_binding: false,
     binding_command: "connect webhook",
-    config_schema: [],
+    config_schema: [
+      {
+        name: "inbound_token",
+        label: "入站 Token",
+        type: "string",
+        required: true,
+        secret: true,
+        description: "",
+        credential_kind: "gateway_token",
+        auto_generate: true,
+      },
+      {
+        name: "outbound_url",
+        label: "推送 URL",
+        type: "url",
+        required: true,
+        secret: false,
+        description: "",
+      },
+    ],
   },
   {
     code: "websocket",
@@ -40,7 +70,18 @@ const platforms: PlatformSpec[] = [
     supports_login: false,
     requires_binding: false,
     binding_command: "connect websocket",
-    config_schema: [],
+    config_schema: [
+      {
+        name: "connection_token",
+        label: "连接 Token",
+        type: "string",
+        required: true,
+        secret: true,
+        description: "",
+        credential_kind: "gateway_token",
+        auto_generate: true,
+      },
+    ],
   },
   {
     code: "wecom_aibot",
@@ -51,7 +92,24 @@ const platforms: PlatformSpec[] = [
     supports_login: false,
     requires_binding: true,
     binding_command: "connect mycom",
-    config_schema: [],
+    config_schema: [
+      {
+        name: "bot_id",
+        label: "Bot ID",
+        type: "string",
+        required: true,
+        secret: false,
+        description: "",
+      },
+      {
+        name: "secret",
+        label: "Bot Secret",
+        type: "string",
+        required: true,
+        secret: true,
+        description: "",
+      },
+    ],
   },
   {
     code: "wecom_ilink",
@@ -108,7 +166,9 @@ describe("ConnectionsPage 平台分区与启用校验", () => {
     connections = [
       connection("1", "个人微信", "wecom_ilink"),
       connection("2", "企微值班号", "wecom_aibot"),
-      connection("3", "轮询接入", "http_poll"),
+      connection("3", "轮询接入", "http_poll", {
+        config: { pull_token: null, pull_token_set: true },
+      }),
     ];
     localStorage.setItem(TOKEN_KEY, "test-token");
     vi.stubGlobal(
@@ -143,8 +203,20 @@ describe("ConnectionsPage 平台分区与启用校验", () => {
             platform: string;
             config: Record<string, unknown>;
           };
-          const created = connection("4", payload.name, payload.platform);
-          connections = [...connections, created];
+          const tokenField =
+            payload.platform === "http_poll"
+              ? "pull_token"
+              : payload.platform === "webhook"
+                ? "inbound_token"
+                : payload.platform === "websocket"
+                  ? "connection_token"
+                  : null;
+          const token = `hllm-${"a".repeat(43)}`;
+          const created = connection("4", payload.name, payload.platform, {
+            config: tokenField ? { [tokenField]: null, [`${tokenField}_set`]: true } : {},
+            generated_tokens: tokenField ? { [tokenField]: token } : null,
+          });
+          connections = [...connections, { ...created, generated_tokens: null }];
           return Promise.resolve(jsonResponse(created, 201));
         }
         if (url === "/api/im-connections/4/login" && method === "POST") {
@@ -163,6 +235,22 @@ describe("ConnectionsPage 平台分区与启用校验", () => {
           }));
         }
         if (url === "/api/im-connections/2/binding/status") {
+          return Promise.resolve(jsonResponse({
+            bound: false,
+            binding_pending: true,
+            binding_expires_at: "2026-09-01T00:05:00Z",
+          }));
+        }
+        if (url === "/api/im-connections/2/binding/cancel" && method === "POST") {
+          return Promise.resolve(jsonResponse(connection("2", "企微值班号", "wecom_aibot")));
+        }
+        if (url === "/api/im-connections/4/binding" && method === "POST") {
+          return Promise.resolve(jsonResponse({
+            binding_code: "connect websocket",
+            expires_at: "2026-09-01T00:05:00Z",
+          }));
+        }
+        if (url === "/api/im-connections/4/binding/status") {
           return Promise.resolve(jsonResponse({
             bound: false,
             binding_pending: true,
@@ -244,7 +332,9 @@ describe("ConnectionsPage 平台分区与启用校验", () => {
     expect(await screen.findByText("connect mycom")).toBeTruthy();
 
     const fetchMock = vi.mocked(fetch);
-    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/2/binding"))).toBe(true);
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/2/binding"))).toBe(true);
+    });
     expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/2/start"))).toBe(false);
   });
 
@@ -266,5 +356,111 @@ describe("ConnectionsPage 平台分区与启用校验", () => {
         vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith("/2/start")),
       ).toBe(true);
     });
+  });
+
+  it("关闭扫码弹窗不删除连接与已保存凭据", async () => {
+    connections = connections.filter((item) => item.platform !== "wecom_ilink");
+    const user = userEvent.setup();
+    render(
+      <AuthProvider>
+        <ConnectionsPage />
+      </AuthProvider>,
+    );
+
+    await screen.findByText("微信 iLink");
+    await user.click(screen.getByRole("button", { name: "绑定（扫码）" }));
+    expect(await screen.findByAltText("登录二维码")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => {
+      expect(screen.queryByAltText("登录二维码")).toBeNull();
+    });
+    // 关闭弹窗后不产生 DELETE 请求（方案2：不删除连接与凭据）。
+    const fetchMock = vi.mocked(fetch);
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).startsWith("/api/im-connections/") && init?.method === "DELETE",
+      ),
+    ).toBe(false);
+  });
+
+  it("企微绑定弹窗提供取消本次绑定监听且不删除连接", async () => {
+    const user = userEvent.setup();
+    render(
+      <AuthProvider>
+        <ConnectionsPage />
+      </AuthProvider>,
+    );
+
+    await screen.findByText("企业微信智能机器人");
+    await user.click(screen.getByRole("switch", { name: "企业微信智能机器人启用" }));
+    expect(await screen.findByText("connect mycom")).toBeTruthy();
+    // 显式取消绑定监听：调用 binding/cancel 端点。
+    await user.click(await screen.findByRole("button", { name: "取消本次绑定监听" }));
+    await waitFor(() => {
+      expect(
+        vi.mocked(fetch).mock.calls.some(([url, init]) =>
+          String(url).endsWith("/2/binding/cancel") && init?.method === "POST",
+        ),
+      ).toBe(true);
+    });
+    const fetchMock = vi.mocked(fetch);
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).startsWith("/api/im-connections/") && init?.method === "DELETE",
+      ),
+    ).toBe(false);
+  });
+
+  it("已有 HTTP 连接在统一弹窗同屏展示配置、完整 URL 和 curl", async () => {
+    const user = userEvent.setup();
+    render(
+      <AuthProvider>
+        <ConnectionsPage />
+      </AuthProvider>,
+    );
+
+    const title = await screen.findByRole("heading", { name: "自定义 HTTP 轮询" });
+    const panel = title.closest("section");
+    expect(panel).toBeTruthy();
+    await user.click(within(panel as HTMLElement).getByRole("button", { name: "配置" }));
+
+    expect(await screen.findByRole("dialog", { name: "自定义 HTTP 轮询配置与接入" })).toBeTruthy();
+    expect(screen.getByText("连接配置")).toBeTruthy();
+    expect(screen.getByText("接入指引")).toBeTruthy();
+    expect(screen.getByText("完整 URL 地址")).toBeTruthy();
+    expect(screen.getByText("curl 命令")).toBeTruthy();
+    expect(screen.getAllByText(/\/connectors\/http\/3\/tasks/).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("textbox", { name: "拉取 Token" })).toBeNull();
+    expect(screen.queryByText(/需要绑定的平台/)).toBeNull();
+  });
+
+  it("系统生成 Token 仅本次展示，重开后只允许重新生成", async () => {
+    const token = `hllm-${"a".repeat(43)}`;
+    const user = userEvent.setup();
+    render(
+      <AuthProvider>
+        <ConnectionsPage />
+      </AuthProvider>,
+    );
+
+    const title = await screen.findByRole("heading", { name: "自定义 WebSocket" });
+    const panel = title.closest("section");
+    expect(panel).toBeTruthy();
+    await user.click(within(panel as HTMLElement).getByRole("button", { name: "配置" }));
+    await user.click(await screen.findByRole("button", { name: "保存并生成接入信息" }));
+
+    expect(await screen.findByText(token)).toBeTruthy();
+    expect(screen.getByText("明文仅本次展示，关闭窗口后无法再次查看。")).toBeTruthy();
+    expect(screen.getAllByText(/\/connectors\/ws\/4\?token=hllm-/).length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole("button", { name: "关闭" }));
+    await waitFor(() => expect(screen.queryByText(token)).toBeNull());
+
+    const reopenedTitle = await screen.findByRole("heading", { name: "自定义 WebSocket" });
+    const reopenedPanel = reopenedTitle.closest("section");
+    await user.click(within(reopenedPanel as HTMLElement).getByRole("button", { name: "配置" }));
+    expect(await screen.findByText("已配置，明文不可再次查看。")).toBeTruthy();
+    expect(screen.queryByText(token)).toBeNull();
+    expect(screen.getByRole("button", { name: "重新生成" })).toBeTruthy();
   });
 });

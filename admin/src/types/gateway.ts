@@ -16,6 +16,9 @@ export interface PlatformFieldSchema {
   required: boolean;
   secret: boolean;
   description: string;
+  /** "gateway_token"：网关自签接入 Token，由服务端自动生成，不允许手填。 */
+  credential_kind?: string;
+  auto_generate?: boolean;
 }
 
 export interface PlatformSpec {
@@ -41,6 +44,8 @@ export interface ImConnection {
   owner_user_id: string | null;
   owner_username: string | null;
   config: Record<string, unknown>;
+  /** 仅创建响应一次性返回的网关自签 Token 明文；只保存在 React 临时状态。 */
+  generated_tokens?: Record<string, string> | null;
   last_error_code: string | null;
   last_error_message: string | null;
   retry_count: number;

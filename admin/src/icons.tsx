@@ -32,6 +32,7 @@ export function Icon({ name, ...props }: { name: string } & SVGProps<SVGSVGEleme
     "check-circle": <><circle cx="12" cy="12" r="9" /><path d="m8.5 12 2.5 2.5 4.5-4.5" /></>,
     "close-circle": <><circle cx="12" cy="12" r="9" /><path d="m9 9 6 6M15 9l-6 6" /></>,
     "info-circle": <><circle cx="12" cy="12" r="9" /><path d="M12 11v5m0-8h.01" /></>,
+    lock: <><rect x="4" y="11" width="16" height="9" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></>,
   };
   return (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden {...props}>

@@ -22,6 +22,7 @@ from datetime import timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..core.logging import log_event
 from ..core.time import utc_now
 from ..domain.enums import TaskState
 from ..repositories.models import RequestTask
@@ -111,6 +112,7 @@ class TaskSweeper:
                 raise
             except Exception:
                 logger.exception("task sweeper cycle failed")
+                log_event("error", "task_sweeper.cycle_failed", "僵尸任务扫描周期失败")
 
 
 task_sweeper = TaskSweeper()

@@ -28,7 +28,9 @@ from ..core.logging import get_request_id
 from ..core.security import (
     decrypt_secret,
     encrypt_secret,
+    generate_im_connection_token,
     hash_binding_code,
+    is_im_connection_token,
     verify_binding_code,
 )
 from ..core.time import utc_now
@@ -115,6 +117,28 @@ class ConnectionService:
             raise DomainError(DomainErrorCode.NOT_FOUND, "连接不存在", status_code=404)
         return row
 
+    @staticmethod
+    def _reject_manual_gateway_tokens(spec, config: dict[str, Any]) -> None:
+        """网关自签 Token 不允许手填：只能自动生成或通过 rotate 换新。"""
+        for field in spec.gateway_token_fields():
+            value = config.get(field.name)
+            if value is not None and value != "":
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    f"{field.label} 由网关自动生成，不允许手动填写；如需更换请使用重新生成操作",
+                    status_code=400,
+                )
+
+    def _generate_gateway_tokens(self, spec, config: dict[str, Any]) -> dict[str, str]:
+        """为留空的 gateway_token 字段生成 Token，返回明文（仅本次响应展示）。"""
+        generated: dict[str, str] = {}
+        for field in spec.gateway_token_fields():
+            if not config.get(field.name):
+                token = generate_im_connection_token()
+                config[field.name] = token
+                generated[field.name] = token
+        return generated
+
     def create(
         self,
         session: Session,
@@ -124,7 +148,7 @@ class ConnectionService:
         platform: str,
         config: dict[str, Any],
         actor_user_id: int | None = None,
-    ) -> ImConnection:
+    ) -> tuple[ImConnection, dict[str, str]]:
         if owner.role is UserRole.ADMIN:
             raise DomainError(DomainErrorCode.FORBIDDEN, "管理员不能创建用户连接", status_code=403)
         name = (name or "").strip()
@@ -147,7 +171,10 @@ class ConnectionService:
                 else f"存在不可配置字段: {', '.join(sorted(unsupported_fields))}"
             )
             raise DomainError(DomainErrorCode.VALIDATION_FAILED, message, status_code=400)
-        problems = self.registry.validate_config(platform, config)
+        self._reject_manual_gateway_tokens(spec, config)
+        final_config = dict(config)
+        generated_tokens = self._generate_gateway_tokens(spec, final_config)
+        problems = self.registry.validate_config(platform, final_config)
         if problems:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED, "; ".join(problems), status_code=400
@@ -163,7 +190,7 @@ class ConnectionService:
             owner_user_id=owner.id,
             name=name,
             platform=platform,
-            config_ciphertext=self._encrypt_config(config),
+            config_ciphertext=self._encrypt_config(final_config),
             config_key_version=1,
             desired_running=False,
             state=ConnectionState.STOPPED,
@@ -186,7 +213,7 @@ class ConnectionService:
             owner_user_id=owner.id,
             metadata={"fields": ["name", "platform"]},
         )
-        return row
+        return row, generated_tokens
 
     def update(
         self,
@@ -201,6 +228,8 @@ class ConnectionService:
 
         Secret 字段语义：省略或空值保留原值，显式提交新值才替换
         （docs/ROADMAP.md M4：修改 Secret 时空值保留原值）。
+        网关自签 Token（gateway_token）额外约束：不允许手填新值，
+        只能留空保留原值或通过 rotate 换新。
         """
         spec = self.registry.require_spec(row.platform)
         merged = self.decrypt_config(row)
@@ -214,6 +243,7 @@ class ConnectionService:
                     else f"存在不可配置字段: {', '.join(sorted(unsupported_fields))}"
                 )
                 raise DomainError(DomainErrorCode.VALIDATION_FAILED, message, status_code=400)
+            self._reject_manual_gateway_tokens(spec, config_changes)
             for field in spec.config_fields:
                 if field.name not in config_changes:
                     continue
@@ -259,15 +289,59 @@ class ConnectionService:
             )
         return row
 
+    async def rotate_credential(
+        self, session: Session, *, row: ImConnection, field_name: str, actor_user_id: int
+    ) -> tuple[ImConnection, str]:
+        """为网关自签 Token 字段原子生成并保存新 Token。
+
+        - 仅连接所有者可调用（API 层校验）。
+        - 明文 Token 只出现在本次返回值，不写入日志和审计 metadata。
+        - 连接已启用时只重启目标连接（apply 语义），未启用则仅保存。
+        """
+        spec = self.registry.require_spec(row.platform)
+        field = next((f for f in spec.gateway_token_fields() if f.name == field_name), None)
+        if field is None:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "该字段不是网关自签 Token，不支持重新生成",
+                status_code=400,
+            )
+        config = self.decrypt_config(row)
+        token = generate_im_connection_token()
+        config[field_name] = token
+        row.config_ciphertext = self._encrypt_config(config)
+        self._login_connectors.pop(row.id, None)
+        await run_in_threadpool(session.flush)
+        if row.desired_running:
+            from ..connectors import connection_manager as manager
+
+            await manager.stop(row.id)
+            await manager.start(row, config, self.inbound_handler())
+            await run_in_threadpool(session.refresh, row)
+        self.audit.add(
+            session,
+            action=AuditAction.CONNECTION_UPDATED,
+            resource_type="im_connection",
+            resource_id=str(row.id),
+            actor_user_id=actor_user_id,
+            owner_user_id=row.owner_user_id,
+            metadata={"fields": [field_name], "note": "credential_rotated"},
+        )
+        return row, token
+
     async def delete(self, session: Session, *, row: ImConnection, actor_user_id: int) -> None:
 
-        references = await run_in_threadpool(
-            self.repo.count_enabled_api_key_references, session, row.id
+        total, prefixes = await run_in_threadpool(
+            self.repo.count_api_key_references, session, row.id, enabled_only=False
         )
-        if references:
+        if total:
+            hint = (
+                f"连接仍被 {total} 个 API Key 引用（如 {', '.join(prefixes[:5])}），"
+                "请先在 API Key 中改用其他 IM 连接或 Web 入口"
+            )
             raise DomainError(
                 DomainErrorCode.CONFLICT,
-                "连接仍被启用的 API Key 引用，请先改用 Web 入口或停用 Key",
+                hint,
                 status_code=409,
             )
         # 先停止运行中的连接器，避免删除后线程/长连接泄漏并继续接收入站消息。
@@ -304,9 +378,28 @@ class ConnectionService:
                 f"请先{action}，绑定成功后才能启用连接",
                 status_code=400,
             )
+        # 启用前状态校验：处于异常/未绑定态不允许直接启用，避免开即坏。
+        if row.state in (ConnectionState.AUTH_REQUIRED, ConnectionState.ERROR):
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                f"连接当前状态异常（{row.state.value}），请先修复后再启用",
+                status_code=400,
+            )
+        if row.state is not ConnectionState.ONLINE and row.desired_running:
+            pass  # 已处于启用流程中的中间态（starting 等）允许继续
+        config = self.decrypt_config(row)
+        # required_at_runtime 的网关自签 Token 必须齐备且格式合法，
+        # 防止历史/异常数据把缺 Token 的连接器拉起。
+        for field in spec.gateway_token_fields():
+            if field.required_at_runtime and not is_im_connection_token(config.get(field.name)):
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    f"{field.label} 缺失或无效，请先重新生成接入 Token",
+                    status_code=400,
+                )
         row.desired_running = True
         await run_in_threadpool(session.flush)
-        await manager.start(row, self.decrypt_config(row), self.inbound_handler())
+        await manager.start(row, config, self.inbound_handler())
         await run_in_threadpool(session.refresh, row)
         self.audit.add(
             session,
@@ -432,6 +525,35 @@ class ConnectionService:
         from ..connectors import connection_manager as manager
 
         await manager.start(row, self.decrypt_config(row), self.inbound_handler())
+
+    async def cancel_binding_listener(
+        self, session: Session, *, row: ImConnection, actor_user_id: int
+    ) -> ImConnection:
+        """取消本次绑定监听：停实例 + 清绑定码；连接与凭据全部保留。"""
+        from ..connectors import connection_manager as manager
+
+        if row.desired_running:
+            # 已启用的连接不受影响：绑定码过期自然清理。
+            self.repo.set_binding_code(session, row.id, None, None)
+            await run_in_threadpool(session.flush)
+            return row
+        await manager.stop(row.id)
+        self._login_connectors.pop(row.id, None)
+        row.state = ConnectionState.STOPPED
+        row.next_retry_at = None
+        self.repo.set_binding_code(session, row.id, None, None)
+        await run_in_threadpool(session.flush)
+        await run_in_threadpool(session.refresh, row)
+        self.audit.add(
+            session,
+            action=AuditAction.CONNECTION_UPDATED,
+            resource_type="im_connection",
+            resource_id=str(row.id),
+            actor_user_id=actor_user_id,
+            owner_user_id=row.owner_user_id,
+            metadata={"fields": ["binding_code"], "note": "binding_cancelled"},
+        )
+        return row
 
     def binding_status(self, session: Session, row: ImConnection) -> dict[str, Any]:
         pending = row.binding_code_hash is not None and (

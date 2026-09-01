@@ -96,6 +96,22 @@ export function bindingStatus(id: string): Promise<BindingStatus> {
   return api<BindingStatus>(`/api/im-connections/${id}/binding/status`);
 }
 
+export function cancelBinding(id: string): Promise<ImConnection> {
+  return api<ImConnection>(`/api/im-connections/${id}/binding/cancel`, { method: "POST" });
+}
+
+export interface CredentialRotated {
+  field: string;
+  token: string;
+}
+
+/** 重新生成网关自签 Token：明文只在本次响应展示一次。 */
+export function rotateCredential(id: string, field: string): Promise<CredentialRotated> {
+  return api<CredentialRotated>(`/api/im-connections/${id}/credentials/${field}/rotate`, {
+    method: "POST",
+  });
+}
+
 export interface QrLoginStart {
   qrcode: string;
   qrcode_img_content: string;

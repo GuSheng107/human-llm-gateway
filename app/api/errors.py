@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from enum import StrEnum
@@ -101,6 +102,9 @@ def error_body(
 class RequestIdMiddleware:
     """纯 ASGI 实现：注入 request_id（scope.state + contextvar）并回写响应头。
 
+    - 全部响应追加 ``X-Trace-Id``（与 request_id 同源）。
+    - ``/api/*`` JSON 响应体顶层追加 ``trace_id`` 字段；``/v1/*`` 不改变
+      OpenAI/Anthropic 协议正文。
     不能使用 BaseHTTPMiddleware：它会拦截 receive 通道，使
     request.is_disconnected() 在等待阶段永远返回 False，/v1/* 的
     调用方断开取消随之失效。
@@ -125,13 +129,33 @@ class RequestIdMiddleware:
         scope.setdefault("state", {})["request_id"] = request_id
         token = set_request_id(request_id)
         header_value = request_id.encode("latin-1")
+        path: str = scope.get("path", "")
+        is_admin_api = path.startswith("/api/")
 
         async def send_with_request_id(message: dict[str, Any]) -> None:
             if message["type"] == "http.response.start":
-                message = {
-                    **message,
-                    "headers": [*(message.get("headers") or []), (b"x-request-id", header_value)],
-                }
+                headers = [*(message.get("headers") or [])]
+                # 移除可能已存在的同名头，避免重复。
+                headers = [h for h in headers if h[0] not in (b"x-request-id", b"x-trace-id")]
+                headers.append((b"x-request-id", header_value))
+                headers.append((b"x-trace-id", header_value))
+                message = {**message, "headers": headers}
+            elif is_admin_api and message["type"] == "http.response.body":
+                body = message.get("body", b"")
+                if body[:1] == b"{" and not message.get("more_body", False):
+                    try:
+                        payload = json.loads(body)
+                        if isinstance(payload, dict) and "trace_id" not in payload:
+                            payload["trace_id"] = request_id
+                            new_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                            headers = [
+                                (k, v)
+                                for k, v in message.get("headers") or []
+                                if k != b"content-length"
+                            ]
+                            message = {**message, "body": new_body, "headers": headers}
+                    except (ValueError, TypeError):
+                        pass
             await send(message)
 
         try:

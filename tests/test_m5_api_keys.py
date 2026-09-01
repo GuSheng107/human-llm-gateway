@@ -237,12 +237,12 @@ def _connection_id(owner_user_id: int) -> int:
 
     with database.SessionLocal() as session:
         service = ConnectionService()
-        row = service.create(
+        row, _generated = service.create(
             session,
             owner=session.get(User, owner_user_id),
             name="key-entry-conn",
             platform="webhook",
-            config={"inbound_token": "t", "outbound_url": "https://example.test/hook"},
+            config={"outbound_url": "https://example.test/hook"},
         )
         session.commit()
         return row.id

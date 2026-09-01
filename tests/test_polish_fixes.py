@@ -82,7 +82,6 @@ def _make_connection(client, user_headers, name: str) -> int:
             "name": name,
             "platform": "webhook",
             "config": {
-                "inbound_token": "tok-" + name,
                 "outbound_url": "https://example.internal/hook",
             },
         },

@@ -68,6 +68,7 @@ class AppLogView(BaseModel):
     event: str
     message: str
     request_id: str | None
+    logger: str | None
     user_id: str | None
     task_id: str | None
     api_key_id: str | None
@@ -75,8 +76,14 @@ class AppLogView(BaseModel):
     created_at: str
 
 
+class AppLogDetail(AppLogView):
+    """单条日志详情：携带脱敏后的 context 与异常信息。"""
+
+    context: dict[str, Any] | None = None
+
+
 class AppLogPage(BaseModel):
-    items: list[AppLogView]
+    items: list[AppLogView | AppLogDetail]
     page: int
     page_size: int
     total: int
@@ -219,6 +226,7 @@ def list_app_logs(
     connection_id: int | None = Query(default=None),
     request_id: str | None = Query(default=None, max_length=64),
     hours: int | None = Query(default=None, ge=1, le=24 * 30),
+    with_context: bool = Query(default=False),
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> AppLogPage:
@@ -239,6 +247,39 @@ def list_app_logs(
         hours=hours,
         scope_owner_id=scope_owner_id,
     )
+
+    def _context_of(row) -> dict[str, Any] | None:
+        if not row.context_json:
+            return None
+        try:
+            parsed = json.loads(row.context_json)
+            return parsed if isinstance(parsed, dict) else None
+        except (ValueError, TypeError):
+            return None
+
+    if with_context:
+        return AppLogPage(
+            items=[
+                AppLogDetail(
+                    id=str(row.id),
+                    level=row.level,
+                    event=row.event,
+                    message=row.message,
+                    request_id=row.request_id,
+                    logger=row.logger,
+                    user_id=str(row.user_id) if row.user_id else None,
+                    task_id=str(row.task_id) if row.task_id else None,
+                    api_key_id=str(row.api_key_id) if row.api_key_id else None,
+                    connection_id=str(row.connection_id) if row.connection_id else None,
+                    created_at=iso_utc(row.created_at) or "",
+                    context=_context_of(row),
+                )
+                for row in rows
+            ],
+            page=page,
+            page_size=page_size,
+            total=total,
+        )
     return AppLogPage(
         items=[
             AppLogView(
@@ -247,6 +288,7 @@ def list_app_logs(
                 event=row.event,
                 message=row.message,
                 request_id=row.request_id,
+                logger=row.logger,
                 user_id=str(row.user_id) if row.user_id else None,
                 task_id=str(row.task_id) if row.task_id else None,
                 api_key_id=str(row.api_key_id) if row.api_key_id else None,

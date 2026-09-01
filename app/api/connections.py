@@ -51,6 +51,8 @@ class ConnectionView(BaseModel):
     owner_user_id: str | None = None
     owner_username: str | None = None
     config: dict[str, Any]
+    # 仅创建响应返回的一次性网关自签 Token 明文；列表/详情/监管接口恒为空。
+    generated_tokens: dict[str, str] | None = None
     last_error_code: str | None
     last_error_message: str | None
     retry_count: int
@@ -100,6 +102,11 @@ class BindingStatus(BaseModel):
     binding_expires_at: str | None
 
 
+class CredentialRotated(BaseModel):
+    field: str
+    token: str
+
+
 class PlatformField(BaseModel):
     name: str
     label: str
@@ -107,6 +114,8 @@ class PlatformField(BaseModel):
     required: bool
     secret: bool
     description: str
+    credential_kind: str = ""
+    auto_generate: bool = False
 
 
 class PlatformView(BaseModel):
@@ -132,6 +141,7 @@ def _view(
     *,
     include_owner: bool = False,
     viewer_id: int | None = None,
+    generated_tokens: dict[str, str] | None = None,
 ) -> ConnectionView:
     owner_username = None
     if include_owner:
@@ -154,6 +164,7 @@ def _view(
         owner_user_id=str(row.owner_user_id) if include_owner else None,
         owner_username=owner_username,
         config=config,
+        generated_tokens=generated_tokens,
         last_error_code=row.last_error_code,
         last_error_message=row.last_error_message,
         retry_count=row.retry_count,
@@ -228,12 +239,12 @@ def create_connection(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> ConnectionView:
-    row = _service.create(
+    row, generated_tokens = _service.create(
         db, owner=user, name=payload.name, platform=payload.platform, config=payload.config
     )
     db.commit()
     db.refresh(row)
-    return _view(db, row, viewer_id=user.id)
+    return _view(db, row, viewer_id=user.id, generated_tokens=generated_tokens)
 
 
 @router.post("/check", response_model=list[ConnectionCheckItem])
@@ -412,3 +423,35 @@ def binding_status(
 ) -> BindingStatus:
     row = _service.get_owned(db, connection_id, user.id)
     return BindingStatus(**_service.binding_status(db, row))
+
+
+@router.post("/{connection_id}/binding/cancel", response_model=ConnectionView)
+async def cancel_binding(
+    connection_id: int,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> ConnectionView:
+    """取消本次绑定监听：停止监听并清除绑定码；连接与已保存凭据保留。"""
+    row = _service.get_owned(db, connection_id, user.id)
+    _require_owner(row, user)
+    row = await _service.cancel_binding_listener(db, row=row, actor_user_id=user.id)
+    await run_in_threadpool(db.commit)
+    await run_in_threadpool(db.refresh, row)
+    return await run_in_threadpool(_view, db, row, viewer_id=user.id)
+
+
+@router.post("/{connection_id}/credentials/{field}/rotate", response_model=CredentialRotated)
+async def rotate_credential(
+    connection_id: int,
+    field: str,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> CredentialRotated:
+    """重新生成网关自签 Token：明文只在本次响应展示，不落日志/审计。"""
+    row = _service.get_owned(db, connection_id, user.id)
+    _require_owner(row, user)
+    _, token = await _service.rotate_credential(
+        db, row=row, field_name=field, actor_user_id=user.id
+    )
+    await run_in_threadpool(db.commit)
+    return CredentialRotated(field=field, token=token)

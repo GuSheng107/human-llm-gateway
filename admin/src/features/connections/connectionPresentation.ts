@@ -99,63 +99,130 @@ export interface SetupEndpoint {
   value: string;
 }
 
+export interface SetupCommand {
+  label: string;
+  value: string;
+}
+
 export interface PlatformSetupGuide {
   title: string;
   description: string;
   commandLabel: string | null;
   commandHelp: string | null;
   endpoints: SetupEndpoint[];
+  commands: SetupCommand[];
 }
 
-export function platformSetupGuide(connection: ImConnection): PlatformSetupGuide {
+function normalizedOrigin(origin: string): string {
+  return origin.replace(/\/$/, "");
+}
+
+function websocketOrigin(origin: string): string {
+  return normalizedOrigin(origin).replace(/^http:/, "ws:").replace(/^https:/, "wss:");
+}
+
+function tokenValue(tokens: Record<string, string>, field: string): string {
+  return tokens[field] || "<TOKEN>";
+}
+
+export function platformSetupGuide(
+  connection: ImConnection,
+  origin: string,
+  tokens: Record<string, string> = {},
+): PlatformSetupGuide {
+  const httpOrigin = normalizedOrigin(origin);
   switch (connection.platform) {
+    case "wecom_ilink":
+      return {
+        title: "微信 iLink 配置与接入",
+        description: "配置与扫码登录在同一窗口完成。",
+        commandLabel: null,
+        commandHelp: null,
+        endpoints: [],
+        commands: [],
+      };
     case "wecom_aibot":
       return {
-        title: "绑定企业微信",
-        description: "绑定会话已启动。请在企业微信个人会话发送以下命令。",
+        title: "企业微信配置与接入",
+        description: "保存机器人配置后，在企业微信个人会话完成绑定。",
         commandLabel: "在企业微信中发送",
         commandHelp: "命令固定。绑定成功后才能启用连接。",
         endpoints: [],
+        commands: [],
       };
-    case "webhook":
+    case "webhook": {
+      const inboundUrl = `${httpOrigin}/connectors/webhook/${connection.id}/inbound`;
+      const token = tokenValue(tokens, "inbound_token");
       return {
-        title: "Webhook 接入配置",
+        title: "Webhook 配置与接入",
         description: "向入站地址提交消息。首次绑定时填写 binding_code。",
         commandLabel: "binding_code",
         commandHelp: "请求头需携带 X-Webhook-Token。",
-        endpoints: [
-          { label: "入站地址", value: `/connectors/webhook/${connection.id}/inbound` },
+        endpoints: [{ label: "入站地址", value: inboundUrl }],
+        commands: [
+          {
+            label: "提交绑定消息",
+            value: `curl "${inboundUrl}" -H "Content-Type: application/json" -H "X-Webhook-Token: ${token}" -d '{"external_message_id":"message-001","sender":"user-001","text":"hello","binding_code":"connect webhook"}'`,
+          },
         ],
       };
-    case "websocket":
+    }
+    case "websocket": {
+      const token = tokenValue(tokens, "connection_token");
+      const sessionUrl = `${websocketOrigin(origin)}/connectors/ws/${connection.id}?token=${token}`;
       return {
-        title: "WebSocket 接入配置",
+        title: "WebSocket 配置与接入",
         description: "连接 WebSocket 地址，首次绑定时填写 binding_code。",
         commandLabel: "binding_code",
         commandHelp: "连接 Token 通过查询参数 token 传入。",
-        endpoints: [
-          { label: "会话地址", value: `/connectors/ws/${connection.id}` },
+        endpoints: [{ label: "会话地址", value: sessionUrl }],
+        commands: [
+          {
+            label: "WebSocket 握手检查",
+            value: `curl --http1.1 --include --no-buffer -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" "${sessionUrl}"`,
+          },
         ],
       };
-    case "http_poll":
+    }
+    case "http_poll": {
+      const token = tokenValue(tokens, "pull_token");
+      const taskUrl = `${httpOrigin}/connectors/http/${connection.id}/tasks`;
+      const replyUrl = `${httpOrigin}/connectors/http/${connection.id}/replies`;
+      const ackUrl = `${httpOrigin}/connectors/http/${connection.id}/ack`;
       return {
-        title: "HTTP 轮询接入配置",
+        title: "HTTP 轮询配置与接入",
         description: "使用连接 Token 鉴权，无需扫码或绑定聊天账号。",
         commandLabel: null,
         commandHelp: null,
         endpoints: [
-          { label: "拉取任务", value: `/connectors/http/${connection.id}/tasks` },
-          { label: "提交回复", value: `/connectors/http/${connection.id}/replies` },
-          { label: "确认任务", value: `/connectors/http/${connection.id}/ack` },
+          { label: "拉取任务", value: taskUrl },
+          { label: "提交回复", value: replyUrl },
+          { label: "确认任务", value: ackUrl },
+        ],
+        commands: [
+          {
+            label: "拉取任务",
+            value: `curl "${taskUrl}?cursor=0&limit=10" -H "X-Pull-Token: ${token}"`,
+          },
+          {
+            label: "提交回复",
+            value: `curl "${replyUrl}" -H "Content-Type: application/json" -H "X-Pull-Token: ${token}" -d '{"external_message_id":"reply-001","task_id":"<TASK_ID>","text":"回复内容"}'`,
+          },
+          {
+            label: "确认任务",
+            value: `curl "${ackUrl}" -H "Content-Type: application/json" -H "X-Pull-Token: ${token}" -d '{"task_id":"<TASK_ID>"}'`,
+          },
         ],
       };
+    }
     default:
       return {
-        title: `${connection.platform_label} 接入配置`,
+        title: `${connection.platform_label} 配置与接入`,
         description: "完成配置后再启用连接。",
         commandLabel: "绑定命令",
         commandHelp: "发送完整命令后完成绑定。",
         endpoints: [],
+        commands: [],
       };
   }
 }

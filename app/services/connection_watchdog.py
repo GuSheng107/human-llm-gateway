@@ -9,6 +9,7 @@ from typing import Any
 
 from ..connectors import connection_manager as manager
 from ..core.config import get_settings
+from ..core.logging import log_event
 from ..core.time import iso_utc, utc_now
 from ..domain.enums import AuditAction, ConnectionState
 from ..repositories.models import User
@@ -74,6 +75,14 @@ class ConnectionWatchdog:
                                 extra={"connection_id": row.id},
                             )
                             check_error = "连接器健康检查失败"
+                            log_event(
+                                "error",
+                                "connection.watchdog_health_failed",
+                                "连接器健康检查失败",
+                                connection_id=row.id,
+                                platform=row.platform,
+                            )
+                            runtime["running"] = False
 
                     abnormal = bool(
                         row.desired_running
@@ -92,6 +101,15 @@ class ConnectionWatchdog:
                             row.last_error_code = "health_check_failed"
                             row.last_error_message = check_error
                         disabled = True
+                        log_event(
+                            "warning",
+                            "connection.watchdog_disabled",
+                            "看门狗发现异常连接并关闭启用开关",
+                            connection_id=row.id,
+                            platform=row.platform,
+                            state=row.state.value,
+                            error_code=row.last_error_code,
+                        )
                         self.audit.add(
                             session,
                             action=AuditAction.CONNECTION_WATCHDOG_DISABLED,
@@ -141,6 +159,7 @@ class ConnectionWatchdog:
                 raise
             except Exception:
                 logger.exception("connection watchdog cycle failed")
+                log_event("error", "connection.watchdog_cycle_failed", "看门狗检查周期失败")
 
 
 connection_watchdog = ConnectionWatchdog()

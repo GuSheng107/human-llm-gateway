@@ -137,7 +137,7 @@ echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
 #    the backend serves the built SPA itself)
 uv sync --locked
 (cd admin && npm ci && npm run build)
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
 ```
 
 Open **http://127.0.0.1:8000** — the console and the API share one port. The first run auto-creates the database and seeds default system models. Log in with your admin account, change the password, and start issuing invitations.

@@ -4,7 +4,7 @@
 直接返回各命名空间协议兼容的 413（保证在 JSON 解析与任务创建之前）：
 - `/v1/messages` -> Anthropic `request_too_large`
 - 其他 `/v1/*` -> OpenAI `invalid_request_error` / `payload_too_large`
-- `/api/*` -> 管理 API 统一错误结构
+- `/api/*`、`/connectors/*`、`/healthz` -> 统一错误结构
 """
 
 from __future__ import annotations
@@ -13,7 +13,11 @@ import json
 import uuid
 from typing import Any
 
-from ..core.constants import MAX_ADMIN_REQUEST_BYTES, MAX_INFERENCE_REQUEST_BYTES
+from ..core.constants import (
+    MAX_ADMIN_REQUEST_BYTES,
+    MAX_CONNECTOR_REQUEST_BYTES,
+    MAX_INFERENCE_REQUEST_BYTES,
+)
 
 
 def _request_id_from_scope(scope: dict[str, Any]) -> str:
@@ -33,6 +37,20 @@ def _limit_for(path: str) -> int | None:
         return MAX_INFERENCE_REQUEST_BYTES
     if path.startswith("/api/"):
         return MAX_ADMIN_REQUEST_BYTES
+    if path.startswith("/connectors/") or path == "/healthz":
+        return MAX_CONNECTOR_REQUEST_BYTES
+    return None
+
+
+def _declared_content_length(scope: dict[str, Any]) -> int | None:
+    for key, value in scope.get("headers") or []:
+        if key != b"content-length":
+            continue
+        try:
+            parsed = int(value.decode("ascii"))
+        except (UnicodeDecodeError, ValueError):
+            return None
+        return parsed if parsed >= 0 else None
     return None
 
 
@@ -96,6 +114,10 @@ class BodySizeLimitMiddleware:
         buffered: list[dict[str, Any]] = []
         total = 0
         request_id = _request_id_from_scope(scope)
+        content_length = _declared_content_length(scope)
+        if content_length is not None and content_length > limit:
+            await _send_json(send, *_payload(scope.get("path", "")), request_id=request_id)
+            return
         while True:
             message = await receive()
             if message["type"] == "http.disconnect":

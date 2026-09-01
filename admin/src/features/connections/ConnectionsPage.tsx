@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  bindingStatus,
   checkConnections,
-  createBinding,
   createConnection,
   deleteConnection,
   listAllConnections,
@@ -19,16 +17,13 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type {
-  BindingStatus as BindingStatusType,
   ConnectionCheckItem,
   ImConnection,
   PlatformSpec,
 } from "../../types/gateway";
 import { ConnectionFormModal } from "./ConnectionFormModal";
 import { ConnectionPlatformPanel } from "./ConnectionPlatformPanel";
-import { ConnectionSetupModal } from "./ConnectionSetupModal";
 import { orderPlatforms } from "./connectionPresentation";
-import { QrLoginDrawer } from "./QrLoginDrawer";
 
 interface ConfigTarget {
   platform: PlatformSpec;
@@ -45,30 +40,19 @@ export function ConnectionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [configTarget, setConfigTarget] = useState<ConfigTarget | null>(null);
-  const [qrConnection, setQrConnection] = useState<ImConnection | null>(null);
   const [healthReport, setHealthReport] = useState<ConnectionCheckItem[] | null>(null);
   const [checking, setChecking] = useState(false);
-  const [setupConnection, setSetupConnection] = useState<ImConnection | null>(null);
-  const [binding, setBinding] = useState<BindingStatusType | null>(null);
-  const [bindingCommand, setBindingCommand] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
   const displayPlatforms = useMemo(
     () => orderPlatforms(platforms, items),
     [items, platforms],
   );
-  const platformMap = useMemo(
-    () => new Map(displayPlatforms.map((platform) => [platform.code, platform])),
-    [displayPlatforms],
-  );
   const connectionMap = useMemo(() => {
     const byPlatform = new Map<string, ImConnection>();
     for (const item of items) byPlatform.set(item.platform, item);
     return byPlatform;
   }, [items]);
-  const setupPlatform = setupConnection
-    ? platformMap.get(setupConnection.platform) ?? null
-    : null;
   const summary = useMemo(
     () => ({
       total: items.length,
@@ -100,88 +84,24 @@ export function ConnectionsPage() {
 
   useEffect(() => void load(), [load]);
 
-  useEffect(() => {
-    if (
-      !setupConnection ||
-      !bindingCommand ||
-      binding?.bound ||
-      (binding !== null && !binding.binding_pending)
-    ) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void bindingStatus(setupConnection.id)
-        .then((status) => {
-          setBinding(status);
-          if (status.bound) {
-            notify("IM 连接绑定成功，现在可以开启连接", "success");
-            setSetupConnection((current) =>
-              current ? { ...current, bound: true, state: "stopped" } : current,
-            );
-            void load();
-          } else if (!status.binding_pending) {
-            notify("绑定窗口已过期，已清理未完成的连接", "info");
-            setSetupConnection(null);
-            setBindingCommand("");
-            void deleteConnection(setupConnection.id).then(load).catch(() => undefined);
-          }
-        })
-        .catch(() => undefined);
-    }, 2000);
-    return () => window.clearInterval(timer);
-  }, [binding, bindingCommand, load, setupConnection]);
-
-  const openSetup = async (item: ImConnection) => {
-    const spec = platformMap.get(item.platform);
-    if (!spec) {
-      notify("平台信息不可用，请刷新后重试", "error");
-      return;
-    }
-    if (spec.supports_login) {
-      setQrConnection(item);
-      return;
-    }
-
-    setBusyKey(item.id);
-    try {
-      let command = spec.binding_command ?? "";
-      let currentBinding: BindingStatusType | null = null;
-      if (spec.binding_command) {
-        if (!item.bound) {
-          const created = await createBinding(item.id);
-          command = created.binding_code;
-        }
-        currentBinding = await bindingStatus(item.id);
-      }
-      setSetupConnection(item);
-      setBindingCommand(command);
-      setBinding(currentBinding);
-      if (item.platform === "wecom_aibot" && !item.bound) {
-        notify("企微绑定已启动，请在个人会话发送固定命令", "success");
-      }
-    } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "打开配置失败", "error");
-    } finally {
-      setBusyKey(null);
-    }
-  };
-
-  const scanWechat = async (platform: PlatformSpec, current: ImConnection | null) => {
+  const openConnection = async (platform: PlatformSpec, current: ImConnection | null) => {
     const key = current?.id ?? platform.code;
     setBusyKey(key);
     try {
       let connection = current;
-      if (!connection) {
+      if (!connection && platform.supports_login) {
         connection = await createConnection({
           name: platform.label,
           platform: platform.code,
           config: {},
         });
-        setItems((previous) => [...previous, connection as ImConnection]);
+        const saved = { ...connection, generated_tokens: null };
+        setItems((previous) => [...previous, saved]);
+        connection = saved;
       }
-      setQrConnection(connection);
+      setConfigTarget({ platform, connection });
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "发起扫码失败", "error");
+      notify(caught instanceof Error ? caught.message : "打开连接配置失败", "error");
       await load();
     } finally {
       setBusyKey(null);
@@ -197,8 +117,7 @@ export function ConnectionsPage() {
           : "请先完成企微用户绑定",
         "info",
       );
-      if (platform.supports_login) void scanWechat(platform, item);
-      else void openSetup(item);
+      void openConnection(platform, item);
       return;
     }
 
@@ -244,35 +163,13 @@ export function ConnectionsPage() {
     }
   };
 
-  const closeSetup = () => {
-    // 未绑定就关闭指引：直接删除残留连接，避免留下无法再次绑定的死记录。
-    const stale =
-      setupConnection && !setupConnection.bound && !setupConnection.desired_running
-        ? setupConnection
-        : null;
-    setSetupConnection(null);
-    setBindingCommand("");
-    setBinding(null);
-    if (stale) {
-      void deleteConnection(stale.id).then(load).catch(() => undefined);
-    }
-  };
-
   const saveConnection = (saved: ImConnection) => {
-    setConfigTarget(null);
-    void load();
-    void openSetup(saved);
-  };
-
-  const closeQr = () => {
-    // 扫码未完成就关闭：删除残留连接，避免未绑定记录阻碍重新绑定。
-    const stale = qrConnection && !qrConnection.bound && !qrConnection.desired_running
-      ? qrConnection
-      : null;
-    setQrConnection(null);
-    if (stale) {
-      void deleteConnection(stale.id).then(load).catch(() => undefined);
-    }
+    setItems((previous) => {
+      const exists = previous.some((item) => item.id === saved.id);
+      return exists
+        ? previous.map((item) => (item.id === saved.id ? saved : item))
+        : [...previous, saved];
+    });
   };
 
   return (
@@ -328,10 +225,7 @@ export function ConnectionsPage() {
                   connection={connection}
                   busy={busyKey === key}
                   onToggle={() => void toggle(platform, connection)}
-                  onPrimaryAction={() => {
-                    if (platform.supports_login) void scanWechat(platform, connection);
-                    else setConfigTarget({ platform, connection });
-                  }}
+                  onPrimaryAction={() => void openConnection(platform, connection)}
                   onDelete={() => connection && void remove(connection)}
                 />
               );
@@ -353,7 +247,10 @@ export function ConnectionsPage() {
         <ConnectionFormModal
           platform={configTarget.platform}
           connection={configTarget.connection}
-          onClose={() => setConfigTarget(null)}
+          onClose={() => {
+            setConfigTarget(null);
+            void load();
+          }}
           onSaved={saveConnection}
         />
       )}
@@ -426,24 +323,6 @@ export function ConnectionsPage() {
         </Modal>
       )}
 
-      {setupConnection && setupPlatform && (
-        <ConnectionSetupModal
-          connection={setupConnection}
-          platform={setupPlatform}
-          command={bindingCommand}
-          binding={binding}
-          onClose={closeSetup}
-        />
-      )}
-
-      <QrLoginDrawer
-        connection={qrConnection}
-        onClose={closeQr}
-        onSaved={() => {
-          notify("扫码绑定成功，现在可以开启连接", "success");
-          void load();
-        }}
-      />
     </div>
   );
 }

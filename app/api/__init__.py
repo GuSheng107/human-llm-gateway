@@ -49,6 +49,10 @@ def create_app() -> FastAPI:
 
         with SessionLocal() as db:
             BootstrapService().initialize(db, get_settings())
+        # 结构化日志异步落库线程 + 普通 logging 告警接入 app_logs。
+        from ..core.logging import install_persistence, stop_log_persistence
+
+        install_persistence()
         # 连接器运行时装配与启动恢复（desired_running 的连接重新拉起）。
         service = ConnectionService()
         manager.set_state_recorder(service.runtime_state_recorder())
@@ -70,8 +74,9 @@ def create_app() -> FastAPI:
                     await background
                 except asyncio.CancelledError:
                     pass
-            # 优雅关闭：停止全部连接器实例。
+            # 优雅关闭：停止全部连接器实例，并刷完日志队列。
             await manager.stop_all()
+            stop_log_persistence()
 
     app = FastAPI(title="Human LLM Gateway", version="0.6.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)

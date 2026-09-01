@@ -21,6 +21,7 @@ from ..core.db import get_db
 from ..core.logging import get_request_id, log_event
 from ..domain.enums import InferenceProtocol, ReplyStrategy, TaskState
 from ..domain.errors import DomainError, DomainErrorCode
+from ..domain.tokens import TokenSnapshot
 from ..domain.values import ReplyDraft
 from ..protocols import anthropic as anthropic_protocol
 from ..protocols import chat_completions as chat_protocol
@@ -328,6 +329,27 @@ def _now() -> Any:
     return utc_now()
 
 
+def _snapshot(task: RequestTask, draft: ReplyDraft) -> TokenSnapshot:
+    import json as _json
+
+    try:
+        normalized = _json.loads(task.normalized_request_json or "{}")
+    except (ValueError, TypeError):
+        normalized = {}
+    context = normalized.get("context") if isinstance(normalized, dict) else None
+    instructions = normalized.get("instructions") if isinstance(normalized, dict) else None
+    return TokenSnapshot.build(
+        context=context if isinstance(context, list) else [],
+        instructions=instructions if isinstance(instructions, str) else None,
+        reasoning=draft.reasoning,
+        tool_calls=[
+            {"name": call.name, "arguments": call.arguments, "id": call.id}
+            for call in draft.tool_calls
+        ],
+        final_text=draft.final_text,
+    )
+
+
 async def _stream(
     task: RequestTask,
     draft: ReplyDraft,
@@ -406,17 +428,36 @@ async def chat_completions(
         return JSONResponse(status_code=499, content={})
     task = outcome.task
     model = task.requested_model
+    snap = _snapshot(task, outcome.draft)
+    usage = {
+        "prompt_tokens": snap.input_tokens,
+        "completion_tokens": snap.output_tokens,
+        "total_tokens": snap.total_tokens,
+    }
+    # stream_options.include_usage：finish 帧后追加带 usage 的空 choices 帧。
+    # 任务已创建成功；直接从原始请求体读取该网关透明字段。
+    include_usage = False
+    if task.stream_requested:
+        import json as _json
+
+        try:
+            raw_options = _json.loads(task.raw_payload_json or "{}").get("stream_options")
+            include_usage = isinstance(raw_options, dict) and bool(raw_options.get("include_usage"))
+        except (ValueError, TypeError):
+            include_usage = False
     if not task.stream_requested:
         await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
         return _json_response(
-            chat_protocol.render_response(model, outcome.draft),
+            chat_protocol.render_response(model, outcome.draft, usage=usage),
             request_id="",
         )
     return EventSourceResponse(
         _stream(
             task,
             outcome.draft,
-            lambda: chat_protocol.stream_frames(model, outcome.draft),
+            lambda: chat_protocol.stream_frames(
+                model, outcome.draft, usage=usage, include_usage=include_usage
+            ),
             chat_protocol.stream_error_frame,
         )
     )
@@ -442,17 +483,25 @@ async def create_response(
     task = outcome.task
     model = task.requested_model
     response_id = task.response_public_id or ""
+    snap = _snapshot(task, outcome.draft)
+    usage = {
+        "input_tokens": snap.input_tokens,
+        "output_tokens": snap.output_tokens,
+        "total_tokens": snap.total_tokens,
+    }
     if not task.stream_requested:
         await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
         return _json_response(
-            responses_protocol.render_response(model, response_id, outcome.draft),
+            responses_protocol.render_response(model, response_id, outcome.draft, usage=usage),
             request_id="",
         )
     return EventSourceResponse(
         _stream(
             task,
             outcome.draft,
-            lambda: responses_protocol.stream_events(model, response_id, outcome.draft),
+            lambda: responses_protocol.stream_events(
+                model, response_id, outcome.draft, usage=usage
+            ),
             lambda message: responses_protocol.stream_error_event(response_id, model, message),
         )
     )
@@ -477,11 +526,13 @@ async def anthropic_messages(
         return JSONResponse(status_code=499, content={})
     task = outcome.task
     model = task.requested_model
+    snap = _snapshot(task, outcome.draft)
+    usage = {"input_tokens": snap.input_tokens, "output_tokens": snap.output_tokens}
     if not task.stream_requested:
         await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
         # Anthropic SDK 客户端期望响应头回显请求的 anthropic-version。
         return _json_response(
-            anthropic_protocol.render_response(model, outcome.draft),
+            anthropic_protocol.render_response(model, outcome.draft, usage=usage),
             request_id=get_request_id() or "",
             extra_headers={"anthropic-version": request.headers.get("anthropic-version", "")},
         )
@@ -489,7 +540,7 @@ async def anthropic_messages(
         _stream(
             task,
             outcome.draft,
-            lambda: anthropic_protocol.stream_events(model, outcome.draft),
+            lambda: anthropic_protocol.stream_events(model, outcome.draft, usage=usage),
             lambda _message: anthropic_protocol.stream_error_event(),
         )
     )

@@ -216,57 +216,119 @@ def test_responses_output_items_order() -> None:
 
 
 def test_responses_render_and_stream_events() -> None:
-    body = responses_protocol.render_response("deepseek-v4-pro", "resp_abc", _FULL_DRAFT)
+    usage = {"input_tokens": 30, "output_tokens": 12, "total_tokens": 42}
+    body = responses_protocol.render_response(
+        "deepseek-v4-pro", "resp_abc", _FULL_DRAFT, usage=usage
+    )
     assert body["id"] == "resp_abc"
     assert body["object"] == "response"
     assert body["status"] == "completed"
     assert [item["type"] for item in body["output"]] == ["reasoning", "function_call", "message"]
+    assert body["usage"] == usage
+    # 消息内容块带 annotations（官方 SDK 必需字段）。
+    message = next(item for item in body["output"] if item["type"] == "message")
+    assert message["content"][0]["annotations"] == []
+    assert message["id"]
 
-    events = list(responses_protocol.stream_events("deepseek-v4-pro", "resp_abc", _FULL_DRAFT))
+    events = list(
+        responses_protocol.stream_events("deepseek-v4-pro", "resp_abc", _FULL_DRAFT, usage=usage)
+    )
     names = [event.event for event in events]
     assert names[0] == "response.created"
     assert names[1] == "response.in_progress"
     assert names[-1] == "response.completed"
     for event in events:
         assert json.loads(event.data)["type"] == event.event
+    # 流式补齐 content part / delta / done 事件（官方 SDK 契约）。
+    assert "response.content_part.added" in names
+    assert "response.output_text.delta" in names
+    assert "response.output_text.done" in names
+    assert "response.content_part.done" in names
+    assert "response.function_call_arguments.delta" in names
+    assert "response.function_call_arguments.done" in names
+    # sequence_number 逐事件递增且每帧必带。
+    seqs = [json.loads(event.data)["sequence_number"] for event in events]
+    assert seqs == sorted(seqs)
     added = [
         json.loads(event.data) for event in events if event.event == "response.output_item.added"
     ]
     assert [item["item"]["type"] for item in added] == ["reasoning", "function_call", "message"]
     completed = json.loads(events[-1].data)
     assert completed["response"]["status"] == "completed"
+    assert completed["response"]["usage"] == usage
+
+
+def test_chat_completions_stable_id_created_and_usage() -> None:
+    """同一次流式响应保持稳定 id 与 created；include_usage 追加 usage 帧。"""
+    usage = {"prompt_tokens": 30, "completion_tokens": 12, "total_tokens": 42}
+    frames = list(
+        chat_protocol.stream_frames("deepseek-v4-pro", _FULL_DRAFT, usage=usage, include_usage=True)
+    )
+    payloads = [json.loads(frame.data) for frame in frames[:-1]]
+    ids = {item["id"] for item in payloads}
+    created = {item["created"] for item in payloads}
+    assert len(ids) == 1
+    assert len(created) == 1
+    # finish 帧后是带 usage 的空 choices 帧，最后是 [DONE]。
+    usage_frames = [item for item in payloads if item.get("usage") is not None]
+    assert len(usage_frames) == 1
+    assert usage_frames[0]["choices"] == []
+    assert usage_frames[0]["usage"] == usage
+    assert frames[-1].data == "[DONE]"
+    # 未请求 include_usage 时不追加 usage 帧。
+    frames_no_usage = list(chat_protocol.stream_frames("m", _FULL_DRAFT))
+    payloads_no_usage = [json.loads(frame.data) for frame in frames_no_usage[:-1]]
+    assert all(item.get("usage") is None for item in payloads_no_usage)
 
 
 def test_anthropic_render_response_full_draft() -> None:
+    # 人工路径不返回 thinking block：Anthropic 签名无法伪造（决策 §15.2）。
     body = anthropic_protocol.render_response("deepseek-v4-pro", _FULL_DRAFT)
     assert body["type"] == "message"
     assert body["role"] == "assistant"
-    assert [block["type"] for block in body["content"]] == ["thinking", "tool_use", "text"]
-    assert body["content"][0]["thinking"] == "先想一下"
-    assert body["content"][1]["name"] == "get_weather"
-    assert body["content"][1]["input"] == {"city": "北京"}
-    assert body["content"][2]["text"] == "今天晴"
+    assert [block["type"] for block in body["content"]] == ["tool_use", "text"]
+    assert body["content"][0]["name"] == "get_weather"
+    assert body["content"][0]["input"] == {"city": "北京"}
+    assert body["content"][1]["text"] == "今天晴"
     assert body["stop_reason"] == "tool_use"
-    assert body["usage"]["output_tokens"] >= 1
+    # 未传 usage 时输出 0；调用方（API 层）总是计算快照后传入。
+    assert body["usage"] == {"input_tokens": 0, "output_tokens": 0}
+    # 传入 usage 时按快照输出，不再使用硬编码假值。
+    body_with_usage = anthropic_protocol.render_response(
+        "deepseek-v4-pro", _FULL_DRAFT, usage={"input_tokens": 11, "output_tokens": 22}
+    )
+    assert body_with_usage["usage"] == {"input_tokens": 11, "output_tokens": 22}
 
 
 def test_anthropic_stream_events_order() -> None:
-    events = list(anthropic_protocol.stream_events("deepseek-v4-pro", _FULL_DRAFT))
+    events = list(
+        anthropic_protocol.stream_events(
+            "deepseek-v4-pro",
+            _FULL_DRAFT,
+            usage={"input_tokens": 11, "output_tokens": 22},
+        )
+    )
     names = [event.event for event in events]
     assert names[0] == "message_start"
     assert names[-1] == "message_stop"
-    assert names.count("content_block_start") == 3
-    assert names.count("content_block_stop") == 3
+    # thinking 块被省略：只有 tool_use 与 text 两个块。
+    assert names.count("content_block_start") == 2
+    assert names.count("content_block_stop") == 2
     deltas = [
         json.loads(event.data)["delta"]["type"]
         for event in events
         if event.event == "content_block_delta"
     ]
-    assert deltas == ["thinking_delta", "signature_delta", "input_json_delta", "text_delta"]
+    assert deltas == ["input_json_delta", "text_delta"]
+    message_start = next(
+        json.loads(event.data) for event in events if event.event == "message_start"
+    )
+    assert message_start["message"]["usage"]["input_tokens"] == 11
     message_delta = next(
         json.loads(event.data) for event in events if event.event == "message_delta"
     )
     assert message_delta["delta"]["stop_reason"] == "tool_use"
+    assert message_delta["usage"]["output_tokens"] == 22
 
 
 def test_stream_error_frames_contract() -> None:

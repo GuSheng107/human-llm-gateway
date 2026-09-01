@@ -9,6 +9,7 @@ import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { Modal } from "../../components/feedback/Modal";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
@@ -42,6 +43,7 @@ export function LogsPage() {
   const [appEvent, setAppEvent] = useState("");
   const [appHours, setAppHours] = useState("");
   const [appTraceId, setAppTraceId] = useState("");
+  const [detail, setDetail] = useState<AppLogItem | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -63,6 +65,7 @@ export function LogsPage() {
           event: appEvent.trim() || undefined,
           request_id: appTraceId.trim() || undefined,
           hours: appHours ? Number(appHours) : undefined,
+          with_context: true,
         });
         setAppItems(result.items);
         setTotal(result.total);
@@ -246,7 +249,14 @@ export function LogsPage() {
                     </td>
                     <td className="px-4 py-3 font-mono text-slate-600">{item.event || "-"}</td>
                     <td className="max-w-[320px] truncate px-4 py-3 text-slate-500">
-                      {item.message}
+                      <button
+                        type="button"
+                        onClick={() => setDetail(item)}
+                        title="查看上下文详情"
+                        className="max-w-full truncate text-left hover:text-primary"
+                      >
+                        {item.message}
+                      </button>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] text-slate-400">
                       {item.request_id ? (
@@ -283,6 +293,54 @@ export function LogsPage() {
           <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
         </div>
       </Card>
+
+      {detail && (
+        <Modal
+          title={`日志详情 · ${detail.level}`}
+          description={`${detail.event || "-"}${detail.logger ? ` · ${detail.logger}` : ""}`}
+          onClose={() => setDetail(null)}
+          width="max-w-2xl"
+        >
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto p-5">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs md:grid-cols-3">
+              <div>
+                <dt className="text-slate-400">时间</dt>
+                <dd className="mt-0.5 text-slate-600">{formatTime(detail.created_at)}</dd>
+              </div>
+              <div>
+                <dt className="text-slate-400">traceId</dt>
+                <dd className="mt-0.5 break-all font-mono text-slate-600">
+                  {detail.request_id ?? "-"}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-slate-400">关联</dt>
+                <dd className="mt-0.5 font-mono text-slate-600">
+                  {[
+                    detail.user_id ? `user:${detail.user_id}` : "",
+                    detail.task_id ? `task:${detail.task_id}` : "",
+                    detail.api_key_id ? `key:${detail.api_key_id}` : "",
+                    detail.connection_id ? `conn:${detail.connection_id}` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ") || "-"}
+                </dd>
+              </div>
+            </dl>
+            <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 text-xs text-slate-600">
+              {detail.message}
+            </div>
+            {detail.context && Object.keys(detail.context).length > 0 && (
+              <div>
+                <p className="mb-1.5 text-xs font-medium text-slate-400">上下文（已脱敏）</p>
+                <pre className="max-h-72 overflow-auto rounded-lg bg-slate-900/95 p-3 text-[11px] leading-relaxed text-slate-200">
+                  {JSON.stringify(detail.context, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

@@ -42,6 +42,70 @@ def _seed_applog(event: str, level: str = "info", message: str = "x") -> None:
 # ----------------------------------------------------------------------
 
 
+def test_trace_id_in_admin_api_response_body_and_header(client, created_user) -> None:
+    """方案1：/api/* JSON 响应顶层携带 trace_id，并回写 X-Trace-Id 头。"""
+    resp = client.get("/api/app-logs", headers=created_user.headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["trace_id"]
+    assert resp.headers["x-trace-id"] == body["trace_id"]
+    assert resp.headers["x-request-id"] == body["trace_id"]
+    # 调用方提供 X-Request-Id 时沿用同一 trace。
+    resp_echo = client.get(
+        "/api/app-logs",
+        headers={**created_user.headers, "X-Request-Id": "req_custom123"},
+    )
+    assert resp_echo.json()["trace_id"] == "req_custom123"
+    assert resp_echo.headers["x-trace-id"] == "req_custom123"
+
+
+def test_trace_id_error_response_body(client, created_user) -> None:
+    """错误响应同样携带顶层 trace_id（管理 API 统一错误结构）。"""
+    resp = client.get("/api/tasks/999999", headers=created_user.headers)
+    assert resp.status_code == 404
+    body = resp.json()
+    assert body["error"]["request_id"] == body["trace_id"]
+    assert body["trace_id"]
+
+
+def test_v1_responses_do_not_inject_trace_id_into_body(client, created_key) -> None:
+    """方案1：/v1/* 不改变 OpenAI/Anthropic 协议正文，只追加 X-Trace-Id 头。"""
+    # 用不存在的模型立即触发协议错误（不进入人工等待）。
+    resp = client.post(
+        "/v1/chat/completions",
+        headers={"Authorization": f"Bearer {created_key.plaintext}"},
+        json={
+            "model": "no-such-model",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 404
+    body = resp.json()
+    # OpenAI 错误结构保持原样，无顶层 trace_id 注入。
+    assert "trace_id" not in body
+    assert body["error"]["type"]
+    assert resp.headers.get("x-trace-id")
+
+
+def test_app_logs_logger_column_and_context(client, admin_headers, created_user) -> None:
+    """普通 logging（WARNING+）经 root handler 落库；context 脱敏可查。"""
+    import logging
+
+    logging.getLogger("test.watchdog").exception("connection watchdog cycle failed")
+    # logger 行无归属 user；scope 过滤下仅管理员可见。
+    resp = client.get(
+        "/api/app-logs",
+        headers=admin_headers,
+        params={"event": "logging.record", "with_context": "true"},
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert items
+    entry = items[0]
+    assert entry["logger"] == "test.watchdog"
+    assert entry["context"] is not None
+
+
 def test_audit_logs_admin_only(client, admin_headers, created_user) -> None:
     _seed_audit("api_key.created", "api_key", ["name"])
     resp = client.get("/api/audit-logs", headers=admin_headers)

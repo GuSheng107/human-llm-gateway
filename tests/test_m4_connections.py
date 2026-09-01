@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import secrets
 
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
 import app.core.db as database
 from app.core.time import utc_now
 from app.domain.enums import (
@@ -68,7 +71,6 @@ def _create_connection(
             config
             if config is not None
             else {
-                "inbound_token": "in-token-1",
                 "outbound_url": "https://example.test/hook",
                 "outbound_token": "out-token-1",
             }
@@ -77,6 +79,13 @@ def _create_connection(
     response = client.post("/api/im-connections", headers=headers, json=payload)
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _generated_token(created: dict, field: str = "inbound_token") -> str:
+    """取创建响应中一次性返回的网关自签 Token。"""
+    token = (created.get("generated_tokens") or {}).get(field)
+    assert token and token.startswith("hllm-") and len(token) == len("hllm-") + 43
+    return token
 
 
 def test_platform_catalog_exposes_five_platforms_with_config_schema(client, admin_headers) -> None:
@@ -101,16 +110,18 @@ def test_platform_catalog_exposes_five_platforms_with_config_schema(client, admi
 def test_connection_config_is_encrypted_and_secrets_never_echoed(client, admin_headers) -> None:
     headers = _create_user(client, admin_headers, "conn-owner")
     created = _create_connection(client, headers)
+    token = _generated_token(created)
 
-    # 响应不回显 Secret，只提示已设置。
+    # 响应不回显 Secret，只提示已设置；Token 明文仅在 generated_tokens 一次性展示。
     assert created["config"]["inbound_token"] is None
     assert created["config"]["inbound_token_set"] is True
-    assert "in-token-1" not in response_text(created)
+    assert token in response_text(created)
+    assert created["generated_tokens"] == {"inbound_token": token}
 
     with database.SessionLocal() as session:
         row = session.get(ImConnection, int(created["id"]))
         assert row is not None
-        assert "in-token-1" not in row.config_ciphertext
+        assert token not in row.config_ciphertext
         assert row.config_ciphertext.startswith("hlg1.1.")
 
 
@@ -125,7 +136,6 @@ def test_each_user_can_only_create_one_connection_per_platform(client, admin_hea
             "name": "second-webhook",
             "platform": "webhook",
             "config": {
-                "inbound_token": "another-token",
                 "outbound_url": "https://example.test/another-hook",
             },
         },
@@ -139,10 +149,11 @@ def test_each_user_can_only_create_one_connection_per_platform(client, admin_hea
         json={
             "name": first["name"],
             "platform": "http_poll",
-            "config": {"pull_token": "pull-token"},
+            "config": {},
         },
     )
     assert another_platform.status_code == 201, another_platform.text
+    assert _generated_token(another_platform.json(), "pull_token")
 
 
 def test_wechat_credentials_can_only_be_saved_by_qr_login(client, admin_headers) -> None:
@@ -185,6 +196,7 @@ def test_secret_kept_when_update_submits_empty_or_omits(client, admin_headers) -
     headers = _create_user(client, admin_headers, "conn-owner-2")
     created = _create_connection(client, headers, name="keep-secret")
     connection_id = created["id"]
+    token = _generated_token(created)
 
     omitted = client.patch(
         f"/api/im-connections/{connection_id}",
@@ -198,7 +210,7 @@ def test_secret_kept_when_update_submits_empty_or_omits(client, admin_headers) -
 
     with database.SessionLocal() as session:
         row = session.get(ImConnection, int(connection_id))
-        assert ConnectionService.decrypt_config(row)["inbound_token"] == "in-token-1"
+        assert ConnectionService.decrypt_config(row)["inbound_token"] == token
 
     empty = client.patch(
         f"/api/im-connections/{connection_id}",
@@ -208,17 +220,64 @@ def test_secret_kept_when_update_submits_empty_or_omits(client, admin_headers) -
     assert empty.status_code == 200
     with database.SessionLocal() as session:
         row = session.get(ImConnection, int(connection_id))
-        assert ConnectionService.decrypt_config(row)["inbound_token"] == "in-token-1"
+        assert ConnectionService.decrypt_config(row)["inbound_token"] == token
+
+    # 网关自签 Token 不允许手填：创建与更新提交非空值一律 400。
+    manual_create = client.post(
+        "/api/im-connections",
+        headers=headers,
+        json={
+            "name": "manual-token",
+            "platform": "http_poll",
+            "config": {"pull_token": token},
+        },
+    )
+    assert manual_create.status_code == 400
+    assert "不允许手动填写" in manual_create.json()["error"]["message"]
 
     replaced = client.patch(
         f"/api/im-connections/{connection_id}",
         headers=headers,
-        json={"config": {"inbound_token": "in-token-2"}},
+        json={"config": {"inbound_token": "hllm-manual-not-allowed"}},
     )
-    assert replaced.status_code == 200
+    assert replaced.status_code == 400
+    assert "重新生成" in replaced.json()["error"]["message"]
     with database.SessionLocal() as session:
         row = session.get(ImConnection, int(connection_id))
-        assert ConnectionService.decrypt_config(row)["inbound_token"] == "in-token-2"
+        assert ConnectionService.decrypt_config(row)["inbound_token"] == token
+
+    # rotate 原子换新：明文只在响应展示，旧 Token 立即失效。
+    rotated = client.post(
+        f"/api/im-connections/{connection_id}/credentials/inbound_token/rotate",
+        headers=headers,
+    )
+    assert rotated.status_code == 200, rotated.text
+    new_token = rotated.json()["token"]
+    assert rotated.json()["field"] == "inbound_token"
+    assert new_token != token and new_token.startswith("hllm-")
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, int(connection_id))
+        assert ConnectionService.decrypt_config(row)["inbound_token"] == new_token
+    # 审计 metadata 只记录字段名，不含 Token 明文。
+    with database.SessionLocal() as session:
+        from app.repositories.models import AuditLog
+
+        rotations = [
+            row_log
+            for row_log in session.query(AuditLog).filter(
+                AuditLog.resource_id == str(connection_id)
+            )
+            if "credential_rotated" in (row_log.metadata_json or "")
+        ]
+        assert rotations
+        assert all(new_token not in (row_log.metadata_json or "") for row_log in rotations)
+
+    # 非 Token 字段不支持 rotate。
+    bad_field = client.post(
+        f"/api/im-connections/{connection_id}/credentials/outbound_token/rotate",
+        headers=headers,
+    )
+    assert bad_field.status_code == 400
 
 
 def test_admin_governance_cannot_create_or_change_credentials(client, admin_headers) -> None:
@@ -292,9 +351,20 @@ def test_delete_blocked_while_enabled_api_key_references_connection(client, admi
     conflict = client.delete(f"/api/im-connections/{connection_id}", headers=headers)
     assert conflict.status_code == 409
 
+    # 停用 Key 的引用同样阻止删除（默认直接阻止并提示引用关系）。
     with database.SessionLocal() as session:
         session.query(ApiKey).filter(ApiKey.id == session.query(ApiKey).first().id).update(
             {"is_enabled": False}
+        )
+        session.commit()
+    still_blocked = client.delete(f"/api/im-connections/{connection_id}", headers=headers)
+    assert still_blocked.status_code == 409
+    assert "API Key" in still_blocked.json()["error"]["message"]
+
+    # 解除引用后允许删除（IM 模式的 Key 必须同时切换为 Web 入口）。
+    with database.SessionLocal() as session:
+        session.query(ApiKey).filter(ApiKey.id == session.query(ApiKey).first().id).update(
+            {"im_connection_id": None, "delivery_mode": DeliveryMode.WEB}
         )
         session.commit()
     assert client.delete(f"/api/im-connections/{connection_id}", headers=headers).status_code == 204
@@ -344,7 +414,10 @@ def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
 
     polled = client.get(f"/api/im-connections/{created['id']}/login", headers=headers)
     assert polled.status_code == 200
-    assert polled.json() == {"status": "confirmed", "bound": True}
+    body = polled.json()
+    assert body["status"] == "confirmed"
+    assert body["bound"] is True
+    assert body["trace_id"]
     with database.SessionLocal() as session:
         row = session.get(ImConnection, int(created["id"]))
         assert row is not None
@@ -398,11 +471,14 @@ def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
     headers = _create_user(client, admin_headers, "conn-owner-5")
     created = _create_connection(client, headers, name="binding")
     connection_id = created["id"]
+    token = _generated_token(created)
 
     status = client.get(
         f"/api/im-connections/{connection_id}/binding/status", headers=headers
     ).json()
-    assert status == {"bound": False, "binding_pending": False, "binding_expires_at": None}
+    assert status["bound"] is False
+    assert status["binding_pending"] is False
+    assert status["binding_expires_at"] is None
 
     binding = client.post(f"/api/im-connections/{connection_id}/binding", headers=headers).json()
     assert binding["binding_code"] == "connect webhook"
@@ -419,7 +495,7 @@ def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
     inbound = client.post(
         f"/connectors/webhook/{connection_id}/inbound",
         json={"external_message_id": "m-1", "sender": "u-1", "text": "hello"},
-        headers={"X-Webhook-Token": "in-token-1"},
+        headers={"X-Webhook-Token": token},
     )
     assert inbound.status_code == 200
     assert inbound.json()["result"] == InboundResult.UNBOUND.value
@@ -432,7 +508,7 @@ def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
             "text": "hello",
             "binding_code": binding["binding_code"],
         },
-        headers={"X-Webhook-Token": "in-token-1"},
+        headers={"X-Webhook-Token": token},
     )
     assert bound.json()["result"] == InboundResult.BOUND.value
     assert (
@@ -446,7 +522,7 @@ def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
     stranger = client.post(
         f"/connectors/webhook/{connection_id}/inbound",
         json={"external_message_id": "m-3", "sender": "u-2", "text": "hello"},
-        headers={"X-Webhook-Token": "in-token-1"},
+        headers={"X-Webhook-Token": token},
     )
     assert stranger.json()["result"] == InboundResult.UNBOUND.value
 
@@ -517,6 +593,7 @@ def test_webhook_inbound_is_idempotent_and_first_reply_wins(client, admin_header
     headers = _create_user(client, admin_headers, "conn-owner-6")
     created = _create_connection(client, headers, name="idempotent")
     connection_id = int(created["id"])
+    token = _generated_token(created)
     client.post(f"/api/im-connections/{connection_id}/binding", headers=headers)
     binding = client.post(f"/api/im-connections/{connection_id}/binding", headers=headers).json()
 
@@ -531,27 +608,27 @@ def test_webhook_inbound_is_idempotent_and_first_reply_wins(client, admin_header
             "text": "hi",
             "binding_code": binding["binding_code"],
         },
-        headers={"X-Webhook-Token": "in-token-1"},
+        headers={"X-Webhook-Token": token},
     )
 
     first = client.post(
         f"/connectors/webhook/{connection_id}/inbound",
         json={"external_message_id": "msg-1", "sender": "u-1", "text": "#task_public_1 第一段回复"},
-        headers={"X-Webhook-Token": "in-token-1"},
+        headers={"X-Webhook-Token": token},
     )
     assert first.json()["result"] == InboundResult.ACCEPTED.value
 
     duplicate = client.post(
         f"/connectors/webhook/{connection_id}/inbound",
         json={"external_message_id": "msg-1", "sender": "u-1", "text": "#task_public_1 重复"},
-        headers={"X-Webhook-Token": "in-token-1"},
+        headers={"X-Webhook-Token": token},
     )
     assert duplicate.json()["result"] == InboundResult.DUPLICATE.value
 
     late = client.post(
         f"/connectors/webhook/{connection_id}/inbound",
         json={"external_message_id": "msg-2", "sender": "u-1", "text": "#task_public_1 晚到"},
-        headers={"X-Webhook-Token": "in-token-1"},
+        headers={"X-Webhook-Token": token},
     )
     assert late.json()["result"] == InboundResult.LATE.value
 
@@ -596,6 +673,45 @@ def test_webhook_inbound_requires_connection_token(client, admin_headers) -> Non
     )
 
 
+def test_connector_and_health_payload_limits_run_before_parsing(client, monkeypatch) -> None:
+    monkeypatch.setattr("app.api.limits.MAX_CONNECTOR_REQUEST_BYTES", 64)
+
+    connector = client.post(
+        "/connectors/webhook/999/inbound",
+        content=b'{"external_message_id":"m-1","text":"' + b"x" * 200 + b'"}',
+        headers={"Content-Type": "application/json"},
+    )
+    assert connector.status_code == 413
+    assert connector.json()["error"]["code"] == "payload_too_large"
+
+    health = client.request("GET", "/healthz", content=b"x" * 200)
+    assert health.status_code == 413
+    assert health.json()["error"]["code"] == "payload_too_large"
+
+
+def test_websocket_rejects_oversized_message(client, admin_headers, monkeypatch) -> None:
+    headers = _create_user(client, admin_headers, "ws-size-owner")
+    created = _create_connection(
+        client,
+        headers,
+        name="ws-size-limit",
+        platform="websocket",
+        config={},
+    )
+    connection_id = created["id"]
+    token = _generated_token(created, "connection_token")
+    started = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert started.status_code == 200, started.text
+
+    monkeypatch.setattr("app.api.connectors.SessionLocal", database.SessionLocal)
+    monkeypatch.setattr("app.api.connectors.MAX_CONNECTOR_WEBSOCKET_MESSAGE_BYTES", 64)
+    with client.websocket_connect(f"/connectors/ws/{connection_id}?token={token}") as websocket:
+        websocket.send_text("x" * 65)
+        with pytest.raises(WebSocketDisconnect) as disconnected:
+            websocket.receive_text()
+        assert disconnected.value.code == 1009
+
+
 def test_watchdog_check_disables_abnormal_enabled_connection(client, admin_headers) -> None:
     from app.domain.enums import ConnectionState
     from app.repositories.models import ImConnection
@@ -629,9 +745,10 @@ def test_http_poll_cursor_reply_and_ack_are_idempotent(client, admin_headers) ->
         headers,
         name="poller",
         platform="http_poll",
-        config={"pull_token": "pull-token-1"},
+        config={},
     )
     connection_id = int(created["id"])
+    pull_token = _generated_token(created, "pull_token")
     user_id = int(client.get("/api/auth/me", headers=headers).json()["id"])
     task_id = _seed_key_and_task(user_id, connection_id, public_id="task_public_poll")
 
@@ -656,7 +773,7 @@ def test_http_poll_cursor_reply_and_ack_are_idempotent(client, admin_headers) ->
     pulled = client.get(
         f"/connectors/http/{connection_id}/tasks",
         params={"cursor": 0},
-        headers={"X-Pull-Token": "pull-token-1"},
+        headers={"X-Pull-Token": pull_token},
     ).json()
     assert [item["task_id"] for item in pulled["tasks"]] == ["task_public_poll"]
     assert pulled["cursor"] > 0
@@ -665,7 +782,7 @@ def test_http_poll_cursor_reply_and_ack_are_idempotent(client, admin_headers) ->
     second = client.get(
         f"/connectors/http/{connection_id}/tasks",
         params={"cursor": pulled["cursor"]},
-        headers={"X-Pull-Token": "pull-token-1"},
+        headers={"X-Pull-Token": pull_token},
     ).json()
     assert second["tasks"] == []
 
@@ -676,19 +793,19 @@ def test_http_poll_cursor_reply_and_ack_are_idempotent(client, admin_headers) ->
             "task_id": "task_public_poll",
             "text": "轮询回复",
         },
-        headers={"X-Pull-Token": "pull-token-1"},
+        headers={"X-Pull-Token": pull_token},
     )
     assert reply.json()["result"] == InboundResult.ACCEPTED.value
 
     assert client.post(
         f"/connectors/http/{connection_id}/ack",
         json={"task_id": "task_public_poll"},
-        headers={"X-Pull-Token": "pull-token-1"},
+        headers={"X-Pull-Token": pull_token},
     ).json() == {"acked": True}
     assert client.post(
         f"/connectors/http/{connection_id}/ack",
         json={"task_id": "task_public_poll"},
-        headers={"X-Pull-Token": "pull-token-1"},
+        headers={"X-Pull-Token": pull_token},
     ).json() == {"acked": False}
 
     with database.SessionLocal() as session:
@@ -748,7 +865,7 @@ def test_inbound_handler_rejects_unknown_platform_config(client, admin_headers) 
         json={
             "name": "bad-config",
             "platform": "webhook",
-            "config": {"inbound_token": "t", "outbound_url": "ftp://nope"},
+            "config": {"outbound_url": "ftp://nope"},
         },
     )
     assert invalid.status_code == 400

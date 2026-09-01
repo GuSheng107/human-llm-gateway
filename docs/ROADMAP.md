@@ -399,3 +399,25 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] 前端工具沙箱页（/tools）：管理员 CRUD 表单（模板/Schema JSON/超时）；所有用户执行弹窗（参数输入 + 结果 stdout/stderr 展示）；执行历史分页（管理员看全部、用户看自己）。
 - [x] 全新数据库默认提供 `Print` 工具，用于 Fake Tool Call，并可在沙箱控制台输出 `text` 参数。
 - [x] 沙箱逃逸面、资源耗尽、网络越权、命令注入和 Secret 泄漏安全测试通过；完整运维与自定义镜像说明见 `docs/SANDBOX.md`。
+
+---
+
+## M13：traceId 日志体系、IM 连接收口与三协议 SDK 兼容（进行中）
+
+体验与契约收口期：不引入会话实体（对齐 new-api：每请求独立，网关不做会话聚合），previous_response_id 链行为保持既有契约。
+
+- [x] 服务端统一生成内部 trace_id（即 request_id，全链路单一 ID）。
+- [x] /api/* JSON 成功/失败响应顶层追加 	race_id 并回写 X-Trace-Id；/v1/* 只加头不改协议正文。
+- [x] 日志落库改为异步批量队列（专用线程 + 批量 INSERT），事件循环内调用不再阻塞 SQLite 写锁。
+- [x] 普通 logging 告警/异常（看门狗、连接器、IM 后台任务、sweeper）经 root handler 落入 app_logs，不再只有显式 log_event() 可查。
+- [x] app_logs 增加 logger 列与 request_id/event 索引；/api/app-logs?with_context=true 返回脱敏上下文与异常详情，前端日志页点击消息查看详情。
+- [x] 删除连接时阻止任何 API Key 引用（含停用 Key），提示引用数量与 Key 前缀。
+- [x] 网关自签 IM Token 统一由服务端生成 `hllm-` 前缀，创建/轮换时仅一次性展示；全部平台使用统一弹窗，同屏展示配置、完整 URL 与 curl 接入指引。
+- [x] 关闭扫码/绑定弹窗不删除连接与凭据；新增 inding/cancel（取消本次绑定监听）。
+- [x] 启用前校验连接状态：未绑定或 uth_required/error 拒绝启用；看门狗关闭异常连接时记录 trace 日志。
+- [x] Chat Completions：usage 统一本地估算、stream_options.include_usage、流式稳定 id/created。
+- [x] Responses：补齐 usage、消息 ID、annotations、sequence_number、content part 与 arguments delta/done 事件；官方 SDK 契约测试固化。
+- [x] Anthropic：修正事件顺序与 usage；人工路径不返回 thinking block（无法伪造 signature）。
+- [x] 统一确定性 token 估算器（pp/domain/tokens.py）：三协议共用同一份快照，流式与非流式数值一致。
+- [x] 任务详情页：所有者完整提示词无截断；原始请求 JSON 按需加载（独立端点 + 懒加载）。
+- [ ] M11 用户验收：1440/1024/390 布局实测与浏览器冒烟。

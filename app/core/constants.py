@@ -4,7 +4,7 @@
 """
 
 # 数据库 Schema 版本：与代码不一致时启动失败，不执行迁移。
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # 加密契约（详见 docs/DATABASE.md §2.4）
 SECRET_ENVELOPE_PREFIX = "hlg1"
@@ -14,6 +14,8 @@ SECRET_HKDF_INFO = b"human-llm-gateway/secret-encryption/v1"
 # 请求体大小上限（详见 docs/API_CONTRACT.md §2.1 / §16.3）
 MAX_INFERENCE_REQUEST_BYTES = 8 * 1024 * 1024  # /v1/* 推理请求
 MAX_ADMIN_REQUEST_BYTES = 1 * 1024 * 1024  # /api/* 管理 JSON
+MAX_CONNECTOR_REQUEST_BYTES = 1 * 1024 * 1024  # /connectors/* 与 /healthz HTTP 请求体
+MAX_CONNECTOR_WEBSOCKET_MESSAGE_BYTES = 1 * 1024 * 1024  # WebSocket 单条文本消息
 
 # 用户级活动任务上限
 MAX_ACTIVE_TASKS_PER_USER = 10

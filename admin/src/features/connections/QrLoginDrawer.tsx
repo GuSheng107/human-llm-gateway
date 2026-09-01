@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pollQrLogin, startQrLogin } from "../../api/connections";
 import type { ImConnection } from "../../types/gateway";
-import { Drawer } from "../../components/feedback/Drawer";
 import { Button } from "../../components/ui/Button";
 
-type QrPhase = "loading" | "wait" | "scanned" | "saving" | "expired" | "error";
+type QrPhase = "loading" | "wait" | "scanned" | "saving" | "success" | "expired" | "error";
 
 const POLL_INTERVAL_MS = 2000;
 const QR_TTL_SECONDS = 300;
@@ -14,18 +13,18 @@ const PHASE_TEXT: Record<QrPhase, string> = {
   wait: "请用微信扫一扫二维码",
   scanned: "已扫码，请在手机上点击确认",
   saving: "登录成功，正在保存凭据…",
+  success: "扫码绑定已完成",
   expired: "二维码已过期",
   error: "出错了，请重试",
 };
 
-interface QrLoginDrawerProps {
-  connection: ImConnection | null;
-  onClose: () => void;
-  onSaved: () => void;
+interface QrLoginSectionProps {
+  connection: ImConnection;
+  onBound: () => void;
 }
 
-export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerProps) {
-  const [phase, setPhase] = useState<QrPhase>("loading");
+export function QrLoginSection({ connection, onBound }: QrLoginSectionProps) {
+  const [phase, setPhase] = useState<QrPhase>(connection.bound ? "success" : "loading");
   const [qrImage, setQrImage] = useState("");
   const [errorText, setErrorText] = useState("");
   const [remaining, setRemaining] = useState(QR_TTL_SECONDS);
@@ -61,8 +60,8 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
           if (result.status === "confirmed") {
             stopPolling();
             setPhase("saving");
-            onSaved();
-            onClose();
+            setPhase("success");
+            onBound();
             return;
           }
           if (result.status === "expired") {
@@ -85,17 +84,23 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
       };
       void poll();
     },
-    [onClose, onSaved, stopPolling]
+    [onBound, stopPolling]
   );
 
   useEffect(() => {
-    if (connection) {
-      setQrImage("");
-      void beginLogin(connection.id);
+    setQrImage("");
+    if (connection.bound) {
+      setPhase("success");
+    } else {
+      const timer = window.setTimeout(() => void beginLogin(connection.id), 0);
+      return () => {
+        window.clearTimeout(timer);
+        stopPolling();
+      };
     }
     return () => stopPolling();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection?.id]);
+  }, [connection.id]);
 
   useEffect(() => {
     if (phase !== "wait" && phase !== "scanned") return;
@@ -115,15 +120,13 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
   const minutes = Math.floor(remaining / 60);
   const seconds = String(remaining % 60).padStart(2, "0");
 
-  if (!connection) return null;
-
   return (
-    <Drawer title={`扫码登录 · ${connection.name}`} onClose={onClose} width="max-w-[480px]">
-      <div className="flex flex-col items-center gap-4 py-4">
+    <section className="rounded-xl border border-emerald-100 bg-emerald-50/40 p-4">
+      <div className="flex flex-col items-center gap-4 py-2">
         {phase === "loading" && (
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-slate-200 border-t-primary" />
         )}
-        {phase !== "loading" && (
+        {phase !== "loading" && phase !== "success" && (
           <div className="relative grid h-[240px] w-[240px] place-items-center rounded-lg border-2 border-slate-200 bg-white">
             {qrImage ? (
               <img src={qrImage} alt="登录二维码" className="h-full w-full rounded-md object-contain" />
@@ -132,7 +135,7 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
             )}
             {phase === "expired" && (
               <div className="absolute inset-0 grid place-items-center rounded-lg bg-white/95">
-                <Button onClick={() => connection && void beginLogin(connection.id)}>
+                <Button onClick={() => void beginLogin(connection.id)}>
                   刷新二维码
                 </Button>
               </div>
@@ -141,7 +144,7 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
         )}
         <p
           className={`text-sm ${
-            phase === "scanned" || phase === "saving"
+            phase === "scanned" || phase === "saving" || phase === "success"
               ? "text-emerald-600"
               : phase === "expired" || phase === "error"
                 ? "text-red-500"
@@ -156,11 +159,16 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
           </p>
         )}
         {phase === "error" && (
-          <Button variant="ghost" onClick={() => connection && void beginLogin(connection.id)}>
+          <Button variant="ghost" onClick={() => void beginLogin(connection.id)}>
             重试
           </Button>
         )}
+        {phase === "success" && (
+          <Button variant="ghost" onClick={() => void beginLogin(connection.id)}>
+            重新扫码绑定
+          </Button>
+        )}
       </div>
-    </Drawer>
+    </section>
   );
 }

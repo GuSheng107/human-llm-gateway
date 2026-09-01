@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 
 from ..connectors import connection_manager as manager
 from ..connectors.implementations.ws_server import WebSocketServerConnector
+from ..core.constants import MAX_CONNECTOR_WEBSOCKET_MESSAGE_BYTES
 from ..core.db import SessionLocal, get_db
 from ..domain.enums import InboundResult
 from ..domain.errors import DomainError, DomainErrorCode
@@ -164,6 +165,9 @@ async def websocket_endpoint(
         try:
             while True:
                 raw = await websocket.receive_text()
+                if len(raw.encode("utf-8")) > MAX_CONNECTOR_WEBSOCKET_MESSAGE_BYTES:
+                    await websocket.close(code=1009)
+                    return
                 try:
                     body = json.loads(raw)
                 except ValueError:

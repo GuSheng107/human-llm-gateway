@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { generateDraft, getTask, saveDraft, submitReply, updateDraft } from "../../api/tasks";
+import { generateDraft, getTask, getTaskRawRequest, saveDraft, submitReply, updateDraft } from "../../api/tasks";
 import { listTools, type ToolItem } from "../../api/tools";
 import { listLlmConfigs } from "../../api/llmConfigs";
 import { Card } from "../../components/data-display/Card";
@@ -113,8 +113,6 @@ type TabKey = "reasoning" | "final" | "tools";
 
 // 提示词超过该字数时提供「展开全部」（默认折叠高度约可见 800 字）。
 const PROMPT_COLLAPSE_THRESHOLD = 800;
-// 原始请求渲染上限（字符）：Agent 请求可达 MB 级，全量渲染会卡死页面。
-const RAW_REQUEST_RENDER_LIMIT = 200_000;
 
 const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: "reasoning", label: "思考链", icon: "list" },
@@ -232,11 +230,26 @@ export function ReplyPage() {
 
   const liveDsl = useMemo(() => (liveDraft ? serializeReply(liveDraft) : ""), [liveDraft]);
 
-  // 原始请求序列化一次；超限截断渲染，避免 MB 级文本拖垮页面。
-  const rawRequestText = useMemo(
-    () => (task?.raw_request ? JSON.stringify(task.raw_request, null, 2) : ""),
-    [task?.raw_request],
-  );
+  // 原始请求按需加载：进入页面不传输、不解析、不格式化超大 JSON。
+  const [rawRequestText, setRawRequestText] = useState("");
+  const [rawLoading, setRawLoading] = useState(false);
+  const loadRawRequest = useCallback(async () => {
+    if (!task || rawLoading || rawRequestText) return;
+    setRawLoading(true);
+    try {
+      const result = await getTaskRawRequest(task.id);
+      setRawRequestText(
+        result.raw_request ? JSON.stringify(result.raw_request, null, 2) : "(空)",
+      );
+    } catch (caught) {
+      notify(caught instanceof Error ? caught.message : "加载原始请求失败");
+    } finally {
+      setRawLoading(false);
+    }
+  }, [task, rawLoading, rawRequestText]);
+  useEffect(() => {
+    setRawRequestText("");
+  }, [task?.id]);
 
   // 编辑器桥：全局助手读取未提交草稿与覆盖写入（与独立页共享同一契约）。
   const liveDraftRef = useRef<ReplyDraft | null>(liveDraft);
@@ -548,17 +561,17 @@ export function ReplyPage() {
             </Card>
           )}
 
-          {task.is_owner && task.raw_request && (
+          {task.is_owner && (
             <Card>
               <div className="px-4 py-3">
-                <details>
+                <details onToggle={(event) => {
+                  if ((event.target as HTMLDetailsElement).open) void loadRawRequest();
+                }}>
                   <summary className="cursor-pointer text-sm font-medium text-slate-700">
-                    原始请求
+                    原始请求{rawLoading ? "（加载中…）" : ""}
                   </summary>
                   <pre className="mt-2 max-h-56 overflow-auto rounded border border-slate-100 bg-slate-50 p-3 font-mono text-[11px] text-slate-600">
-                    {rawRequestText.length > RAW_REQUEST_RENDER_LIMIT
-                      ? `${rawRequestText.slice(0, RAW_REQUEST_RENDER_LIMIT)}\n…（原始请求过大，已截断显示）`
-                      : rawRequestText}
+                    {rawRequestText || "（展开后加载）"}
                   </pre>
                 </details>
               </div>

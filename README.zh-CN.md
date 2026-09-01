@@ -137,7 +137,7 @@ echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
 # 3. 构建前端静态资源，然后启动后端（后端直接托管 SPA，单端口访问）
 uv sync --locked
 (cd admin && npm ci && npm run build)
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000
+uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
 ```
 
 打开 **http://127.0.0.1:8000** — 管理台与 API 同端口。首次启动自动建库并写入默认系统模型，用 `.env` 中的管理员登录，改密后即可签发邀请码、创建用户。

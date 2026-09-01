@@ -62,9 +62,63 @@ def client():
     )
     database.engine = engine
     database.SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    # 测试环境：日志直写内存 store，避免异步落库线程造成时序抖动。
+    from app.core.logging import set_direct_store
+
+    class _MemoryLogStore:
+        def __init__(self) -> None:
+            self.entries: list[dict] = []
+
+        def append(self, entry: dict) -> None:
+            from sqlalchemy import text as _text
+
+            def _int(key: str):
+                value = entry.get(key)
+                if isinstance(value, bool) or value is None:
+                    return None
+                try:
+                    return int(str(value))
+                except (TypeError, ValueError):
+                    return None
+
+            import json as _json
+            from datetime import UTC, datetime
+
+            with database.SessionLocal() as session:
+                session.execute(
+                    _text(
+                        "INSERT INTO app_logs (level, event, message, request_id, logger,"
+                        " user_id, task_id, api_key_id, connection_id, context_json, created_at)"
+                        " VALUES (:level, :event, :message, :request_id, :logger, :user_id,"
+                        " :task_id, :api_key_id, :connection_id, :context, :created_at)"
+                    ),
+                    {
+                        "level": entry["level"],
+                        "event": entry["event"],
+                        "message": entry["message"],
+                        "request_id": entry.get("request_id"),
+                        "logger": entry.get("logger"),
+                        "user_id": _int("user_id"),
+                        "task_id": _int("task_id"),
+                        "api_key_id": _int("api_key_id"),
+                        "connection_id": _int("connection_id"),
+                        "context": _json.dumps(
+                            entry.get("context") or {}, ensure_ascii=False, default=str
+                        ),
+                        "created_at": datetime.now(tz=UTC),
+                    },
+                )
+                session.commit()
+            self.entries.append(entry)
+
+    store = _MemoryLogStore()
+    set_direct_store(store)
     application = create_app()
     with TestClient(application) as test_client:
         yield test_client
+    from app.core.logging import get_log_queue
+
+    get_log_queue().direct_store = None
     engine.dispose()
 
 

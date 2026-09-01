@@ -87,20 +87,22 @@ class ConnectionRepository:
             )
         )
 
-    def count_enabled_api_key_references(self, session: Session, connection_id: int) -> int:
+    def count_api_key_references(
+        self, session: Session, connection_id: int, *, enabled_only: bool = True
+    ) -> tuple[int, list[str]]:
+        """引用该连接的 API Key 前缀列表；enabled_only=False 时包含停用 Key。"""
         from .models import ApiKey
 
-        return (
-            session.scalar(
-                select(func.count())
-                .select_from(ApiKey)
-                .where(
-                    ApiKey.im_connection_id == connection_id,
-                    ApiKey.is_enabled.is_(True),
-                )
+        filters = [ApiKey.im_connection_id == connection_id]
+        if enabled_only:
+            filters.append(ApiKey.is_enabled.is_(True))
+        prefixes = list(
+            session.scalars(
+                select(ApiKey.key_prefix).where(*filters).order_by(ApiKey.id.asc()).limit(50)
             )
-            or 0
         )
+        total = session.scalar(select(func.count()).select_from(ApiKey).where(*filters)) or 0
+        return total, prefixes
 
     # ------------------------------------------------------------------
     # 写入

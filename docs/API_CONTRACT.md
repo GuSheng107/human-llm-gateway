@@ -53,7 +53,7 @@
 - 更新：使用 `PATCH`，只修改显式提交的字段。
 - 删除：使用 `DELETE`；被其他资源引用时返回 409，不做隐式级联业务修改。
 - 幂等操作：对已启用、已停用、已撤销等状态重复调用返回当前状态，不产生重复副作用。
-- 请求体大小上限：管理 API JSON 请求体最大 1 MiB，`/v1/*` 推理请求最大 8 MiB。超限返回 413（见 §16.3），必须在完整 JSON 解析、鉴权准入和 RequestTask 创建之前拒绝；使用 chunked 传输且没有 `Content-Length` 时，读取过程中累计字节超限即中断并返回 413。该上限是网关层硬性边界，与 `previous_response_id` 历史展开的 2 MiB 规范化上下文上限相互独立。
+- 请求体大小上限：管理 API、`/connectors/*` 和 `/healthz` HTTP 请求体最大 1 MiB，`/v1/*` 推理请求最大 8 MiB，连接器 WebSocket 单条文本消息最大 1 MiB。HTTP 超限返回 413（见 §16.3），必须在完整 JSON 解析、Token 校验、鉴权准入和 RequestTask 创建之前拒绝；WebSocket 超限使用 1009 关闭连接。使用 chunked 传输且没有 `Content-Length` 时，读取过程中累计字节超限即中断并返回 413。该上限是网关层硬性边界，与 `previous_response_id` 历史展开的 2 MiB 规范化上下文上限相互独立；生产 Uvicorn 同时设置 `--ws-max-size 1048576`，在 ASGI 消息分配前限制帧大小。
 
 ### 2.2 列表与分页
 
@@ -226,11 +226,13 @@ CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `
 
 每个用户在每个平台最多创建一条连接。创建/更新配置由 `/api/im-platforms` 返回的平台 Schema 校验。Secret 字段写入后不回显；更新时省略 Secret 表示保留，显式提交新值表示替换，不允许用空字符串猜测语义。微信 iLink 的配置 Schema 为空，不接受手工 Token 或地址；连接由扫码入口创建，扫码确认后由服务端保存参数。
 
+Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_token` 是网关自签接入 Token。客户端创建连接时不提交这些字段，由服务端统一生成 `hllm-` 前缀的高熵 Token，并只在创建响应的 `generated_tokens` 中返回一次明文；列表、详情和更新响应不回显。已有连接只能通过专用轮换接口换新，不能在通用配置表单中手填或覆盖。
+
 ### 5.2 生命周期和绑定
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| POST | `/api/im-connections/{id}/start` | 启动目标连接；要求绑定的平台未绑定时拒绝启动。 |
+| POST | `/api/im-connections/{id}/start` | 启动目标连接；未绑定或状态异常（`auth_required`/`error`）时拒绝启动。 |
 | POST | `/api/im-connections/{id}/stop` | 停止目标连接。 |
 | POST | `/api/im-connections/{id}/apply` | 应用保存的配置并只重启目标连接。 |
 | GET | `/api/im-connections/{id}/health` | 返回数据库状态和瞬时运行状态。 |
@@ -239,10 +241,14 @@ CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `
 | GET | `/api/im-connections/{id}/login` | 所有者轮询登录进度和临时二维码。 |
 | POST | `/api/im-connections/{id}/binding` | 所有者进入平台绑定窗口；企微固定使用 `connect mycom`。 |
 | GET | `/api/im-connections/{id}/binding/status` | 所有者查看绑定结果。 |
+| POST | `/api/im-connections/{id}/binding/cancel` | 所有者取消本次绑定监听：停止监听并清除绑定码；连接与已保存凭据保留。 |
+| POST | `/api/im-connections/{id}/credentials/{field}/rotate` | 所有者重新生成指定网关自签 Token；旧值立即失效，新明文仅在本次响应返回。 |
 
 管理员可启动、停止、应用和检查任意连接，但不能调用登录或绑定接口，也不能取得二维码和绑定码。管理员触发生命周期治理动作时，受信任的服务端内部可以为执行该动作临时解密用户 IM 配置；但 Secret 明文绝不出现在任何响应、日志或审计中——管理员可以让系统运行连接，不能拿走用户 Token。
 
-期望运行的长连接遇到普通网络故障后自动指数退避重连；进入 `auth_required` 后停止自动重试。看门狗默认每 60 秒检查一次，发现已启用连接处于异常状态时关闭其启用开关；周期由 `CONNECTION_WATCHDOG_INTERVAL_SECONDS` 配置。微信扫码确认由服务端原子保存参数并完成绑定，Token 不返回浏览器。企微进入绑定窗口后临时启动连接，收到私聊命令 `connect mycom` 即完成绑定；未扫码或未绑定的连接不能启用。重新登录由所有者执行，`apply` 只重启目标连接。
+期望运行的长连接遇到普通网络故障后自动指数退避重连；进入 `auth_required` 后停止自动重试。看门狗默认每 60 秒检查一次，发现已启用连接处于异常状态时关闭其启用开关并记录 trace 日志；周期由 `CONNECTION_WATCHDOG_INTERVAL_SECONDS` 配置。微信扫码确认由服务端原子保存参数并完成绑定，Token 不返回浏览器。企微进入绑定窗口后临时启动连接，收到私聊命令 `connect mycom` 即完成绑定；未扫码或未绑定的连接不能启用。重新登录由所有者执行，`apply` 只重启目标连接。
+
+前端对全部平台使用同一配置窗口，并在已有连接中同屏展示配置和接入指引。接入地址基于浏览器当前访问域名生成完整 URL，WebSocket 自动使用 `ws://` 或 `wss://`；Token 明文不可取回时，示例命令使用 `<TOKEN>` 占位。关闭扫码或绑定窗口不删除连接、微信配置或企微凭据；需要停止监听时显式调用 `binding/cancel`。删除连接时若被任何 API Key 引用（含停用 Key），默认直接阻止并返回引用数量与 Key 前缀提示，不静默改写 Key。
 
 ## 6. LLM 配置 API
 
@@ -343,7 +349,8 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/tasks` | 用户查看自己的任务；管理员查看脱敏全局任务。 |
-| GET | `/api/tasks/{id}` | 用户查看完整原始请求、时间线、草稿和结果。 |
+| GET | `/api/tasks/{id}` | 任务详情：所有者可查看完整提示词（不截断）、时间线、草稿和结果；原始请求 JSON 不随详情返回。 |
+| GET | `/api/tasks/{id}/raw-request` | 原始请求 JSON 按需加载（仅所有者与管理员）；超大请求不随详情页传输。 |
 | GET | `/api/tasks/{id}/events` | 分页查看任务事件。 |
 | POST | `/api/tasks/{id}/drafts` | 新建或保存人工草稿。 |
 | PATCH | `/api/tasks/{id}/drafts/{draft_id}` | 更新未提交草稿。 |
@@ -389,11 +396,21 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | --- | --- | --- | --- |
 | GET/PATCH | `/api/settings` | 管理员 | 基础非 Secret 设置。 |
 | GET | `/api/audit-logs` | 管理员 | 按操作者、资源、动作和时间筛选。 |
-| GET | `/api/app-logs` | 管理员 | 按级别、事件、request/task/key/connection ID 筛选。 |
+| GET | `/api/app-logs` | 登录用户 | 按级别、事件、traceId（request_id）、task/key/connection ID 筛选；`with_context=true` 返回脱敏上下文与异常详情。 |
+
+应用日志全员开放但按归属过滤：非管理员只能看到自己资源（用户/Key/连接/任务）范围内的日志。trace_id 即 request_id，日志页可按 traceId 检索一次请求的完整处理链路。
+
+结构化日志（`log_event`）与普通 logging 告警/异常（含看门狗、连接器与 IM 后台任务的 `logger.exception`）全部落入 `app_logs`；落库走异步批量队列，不阻塞事件循环。
 
 普通用户在任务时间线中只能看到自己的相关业务事件，不能直接读取全局应用日志。
 
 审计 action 使用稳定枚举。管理员可读取操作者、动作、资源 ID、所有者、时间、结果和变更字段名；接口不得返回请求正文、字段值、Secret 旧值/新值或任何凭据恢复材料。
+
+### 11.1 trace_id 响应约定
+
+- 全部响应（`/api`、`/v1`、`/connectors`）追加 `X-Trace-Id` 响应头（调用方提供 `X-Request-Id` 时沿用同值）。
+- `/api/*` JSON 响应体顶层追加 `trace_id` 字段；错误结构内的 `request_id` 与其同值。
+- `/v1/*` 不改变 OpenAI/Anthropic 协议正文，只追加响应头。
 
 ## 12. 推理 API 通用契约
 
@@ -511,7 +528,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 ### 13.2 非流式响应
 
-响应遵循 `chat.completion` 结构。人工 reasoning 使用兼容字段 `reasoning_content`；模拟工具使用 `message.tool_calls`；`model` 始终为请求 Fake Model。
+响应遵循 `chat.completion` 结构。人工 reasoning 使用兼容字段 `reasoning_content`；模拟工具使用 `message.tool_calls`；`model` 始终为请求 Fake Model。`usage` 由统一本地估算器从完整输入消息、推理、正文和 tool JSON 计算（`prompt_tokens` / `completion_tokens` / `total_tokens`），官方 SDK 可直接解析。
 
 ### 13.3 流式响应
 
@@ -521,9 +538,11 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 2. reasoning 使用 `delta.reasoning_content` 分块。
 3. tool call 使用稳定 index/id/name 和 arguments 增量。
 4. 最终文本使用 `delta.content` 分块。
-5. 结束块给出正确 `finish_reason`，随后发送 `data: [DONE]`。
+5. 结束块给出正确 `finish_reason`。
+6. 请求带 `stream_options.include_usage: true` 时，在结束块后追加带 `usage` 的空 `choices` 帧。
+7. 最后发送 `data: [DONE]`。
 
-完整人工结果在发送第一块之前已经持久化。真实 LLM 流式则边接收边透传或转换。
+同一次流式响应保持稳定的 `id` 与 `created`。完整人工结果在发送第一块之前已经持久化。真实 LLM 流式则边接收边透传或转换。
 
 ## 14. OpenAI Responses
 
@@ -538,13 +557,14 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 ### 14.2 输出项
 
 - reasoning 映射为 reasoning output item。
-- 最终文本映射为 assistant message 的 `output_text` content。
+- 最终文本映射为 assistant message 的 `output_text` content（带稳定消息 ID 与空 `annotations` 数组）。
 - 模拟工具映射为 `function_call` output item，保留 call ID、name 和 JSON arguments。
 - 完成响应和每个事件中的模型身份使用请求 Fake Model。
+- 响应携带 `usage`（`input_tokens` / `output_tokens` / `total_tokens`），与 Chat/Anthropic 共用同一份 token 快照。
 
 ### 14.3 流式事件
 
-事件至少遵循：`response.created`、`response.in_progress`、output item/content part 的 added/delta/done、`response.completed`。流在 `response.completed` 后正常结束，不混用 Chat Completions 的 `[DONE]` 作为业务事件。
+事件遵循官方 SDK 契约：`response.created`、`response.in_progress`、每个输出项 `response.output_item.added`/`done`，message 项内补齐 `response.content_part.added`/`done`、`response.output_text.delta`/`done`，function_call 项补齐 `response.function_call_arguments.delta`/`done`，最终 `response.completed`。全部事件携带单调递增的 `sequence_number`；`response.completed` 携带完整 response（含 usage）。流在 `response.completed` 后正常结束，不混用 Chat Completions 的 `[DONE]` 作为业务事件。
 
 ## 15. Anthropic Messages
 
@@ -560,15 +580,16 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 返回 `type: message`、`role: assistant` 和内容块数组：
 
-- reasoning 映射为 thinking 内容块；
 - 最终文本映射为 text 内容块；
 - 模拟工具映射为 `tool_use` 内容块；
 - `model` 改写为请求 Fake Model；
-- `stop_reason` 根据最终内容或 tool use 选择兼容值。
+- `stop_reason` 根据最终内容或 tool use 选择兼容值；
+- `usage` 按统一 token 快照输出（`input_tokens` / `output_tokens`）。
+- 人工 reasoning 不映射为 thinking 内容块：Anthropic thinking 需要真实模型返回的加密签名，人工内容无法生成有效 signature；reasoning 仅在内部工作台展示。
 
 ### 15.3 流式事件
 
-事件顺序遵循 Anthropic Messages：`message_start`，每个块的 `content_block_start`、一个或多个 `content_block_delta`、`content_block_stop`，随后 `message_delta` 和 `message_stop`。tool arguments 使用 `input_json_delta` 逐步传输。
+事件顺序遵循 Anthropic Messages：`message_start`（usage 含 `input_tokens`），每个块的 `content_block_start`、一个或多个 `content_block_delta`、`content_block_stop`，随后 `message_delta`（含 `output_tokens` 的 usage）和 `message_stop`。tool arguments 使用 `input_json_delta` 逐步传输。
 
 ## 16. 推理错误
 

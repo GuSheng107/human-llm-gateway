@@ -29,6 +29,13 @@ export function getTask(id: string): Promise<TaskDetail> {
   return api<TaskDetail>(`/api/tasks/${id}`);
 }
 
+export function getTaskRawRequest(id: string): Promise<{
+  task_id: string;
+  raw_request: Record<string, unknown> | null;
+}> {
+  return api(`/api/tasks/${id}/raw-request`);
+}
+
 export function listTaskEvents(id: string, page: number): Promise<Page<TaskEvent>> {
   const query = new URLSearchParams({ page: String(page), page_size: "50" });
   return api<Page<TaskEvent>>(`/api/tasks/${id}/events?${query}`);
