@@ -217,10 +217,14 @@ def list_app_logs(
     task_id: int | None = Query(default=None),
     api_key_id: int | None = Query(default=None),
     connection_id: int | None = Query(default=None),
+    request_id: str | None = Query(default=None, max_length=64),
     hours: int | None = Query(default=None, ge=1, le=24 * 30),
-    admin: User = Depends(require_admin),
+    user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> AppLogPage:
+    # 非管理员只能看到自己资源范围内的日志（scope 过滤在仓库层完成，
+    # 覆盖 user/Key/连接/任务多条归属链）。
+    scope_owner_id = None if user.role is UserRole.ADMIN else user.id
     rows, total = _applog_repo.list_page(
         db,
         page=page,
@@ -231,7 +235,9 @@ def list_app_logs(
         task_id=task_id,
         api_key_id=api_key_id,
         connection_id=connection_id,
+        request_id=request_id,
         hours=hours,
+        scope_owner_id=scope_owner_id,
     )
     return AppLogPage(
         items=[

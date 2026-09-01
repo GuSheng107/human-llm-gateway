@@ -158,9 +158,11 @@ class AppLogRepository:
         task_id: int | None = None,
         api_key_id: int | None = None,
         connection_id: int | None = None,
+        request_id: str | None = None,
+        scope_owner_id: int | None = None,
         hours: int | None = None,
     ) -> tuple[list[AppLog], int]:
-        """管理员应用日志检索：按级别/事件/关联 ID/时间窗筛选。"""
+        """应用日志检索：按级别/事件/关联 ID/request_id/时间窗筛选。"""
         from sqlalchemy import func, select
 
         filters: list[Any] = []
@@ -168,6 +170,27 @@ class AppLogRepository:
             filters.append(AppLog.level == level)
         if event:
             filters.append(AppLog.event == event)
+        if request_id:
+            filters.append(AppLog.request_id == request_id)
+        if scope_owner_id is not None:
+            # 普通用户数据范围：自身标记的日志 + 归属自己的 Key / 连接 / 任务。
+            from sqlalchemy import or_
+
+            from .models import ApiKey, ImConnection, RequestTask
+
+            owned_key_ids = select(ApiKey.id).where(ApiKey.owner_user_id == scope_owner_id)
+            owned_conn_ids = select(ImConnection.id).where(
+                ImConnection.owner_user_id == scope_owner_id
+            )
+            owned_task_ids = select(RequestTask.id).where(RequestTask.api_key_id.in_(owned_key_ids))
+            filters.append(
+                or_(
+                    AppLog.user_id == scope_owner_id,
+                    AppLog.api_key_id.in_(owned_key_ids),
+                    AppLog.connection_id.in_(owned_conn_ids),
+                    AppLog.task_id.in_(owned_task_ids),
+                )
+            )
         if user_id is not None:
             filters.append(AppLog.user_id == user_id)
         if task_id is not None:

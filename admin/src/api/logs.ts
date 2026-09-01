@@ -97,6 +97,7 @@ export interface AppLogQuery {
   task_id?: number;
   api_key_id?: number;
   connection_id?: number;
+  request_id?: string;
   hours?: number;
 }
 
@@ -128,6 +129,7 @@ export function listAppLogs(query: AppLogQuery): Promise<{
   if (query.task_id) params.set("task_id", String(query.task_id));
   if (query.api_key_id) params.set("api_key_id", String(query.api_key_id));
   if (query.connection_id) params.set("connection_id", String(query.connection_id));
+  if (query.request_id) params.set("request_id", query.request_id);
   if (query.hours) params.set("hours", String(query.hours));
   return api(`/api/app-logs?${params}`);
 }

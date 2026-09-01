@@ -120,8 +120,10 @@ export function ConnectionsPage() {
             );
             void load();
           } else if (!status.binding_pending) {
-            notify("绑定窗口已结束，请重新打开配置", "info");
-            void stopConnection(setupConnection.id).then(load).catch(() => undefined);
+            notify("绑定窗口已过期，已清理未完成的连接", "info");
+            setSetupConnection(null);
+            setBindingCommand("");
+            void deleteConnection(setupConnection.id).then(load).catch(() => undefined);
           }
         })
         .catch(() => undefined);
@@ -243,17 +245,16 @@ export function ConnectionsPage() {
   };
 
   const closeSetup = () => {
-    const shouldStopBindingSession = Boolean(
-      setupConnection?.platform === "wecom_aibot" &&
-        !setupConnection.bound &&
-        !setupConnection.desired_running,
-    );
-    const connectionId = setupConnection?.id;
+    // 未绑定就关闭指引：直接删除残留连接，避免留下无法再次绑定的死记录。
+    const stale =
+      setupConnection && !setupConnection.bound && !setupConnection.desired_running
+        ? setupConnection
+        : null;
     setSetupConnection(null);
     setBindingCommand("");
     setBinding(null);
-    if (shouldStopBindingSession && connectionId) {
-      void stopConnection(connectionId).then(load).catch(() => undefined);
+    if (stale) {
+      void deleteConnection(stale.id).then(load).catch(() => undefined);
     }
   };
 
@@ -261,6 +262,17 @@ export function ConnectionsPage() {
     setConfigTarget(null);
     void load();
     void openSetup(saved);
+  };
+
+  const closeQr = () => {
+    // 扫码未完成就关闭：删除残留连接，避免未绑定记录阻碍重新绑定。
+    const stale = qrConnection && !qrConnection.bound && !qrConnection.desired_running
+      ? qrConnection
+      : null;
+    setQrConnection(null);
+    if (stale) {
+      void deleteConnection(stale.id).then(load).catch(() => undefined);
+    }
   };
 
   return (
@@ -426,7 +438,7 @@ export function ConnectionsPage() {
 
       <QrLoginDrawer
         connection={qrConnection}
-        onClose={() => setQrConnection(null)}
+        onClose={closeQr}
         onSaved={() => {
           notify("扫码绑定成功，现在可以开启连接", "success");
           void load();

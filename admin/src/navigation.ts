@@ -112,9 +112,8 @@ export const NAVIGATION: NavigationGroup[] = [
         id: "logs",
         path: "/settings/logs",
         label: "日志审计",
-        description: "审计与应用日志检索",
+        description: "审计与链路日志检索（traceId）",
         icon: "list",
-        capability: "logs.manage",
       },
       {
         id: "invitations",

@@ -51,12 +51,22 @@ def test_audit_logs_admin_only(client, admin_headers, created_user) -> None:
     assert denied.status_code == 403
 
 
-def test_app_logs_admin_only(client, admin_headers, created_user) -> None:
-    _seed_applog("test.event")
+def test_app_logs_open_to_all_with_owner_scope(client, admin_headers, created_user) -> None:
+    _seed_applog("test.event.anonymous")
     resp = client.get("/api/app-logs", headers=admin_headers)
     assert resp.status_code == 200
-    denied = client.get("/api/app-logs", headers=created_user.headers)
-    assert denied.status_code == 403
+    # 普通用户也可访问，但只能看到自己资源范围内的日志。
+    allowed = client.get("/api/app-logs", headers=created_user.headers)
+    assert allowed.status_code == 200
+    items = allowed.json()["items"]
+    assert all(item["user_id"] in (None, str(created_user.user_id)) for item in items)
+    # 无归属的系统日志对普通用户不可见
+    trace = client.get("/api/app-logs?event=test.event.anonymous", headers=created_user.headers)
+    assert trace.status_code == 200
+    assert all(
+        item["event"] != "test.event.anonymous" or item["user_id"] is not None
+        for item in trace.json()["items"]
+    )
 
 
 # ----------------------------------------------------------------------

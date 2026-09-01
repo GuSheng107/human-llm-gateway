@@ -22,35 +22,20 @@ const PARTICLES = [
   { left: "92%", top: "24%", size: 6, delay: "1.1s", duration: "7s" },
 ];
 
-const REMEMBERED_USERNAME_KEY = "hlg_remembered_username";
-
-type PasswordCredentialWindow = Window & {
-  PasswordCredential?: new (data: { id: string; password: string }) => Credential;
-};
-
-async function storeBrowserCredential(username: string, password: string): Promise<void> {
-  const PasswordCredential = (window as PasswordCredentialWindow).PasswordCredential;
-  if (!PasswordCredential || !navigator.credentials?.store) return;
-  try {
-    await navigator.credentials.store(new PasswordCredential({ id: username, password }));
-  } catch {
-    // 浏览器未启用密码管理器时静默跳过，不影响登录流程。
-  }
-}
+// 浏览器不再自动回填凭据而密码又不能以明文存入 localStorage，
+// “记住密码”在新版浏览器上没有可靠实现，功能已移除；表单仍保留
+// autocomplete 属性，交由浏览器密码管理器接管。
 
 export function LoginPage() {
   const { setUser } = useAuth();
   const navigate = useNavigate();
-  const [username, setUsername] = useState(() => localStorage.getItem(REMEMBERED_USERNAME_KEY) ?? "");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [captchaToken, setCaptchaToken] = useState("");
   const [captchaCode, setCaptchaCode] = useState("");
   const [captchaKey, setCaptchaKey] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
-  const [rememberPassword, setRememberPassword] = useState(() =>
-    Boolean(localStorage.getItem(REMEMBERED_USERNAME_KEY)),
-  );
   const [showForgot, setShowForgot] = useState(false);
   const [tilt, setTilt] = useState({ x: 0, y: 0 });
 
@@ -60,12 +45,6 @@ export function LoginPage() {
     setError("");
     try {
       const result = await login(username.trim(), password, captchaToken, captchaCode);
-      if (rememberPassword) {
-        localStorage.setItem(REMEMBERED_USERNAME_KEY, username.trim());
-        void storeBrowserCredential(username.trim(), password);
-      } else {
-        localStorage.removeItem(REMEMBERED_USERNAME_KEY);
-      }
       // 登录响应中的 access_token 只进 localStorage，不留存在前端状态中。
       const { access_token: _token, token_type: _type, ...user } = result;
       setUser(user);
@@ -254,15 +233,6 @@ export function LoginPage() {
                   onChange={(event) => setPassword(event.target.value)}
                   placeholder="账号密码"
                 />
-              </label>
-              <label className="flex items-center gap-2 text-xs text-slate-500">
-                <input
-                  type="checkbox"
-                  checked={rememberPassword}
-                  onChange={(event) => setRememberPassword(event.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-slate-300 text-primary focus:ring-primary/30"
-                />
-                记住密码
               </label>
               <div className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">

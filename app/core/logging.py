@@ -98,7 +98,11 @@ def _configure_logging() -> None:
 
 
 def log_event(level: str, event: str, message: str, **fields: object) -> None:
-    """结构化日志；resource ID 等关联字段以关键字传入，缺失省略。"""
+    """结构化日志；resource ID 等关联字段以关键字传入，缺失省略。
+
+    除输出到 stdout 外同时尽力持久化到 ``app_logs``（独立短会话提交，
+    不影响调用方事务；持久化失败静默降级为仅控制台输出）。
+    """
     _configure_logging()
     record: dict[str, object] = {
         "level": level,
@@ -114,3 +118,53 @@ def log_event(level: str, event: str, message: str, **fields: object) -> None:
         "%s",
         json.dumps(record, ensure_ascii=False, default=str),
     )
+    _persist_log(level, event, message, request_id, record)
+
+
+def _persist_log(
+    level: str,
+    event: str,
+    message: str,
+    request_id: str | None,
+    record: dict[str, object],
+) -> None:
+    """把结构化日志落入 app_logs；任何失败都不影响主流程。"""
+    try:
+        from sqlalchemy import text
+
+        from .db import SessionLocal
+
+        def _int(key: str) -> int | None:
+            value = record.get(key)
+            if isinstance(value, bool) or value is None:
+                return None
+            try:
+                return int(str(value))
+            except (TypeError, ValueError):
+                return None
+
+        context = {k: v for k, v in record.items() if k not in {"level", "event", "message"}}
+        with SessionLocal() as session:
+            session.execute(
+                text(
+                    "INSERT INTO app_logs (level, event, message, request_id, user_id, task_id,"
+                    " api_key_id, connection_id, context_json, created_at)"
+                    " VALUES (:level, :event, :message, :request_id, :user_id, :task_id,"
+                    " :api_key_id, :connection_id, :context, CURRENT_TIMESTAMP)"
+                ),
+                {
+                    "level": level,
+                    "event": event,
+                    "message": message,
+                    "request_id": request_id,
+                    "user_id": _int("user_id"),
+                    "task_id": _int("task_id"),
+                    "api_key_id": _int("api_key_id"),
+                    "connection_id": _int("connection_id"),
+                    "context": json.dumps(context, ensure_ascii=False, default=str),
+                },
+            )
+            session.commit()
+    except Exception:  # noqa: BLE001 - 日志持久化失败绝不影响业务主链路
+        if _STRUCTURED.isEnabledFor(logging.DEBUG):
+            _STRUCTURED.debug("app log persist failed", exc_info=True)

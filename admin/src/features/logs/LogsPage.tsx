@@ -12,6 +12,7 @@ import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { useAuth } from "../auth/AuthContext";
 
 const PAGE_SIZE = 20;
 
@@ -22,7 +23,9 @@ function formatTime(value: string): string {
 }
 
 export function LogsPage() {
-  const [tab, setTab] = useState<Tab>("audit");
+  const { user: currentUser } = useAuth();
+  const isAdmin = currentUser?.role === "admin";
+  const [tab, setTab] = useState<Tab>(isAdmin ? "audit" : "app");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [auditItems, setAuditItems] = useState<AuditLogItem[]>([]);
@@ -38,6 +41,7 @@ export function LogsPage() {
   const [appLevel, setAppLevel] = useState("");
   const [appEvent, setAppEvent] = useState("");
   const [appHours, setAppHours] = useState("");
+  const [appTraceId, setAppTraceId] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -57,6 +61,7 @@ export function LogsPage() {
           page,
           level: appLevel || undefined,
           event: appEvent.trim() || undefined,
+          request_id: appTraceId.trim() || undefined,
           hours: appHours ? Number(appHours) : undefined,
         });
         setAppItems(result.items);
@@ -67,7 +72,7 @@ export function LogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, page, auditAction, auditResource, auditHours, appLevel, appEvent, appHours]);
+  }, [tab, page, auditAction, auditResource, auditHours, appLevel, appEvent, appHours, appTraceId]);
 
   useEffect(() => {
     void load();
@@ -81,15 +86,18 @@ export function LogsPage() {
 
   return (
     <div className="space-y-5">
-      <PageHeader title="日志审计" />
+      <PageHeader
+        title="日志审计"
+        description="按 traceId（request_id）可还原一次请求的完整处理链路"
+      />
 
       <Card>
         <div className="flex gap-1 border-b border-slate-100 px-4 pt-3">
           {(
             [
-              { key: "audit", label: "审计日志" },
-              { key: "app", label: "应用日志" },
-            ] as const
+              ...(isAdmin ? [{ key: "audit", label: "审计日志" } as const] : []),
+              { key: "app", label: "应用日志" } as const,
+            ]
           ).map((item) => (
             <button
               key={item.key}
@@ -144,6 +152,12 @@ export function LogsPage() {
                 onChange={(event) => setAppEvent(event.target.value)}
                 className="field-input min-w-0 flex-1 sm:max-w-[240px]"
                 placeholder="事件（如 inference.human_timeout）"
+              />
+              <input
+                value={appTraceId}
+                onChange={(event) => setAppTraceId(event.target.value)}
+                className="field-input min-w-0 flex-1 font-mono sm:max-w-[240px]"
+                placeholder="traceId（request_id）"
               />
             </>
           )}
@@ -235,13 +249,22 @@ export function LogsPage() {
                       {item.message}
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] text-slate-400">
-                      {[
-                        item.request_id ? `req:${item.request_id.slice(0, 12)}` : null,
-                        item.task_id ? `task:${item.task_id}` : null,
-                        item.user_id ? `user:${item.user_id}` : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" ") || "-"}
+                      {item.request_id ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setAppTraceId(item.request_id ?? "");
+                            setPage(1);
+                          }}
+                          title="点击检索该 traceId 的全部日志"
+                          className="text-primary hover:underline"
+                        >
+                          {item.request_id.slice(0, 12)}
+                        </button>
+                      ) : null}
+                      {item.task_id ? ` task:${item.task_id}` : ""}
+                      {item.user_id ? ` user:${item.user_id}` : ""}
+                      {!item.request_id && !item.task_id && !item.user_id ? "-" : ""}
                     </td>
                   </tr>
                 ))}
