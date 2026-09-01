@@ -192,6 +192,14 @@
 }
 
 @layer components {
+  .model-summary-banner {
+    background:
+      radial-gradient(circle at 82% 20%, rgb(34 211 238 / 0.24), transparent 32%),
+      linear-gradient(110deg, #172554 0%, #1d4ed8 58%, #0369a1 100%);
+  }
+}
+
+@layer components {
   .field-input {
     width: 100%;
     min-height: 40px;

@@ -91,12 +91,8 @@ async def _precheck_ssrf(base_url: str) -> None:
         raise DomainError(DomainErrorCode.UPSTREAM_ERROR, str(exc), status_code=502) from exc
 
 
-def _chat_headers(api_key: str, extra: dict[str, str]) -> dict[str, str]:
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    for k, v in extra.items():
-        if k.lower() not in {"authorization", "content-type"}:
-            headers.setdefault(k, v)
-    return headers
+def _chat_headers(api_key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
 
 def _responses_url(base_url: str) -> str:
@@ -130,16 +126,12 @@ def _anthropic_messages_url(base_url: str) -> str:
     return cleaned + "/v1/messages"
 
 
-def _anthropic_headers(api_key: str, extra: dict[str, str]) -> dict[str, str]:
-    headers = {
+def _anthropic_headers(api_key: str) -> dict[str, str]:
+    return {
         "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "Content-Type": "application/json",
     }
-    for k, v in extra.items():
-        if k.lower() not in {"x-api-key", "anthropic-version", "content-type"}:
-            headers.setdefault(k, v)
-    return headers
 
 
 async def post_chat_completions(
@@ -147,16 +139,13 @@ async def post_chat_completions(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
     await _precheck_ssrf(base_url)
     url = _chat_completions_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(
-                url, headers=_chat_headers(api_key, extra_headers), json=request_body
-            )
+            resp = await client.post(url, headers=_chat_headers(api_key), json=request_body)
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
@@ -177,16 +166,13 @@ async def post_anthropic_messages(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
     await _precheck_ssrf(base_url)
     url = _anthropic_messages_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(
-                url, headers=_anthropic_headers(api_key, extra_headers), json=request_body
-            )
+            resp = await client.post(url, headers=_anthropic_headers(api_key), json=request_body)
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
@@ -227,7 +213,6 @@ async def post_responses(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
     """OpenAI Responses：POST {base_url}/responses。"""
@@ -235,9 +220,7 @@ async def post_responses(
     url = _responses_url(base_url)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(
-                url, headers=_chat_headers(api_key, extra_headers), json=request_body
-            )
+            resp = await client.post(url, headers=_chat_headers(api_key), json=request_body)
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
@@ -258,7 +241,6 @@ async def stream_chat_completions(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Chat Completions：解析 delta.content / reasoning_content /
@@ -269,9 +251,7 @@ async def stream_chat_completions(
     budget = _StreamBudget()
     client = httpx.AsyncClient(timeout=timeout_seconds)
     try:
-        async with client.stream(
-            "POST", url, headers=_chat_headers(api_key, extra_headers), json=body
-        ) as resp:
+        async with client.stream("POST", url, headers=_chat_headers(api_key), json=body) as resp:
             if resp.status_code >= 400:
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
@@ -290,7 +270,6 @@ async def stream_responses(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 OpenAI Responses：解析 response.output_text.delta /
@@ -301,9 +280,7 @@ async def stream_responses(
     budget = _StreamBudget()
     client = httpx.AsyncClient(timeout=timeout_seconds)
     try:
-        async with client.stream(
-            "POST", url, headers=_chat_headers(api_key, extra_headers), json=body
-        ) as resp:
+        async with client.stream("POST", url, headers=_chat_headers(api_key), json=body) as resp:
             if resp.status_code >= 400:
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
@@ -353,7 +330,6 @@ async def stream_anthropic_messages(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Anthropic Messages：解析 content_block_delta（text_delta /
@@ -366,7 +342,7 @@ async def stream_anthropic_messages(
     tool_json_buffers: dict[int, dict[str, str]] = {}
     try:
         async with client.stream(
-            "POST", url, headers=_anthropic_headers(api_key, extra_headers), json=body
+            "POST", url, headers=_anthropic_headers(api_key), json=body
         ) as resp:
             if resp.status_code >= 400:
                 await resp.aread()

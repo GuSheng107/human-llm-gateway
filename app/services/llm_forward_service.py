@@ -304,7 +304,7 @@ class LlmForwardService:
         cfg: LlmConfig,
         fake_model: FakeModel | None,
     ) -> ReplyDraft:
-        secret, headers = _decrypt_config(cfg)
+        secret = _decrypt_config(cfg)
         try:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, json.JSONDecodeError):
@@ -315,7 +315,6 @@ class LlmForwardService:
                 base_url=cfg.base_url,
                 api_key=secret,
                 request_body=body,
-                extra_headers=headers,
                 timeout_seconds=cfg.timeout_seconds,
             )
             return _parse_chat_response(upstream)
@@ -324,7 +323,6 @@ class LlmForwardService:
                 base_url=cfg.base_url,
                 api_key=secret,
                 request_body=body,
-                extra_headers=headers,
                 timeout_seconds=cfg.timeout_seconds,
             )
             return _parse_responses_response(upstream)
@@ -332,7 +330,6 @@ class LlmForwardService:
             base_url=cfg.base_url,
             api_key=secret,
             request_body=body,
-            extra_headers=headers,
             timeout_seconds=cfg.timeout_seconds,
         )
         return _parse_anthropic_response(upstream)
@@ -347,7 +344,7 @@ class LlmForwardService:
         """流式接收上游增量（UpstreamChunk 列表），由内核统一聚合接受。"""
         from ..services.llm_upstream import UpstreamChunk
 
-        secret, headers = _decrypt_config(cfg)
+        secret = _decrypt_config(cfg)
         try:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, json.JSONDecodeError):
@@ -359,7 +356,6 @@ class LlmForwardService:
                 base_url=cfg.base_url,
                 api_key=secret,
                 request_body=body,
-                extra_headers=headers,
                 timeout_seconds=cfg.timeout_seconds,
             ):
                 chunks.append(chunk)
@@ -368,7 +364,6 @@ class LlmForwardService:
                 base_url=cfg.base_url,
                 api_key=secret,
                 request_body=body,
-                extra_headers=headers,
                 timeout_seconds=cfg.timeout_seconds,
             ):
                 chunks.append(chunk)
@@ -377,7 +372,6 @@ class LlmForwardService:
                 base_url=cfg.base_url,
                 api_key=secret,
                 request_body=body,
-                extra_headers=headers,
                 timeout_seconds=cfg.timeout_seconds,
             ):
                 chunks.append(chunk)

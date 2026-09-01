@@ -78,6 +78,17 @@ class ConnectionHealth(BaseModel):
     runtime: dict[str, Any]
 
 
+class ConnectionCheckItem(ConnectionHealth):
+    id: str
+    name: str
+    platform: str
+    platform_label: str
+    owner_username: str | None = None
+    bound: bool
+    abnormal: bool
+    auto_disabled: bool
+
+
 class BindingCreated(BaseModel):
     binding_code: str
     expires_at: str
@@ -210,6 +221,18 @@ def create_connection(
     return _view(db, row)
 
 
+@router.post("/check", response_model=list[ConnectionCheckItem])
+async def check_connections(
+    user: User = Depends(require_current_user),
+) -> list[ConnectionCheckItem]:
+    """立即执行与后台看门狗相同的检查，并停用当前异常连接。"""
+    from ..services.connection_watchdog import connection_watchdog
+
+    owner_filter = None if user.role is UserRole.ADMIN else user.id
+    reports = await connection_watchdog.check_once(owner_user_id=owner_filter)
+    return [ConnectionCheckItem(**report) for report in reports]
+
+
 def _get_visible_connection(db: Session, connection_id: int, user: User) -> ImConnection:
     if user.role is UserRole.ADMIN:
         return _service.get(db, connection_id)
@@ -327,27 +350,29 @@ def _require_owner(row: ImConnection, user: User) -> None:
 
 
 @router.post("/{connection_id}/login")
-def start_login(
+async def start_login(
     connection_id: int,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     row = _service.get_owned(db, connection_id, user.id)
     _require_owner(row, user)
-    result = _service.start_login(db, row=row, actor_user_id=user.id)
-    db.commit()
+    result = await _service.start_login(db, row=row, actor_user_id=user.id)
+    await run_in_threadpool(db.commit)
     return result
 
 
 @router.get("/{connection_id}/login")
-def poll_login(
+async def poll_login(
     connection_id: int,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
     row = _service.get_owned(db, connection_id, user.id)
     _require_owner(row, user)
-    return _service.poll_login(db, row=row)
+    result = await _service.poll_login(db, row=row, actor_user_id=user.id)
+    await run_in_threadpool(db.commit)
+    return result
 
 
 @router.post("/{connection_id}/binding", response_model=BindingCreated)

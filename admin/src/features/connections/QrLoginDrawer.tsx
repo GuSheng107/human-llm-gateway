@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { pollQrLogin, startQrLogin, updateConnection } from "../../api/connections";
+import { pollQrLogin, startQrLogin } from "../../api/connections";
 import type { ImConnection } from "../../types/gateway";
 import { Drawer } from "../../components/feedback/Drawer";
 import { Button } from "../../components/ui/Button";
@@ -44,12 +44,7 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
       setRemaining(QR_TTL_SECONDS);
       try {
         const started = await startQrLogin(id);
-        setQrImage(
-          // 后端可能是 PNG bytes（已转 base64）或图片 URL 字符串，两种都支持。
-          started.qrcode_img_content.startsWith("http")
-            ? started.qrcode_img_content
-            : `data:image/png;base64,${started.qrcode_img_content}`,
-        );
+        setQrImage(`data:image/png;base64,${started.qrcode_img_content}`);
         setPhase("wait");
       } catch (caught) {
         setPhase("error");
@@ -66,17 +61,9 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
           if (result.status === "confirmed") {
             stopPolling();
             setPhase("saving");
-            try {
-              // 扫码确认后把 bot_token 写回连接配置（secret 合并写）。
-              await updateConnection(id, { config: { token: result.bot_token ?? "" } });
-              onSaved();
-              onClose();
-              return;
-            } catch (caught) {
-              setPhase("error");
-              setErrorText(caught instanceof Error ? caught.message : "保存凭据失败");
-              return;
-            }
+            onSaved();
+            onClose();
+            return;
           }
           if (result.status === "expired") {
             stopPolling();
@@ -173,16 +160,6 @@ export function QrLoginDrawer({ connection, onClose, onSaved }: QrLoginDrawerPro
             重试
           </Button>
         )}
-        <button
-          type="button"
-          className="mt-2 text-xs text-slate-400 underline-offset-2 transition hover:text-slate-600 hover:underline"
-          onClick={() => {
-            stopPolling();
-            onClose();
-          }}
-        >
-          使用其他方式登录（绑定码）
-        </button>
       </div>
     </Drawer>
   );

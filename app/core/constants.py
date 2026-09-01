@@ -4,7 +4,7 @@
 """
 
 # 数据库 Schema 版本：与代码不一致时启动失败，不执行迁移。
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 加密契约（详见 docs/DATABASE.md §2.4）
 SECRET_ENVELOPE_PREFIX = "hlg1"
@@ -44,9 +44,6 @@ LLM_TIMEOUT_DEFAULT_SECONDS = 120
 LLM_NAME_MAX_LENGTH = 100
 LLM_BASE_URL_MAX_LENGTH = 2048
 LLM_MODEL_MAX_LENGTH = 255
-LLM_HEADER_NAME_MAX_LENGTH = 64
-LLM_HEADER_VALUE_MAX_LENGTH = 1024
-LLM_MAX_HEADERS = 20
 # 连通性测试硬上限（无论配置 timeout_seconds 多大）
 LLM_CONNECT_TEST_TIMEOUT_SECONDS = 10
 # Anthropic 上游请求 max_tokens 缺省值（请求未带输出上限时）

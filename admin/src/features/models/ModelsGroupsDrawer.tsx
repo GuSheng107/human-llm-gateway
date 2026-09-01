@@ -7,6 +7,7 @@ import {
 } from "../../api/models";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { Drawer } from "../../components/feedback/Drawer";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { notify } from "../../components/feedback/Toast";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
@@ -115,7 +116,7 @@ export function ModelsGroupsDrawer({
   };
 
   const remove = async () => {
-    if (!selected || !window.confirm(`确认删除分组「${selected.name}」？`)) return;
+    if (!selected || !(await confirmAction({ message: `确认删除分组「${selected.name}」？` }))) return;
     setSaving(true);
     try {
       await deleteModelGroup(selected.id);

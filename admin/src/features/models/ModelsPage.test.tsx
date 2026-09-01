@@ -87,7 +87,7 @@ describe("ModelsPage 分页交互", () => {
     vi.unstubAllGlobals();
   });
 
-  it("默认每页 20 条并可切换页码和每页数量", async () => {
+  it("默认每页 12 条并可切换页码和每页数量", async () => {
     const user = userEvent.setup();
     render(
       <AuthProvider>
@@ -95,19 +95,19 @@ describe("ModelsPage 分页交互", () => {
       </AuthProvider>,
     );
 
-    await screen.findByText("model-20");
-    expect(screen.queryByText("model-21")).toBeNull();
+    await screen.findByText("model-12");
+    expect(screen.queryByText("model-13")).toBeNull();
     await user.click(screen.getByRole("button", { name: "下一页" }));
-    expect(await screen.findByText("model-21")).toBeTruthy();
+    expect(await screen.findByText("model-13")).toBeTruthy();
 
-    await user.selectOptions(screen.getByRole("combobox", { name: "每页模型数" }), "10");
+    await user.selectOptions(screen.getByRole("combobox", { name: "每页模型数" }), "24");
     await waitFor(() => expect(screen.getByText("model-1")).toBeTruthy());
-    expect(screen.queryByText("model-11")).toBeNull();
+    expect(screen.queryByText("model-25")).toBeNull();
 
     const fetchMock = vi.mocked(fetch);
     expect(
       fetchMock.mock.calls.some(([url]) =>
-        String(url).includes("page=2&page_size=20"),
+        String(url).includes("page=2&page_size=12"),
       ),
     ).toBe(true);
   });

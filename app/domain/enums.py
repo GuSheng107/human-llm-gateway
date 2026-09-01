@@ -218,6 +218,7 @@ class AuditAction(StrEnum):
     CONNECTION_DELETED = "connection.deleted"
     CONNECTION_BOUND = "connection.bound"
     CONNECTION_LOGIN_STARTED = "connection.login_started"
+    CONNECTION_WATCHDOG_DISABLED = "connection.watchdog_disabled"
     LLM_CONFIG_CREATED = "llm_config.created"
     LLM_CONFIG_UPDATED = "llm_config.updated"
     LLM_CONFIG_DELETED = "llm_config.deleted"

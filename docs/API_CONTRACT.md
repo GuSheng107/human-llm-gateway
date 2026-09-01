@@ -234,14 +234,15 @@ CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `
 | POST | `/api/im-connections/{id}/stop` | 停止目标连接。 |
 | POST | `/api/im-connections/{id}/apply` | 应用保存的配置并只重启目标连接。 |
 | GET | `/api/im-connections/{id}/health` | 返回数据库状态和瞬时运行状态。 |
+| POST | `/api/im-connections/check` | 立即执行看门狗检查，返回完整连接状态并自动停用异常连接。 |
 | POST | `/api/im-connections/{id}/login` | 所有者发起需要交互的登录。 |
 | GET | `/api/im-connections/{id}/login` | 所有者轮询登录进度和临时二维码。 |
-| POST | `/api/im-connections/{id}/binding` | 所有者生成一次性绑定码。 |
+| POST | `/api/im-connections/{id}/binding` | 所有者生成 `connect <连接名>` 绑定命令。 |
 | GET | `/api/im-connections/{id}/binding/status` | 所有者查看绑定结果。 |
 
 管理员可启动、停止、应用和检查任意连接，但不能调用登录或绑定接口，也不能取得二维码和绑定码。管理员触发生命周期治理动作时，受信任的服务端内部可以为执行该动作临时解密用户 IM 配置；但 Secret 明文绝不出现在任何响应、日志或审计中——管理员可以让系统运行连接，不能拿走用户 Token。
 
-期望运行的长连接遇到普通网络故障后自动指数退避重连；进入 `auth_required` 后停止自动重试。重新登录由所有者执行，`apply` 只重启目标连接。
+期望运行的长连接遇到普通网络故障后自动指数退避重连；进入 `auth_required` 后停止自动重试。看门狗默认每 60 秒检查一次，发现已启用连接处于异常状态时关闭其启用开关；周期由 `CONNECTION_WATCHDOG_INTERVAL_SECONDS` 配置。微信扫码确认由服务端原子保存参数并完成绑定，Token 不返回浏览器。重新登录由所有者执行，`apply` 只重启目标连接。
 
 ## 6. LLM 配置 API
 
@@ -266,16 +267,13 @@ CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `
   "api_key": "secret-on-write-only",
   "model": "real-model-name",
   "timeout_seconds": 120,
-  "headers": {
-    "X-Custom": "secret-on-write-only"
-  },
   "enabled": true
 }
 ```
 
-`protocol` 初期支持 `openai_compatible`、`anthropic`。自定义 Header 整体按 Secret 处理，列表和详情只返回 header 名称，不返回值。
+`protocol` 支持 `openai_chat`、`openai_responses`、`anthropic_messages`。LLM 配置不接受自定义请求头；鉴权头由协议适配器根据 `api_key` 生成。
 
-历史任务保留配置名称、协议、规范化 Base URL 和真实模型等非敏感快照，不保留 Secret、自定义 Header 值，也不能用已删除配置重新执行。
+历史任务保留配置名称、协议、规范化 Base URL 和真实模型等非敏感快照，不保留 Secret，也不能用已删除配置重新执行。
 
 ## 7. Fake Model 与模型分组 API
 

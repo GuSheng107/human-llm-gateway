@@ -11,6 +11,7 @@ import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
@@ -71,14 +72,14 @@ export function InvitationsPage() {
   };
 
   const revoke = async (item: Invitation) => {
-    if (!window.confirm(`确认撤销邀请码 ${item.code_prefix}…？撤销后立即不可使用。`)) return;
+    if (!(await confirmAction({ message: `确认撤销邀请码 ${item.code_prefix}…？撤销后立即不可使用。`, confirmLabel: "确认撤销" }))) return;
     await revokeInvitation(item.id);
     notify("邀请码已撤销");
     await load();
   };
 
   const remove = async (item: Invitation) => {
-    if (!window.confirm(`确认删除已撤销的邀请码 ${item.code_prefix}…？`)) return;
+    if (!(await confirmAction({ message: `确认删除已撤销的邀请码 ${item.code_prefix}…？` }))) return;
     await deleteInvitation(item.id);
     notify("邀请码已删除");
     await load();

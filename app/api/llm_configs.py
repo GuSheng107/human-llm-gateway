@@ -1,6 +1,6 @@
 """LLM 配置管理 API（docs/API_CONTRACT.md §6、docs/DATABASE.md §4.4）。
 
-Secret 与自定义 Header 整体不回显：列表与详情只返回"是否设置"标记；
+Secret 不回显：列表与详情只返回"是否设置"标记；
 `POST /api/llm-configs/{id}/test` 返回 success / reason_code / http_status，
 不返回响应正文。删除被引用配置返回 409。
 """
@@ -15,12 +15,7 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from ..core.constants import (
-    LLM_HEADER_NAME_MAX_LENGTH,
-    LLM_HEADER_VALUE_MAX_LENGTH,
-    LLM_NAME_MAX_LENGTH,
-    LLM_TIMEOUT_DEFAULT_SECONDS,
-)
+from ..core.constants import LLM_NAME_MAX_LENGTH, LLM_TIMEOUT_DEFAULT_SECONDS
 from ..core.db import get_db
 from ..core.time import iso_utc
 from ..domain.enums import LLMProtocol, ThinkingLevel, ThinkingMode, UserRole
@@ -51,11 +46,6 @@ def _assert_not_admin_llm_manager(user: User) -> None:
 # ----------------------------------------------------------------------
 
 
-class LlmConfigHeaderSpec(StrictModel):
-    name: str = Field(min_length=1, max_length=LLM_HEADER_NAME_MAX_LENGTH)
-    value: str = Field(default="", max_length=LLM_HEADER_VALUE_MAX_LENGTH)
-
-
 class LlmConfigCreate(StrictModel):
     name: str = Field(min_length=1, max_length=LLM_NAME_MAX_LENGTH)
     protocol: LLMProtocol
@@ -63,7 +53,6 @@ class LlmConfigCreate(StrictModel):
     api_key: str = Field(min_length=1)
     model: str = Field(min_length=1)
     timeout_seconds: int = Field(default=LLM_TIMEOUT_DEFAULT_SECONDS, ge=5, le=600)
-    headers: list[LlmConfigHeaderSpec] = Field(default_factory=list)
     enabled: bool = True
     default_temperature: float | None = Field(default=None, ge=0, le=2)
     default_top_p: float | None = Field(default=None, ge=0, le=1)
@@ -86,7 +75,6 @@ class LlmConfigUpdate(StrictModel):
     api_key: str | None = None
     model: str | None = Field(default=None, min_length=1)
     timeout_seconds: int | None = Field(default=None, ge=5, le=600)
-    headers: list[LlmConfigHeaderSpec] | None = None
     enabled: bool | None = None
     default_temperature: float | None = Field(default=None, ge=0, le=2)
     default_top_p: float | None = Field(default=None, ge=0, le=1)
@@ -106,11 +94,6 @@ class LlmConfigUpdate(StrictModel):
 # ----------------------------------------------------------------------
 
 
-class LlmConfigHeaderView(BaseModel):
-    name: str
-    value_set: bool
-
-
 class LlmConfigView(BaseModel):
     id: str
     name: str
@@ -121,7 +104,6 @@ class LlmConfigView(BaseModel):
     timeout_seconds: int
     is_enabled: bool
     api_key_set: bool
-    headers: list[LlmConfigHeaderView]
     default_temperature: float | None
     default_top_p: float | None
     default_top_k: int | None
@@ -161,12 +143,6 @@ class LlmConfigTestResult(BaseModel):
 # ----------------------------------------------------------------------
 
 
-def _headers_from_specs(specs: list[LlmConfigHeaderSpec] | None) -> dict[str, str]:
-    if not specs:
-        return {}
-    return {item.name: item.value for item in specs}
-
-
 def _thinking_mode(value: str) -> ThinkingMode:
     try:
         return ThinkingMode(value)
@@ -197,22 +173,6 @@ def _view(
     if include_owner:
         owner = session.get(User, row.owner_user_id)
         owner_username = owner.username if owner else None
-    header_names: list[str] = []
-    if row.headers_ciphertext:
-        try:
-            import json
-
-            from ..core.config import get_settings
-            from ..core.security import decrypt_secret
-
-            decoded = decrypt_secret(
-                row.headers_ciphertext,
-                get_settings().app_secret,
-                "llm-config",
-            )
-            header_names = list(json.loads(decoded).keys())
-        except (ValueError, KeyError, json.JSONDecodeError):
-            header_names = []
     host = urlparse(row.base_url).netloc or row.base_url
     return LlmConfigView(
         id=str(row.id),
@@ -224,7 +184,6 @@ def _view(
         timeout_seconds=row.timeout_seconds,
         is_enabled=row.is_enabled,
         api_key_set=bool(row.secret_ciphertext),
-        headers=[LlmConfigHeaderView(name=n, value_set=True) for n in header_names],
         default_temperature=float(row.default_temperature)
         if row.default_temperature is not None
         else None,
@@ -288,7 +247,6 @@ def create_llm_config(
         api_key=payload.api_key,
         model=payload.model,
         timeout_seconds=payload.timeout_seconds,
-        headers=_headers_from_specs(payload.headers),
         enabled=payload.enabled,
         default_temperature=(
             Decimal(str(payload.default_temperature))
@@ -337,8 +295,6 @@ def update_llm_config(
     _assert_not_admin_llm_manager(user)
     row = _get_config(db, config_id, user)
     fields = payload.model_dump(include=payload.model_fields_set)
-    if "headers" in fields:
-        fields["headers"] = _headers_from_specs(fields["headers"]) if fields["headers"] else {}
     _service.update(db, row=row, actor=user, fields=fields)
     db.commit()
     db.refresh(row)
@@ -364,12 +320,12 @@ async def test_llm_config(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> LlmConfigTestResult:
-    """连通性测试：使用配置自身的 base_url / api_key / headers 调用上游最小请求。
+    """连通性测试：使用配置自身的 base_url / api_key 调用上游最小请求。
 
-    不回显 Secret / Header 值，仅返回 success / reason_code / detail / http_status。
+    不回显 Secret，仅返回 success / reason_code / detail / http_status。
     """
     _assert_not_admin_llm_manager(user)
-    row, secret, headers = _service.get_owned_with_secret(db, config_id, user)
+    row, secret = _service.get_owned_with_secret(db, config_id, user)
     if not row.is_enabled:
         raise DomainError(
             DomainErrorCode.VALIDATION_FAILED,
@@ -381,7 +337,6 @@ async def test_llm_config(
         base_url=row.base_url,
         api_key=secret,
         real_model=row.real_model,
-        extra_headers=headers or None,
     )
     _service.repo.record_test_result(
         db, config_id=row.id, result="success" if outcome.success else "failed"

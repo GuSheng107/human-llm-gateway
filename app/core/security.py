@@ -207,6 +207,11 @@ def generate_binding_code(length: int = 8) -> tuple[str, str]:
     return code, _salted_digest(code.upper().strip())
 
 
+def hash_binding_code(code: str) -> str:
+    """为用户可读的连接命令生成与一次性绑定码相同格式的哈希。"""
+    return _salted_digest(code.upper().strip())
+
+
 def verify_binding_code(code: str, encoded: str) -> bool:
     return _verify_salted_digest(code.upper().strip(), encoded)
 

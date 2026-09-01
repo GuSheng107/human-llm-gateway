@@ -12,6 +12,7 @@ import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
@@ -50,12 +51,12 @@ function ModelLogo({ model }: { model: FakeModel }) {
         src={model.logo_url}
         alt={model.owned_by}
         onError={() => setFailed(true)}
-        className="h-10 w-10 shrink-0 rounded-lg object-cover"
+        className="h-9 w-9 shrink-0 rounded-lg object-cover"
       />
     );
   }
   return (
-    <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-gradient-to-br from-primary/10 to-violet-500/10 text-sm font-bold text-primary">
+    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-blue-50 text-sm font-bold text-primary">
       {letter}
     </div>
   );
@@ -88,7 +89,7 @@ export function ModelsPage() {
   const [creating, setCreating] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<ModelPageSize>(20);
+  const [pageSize, setPageSize] = useState<ModelPageSize>(12);
 
   const loadCatalog = useCallback(async () => {
     setCatalogLoading(true);
@@ -169,7 +170,7 @@ export function ModelsPage() {
   };
 
   const removeModel = async (model: FakeModel) => {
-    if (!window.confirm(`确认删除模型「${model.model_id}」？`)) return;
+    if (!(await confirmAction({ message: `确认删除模型「${model.model_id}」？` }))) return;
     try {
       await deleteFakeModel(model.id);
       notify("模型已删除");
@@ -225,7 +226,7 @@ export function ModelsPage() {
   );
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-5 lg:flex lg:h-[calc(100dvh-7.5rem)] lg:min-h-0 lg:flex-col lg:gap-3 lg:space-y-0 lg:overflow-hidden">
       <PageHeader
         title="模型广场"
         dismissId="models"
@@ -245,18 +246,18 @@ export function ModelsPage() {
 
       {error && <ErrorBanner message={error} />}
 
-      <div className="rounded-xl bg-gradient-to-r from-violet-600 via-indigo-600 to-blue-600 px-6 py-5 text-white shadow-card">
+      <div className="model-summary-banner shrink-0 rounded-lg px-5 py-3.5 text-white shadow-card">
         <div className="flex flex-wrap items-center gap-x-8 gap-y-2">
           <div>
-            <div className="text-2xl font-bold">{models.length}</div>
+            <div className="text-xl font-bold">{models.length}</div>
             <div className="text-xs text-white/70">模型</div>
           </div>
           <div>
-            <div className="text-2xl font-bold">{groups.length}</div>
+            <div className="text-xl font-bold">{groups.length}</div>
             <div className="text-xs text-white/70">分组</div>
           </div>
           <div>
-            <div className="text-2xl font-bold">{providers.length}</div>
+            <div className="text-xl font-bold">{providers.length}</div>
             <div className="text-xs text-white/70">供应商</div>
           </div>
           <label className="ml-auto flex cursor-pointer items-center gap-2 text-xs text-white/80">
@@ -274,9 +275,9 @@ export function ModelsPage() {
         </div>
       </div>
 
-      <div className="flex gap-5">
+      <div className="flex min-h-0 flex-1 gap-4">
         {/* 左侧筛选栏 */}
-        <aside className="hidden w-52 shrink-0 space-y-5 lg:block">
+        <aside className="hidden w-52 shrink-0 space-y-3 overflow-y-auto pr-1 lg:block">
           <Card className="p-4">
             <h3 className="mb-2 text-xs font-semibold text-slate-700">供应商</h3>
             {filterChips(providers, provider, setProvider, (value) => value)}
@@ -307,7 +308,7 @@ export function ModelsPage() {
         </aside>
 
         {/* 右侧主区 */}
-        <div className="min-w-0 flex-1 space-y-4">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3">
           <Card className="p-3">
             <div className="flex flex-wrap items-center gap-2">
               <div className="relative min-w-0 flex-1">
@@ -352,9 +353,8 @@ export function ModelsPage() {
             </div>
           </Card>
 
-          {loading && (
-            <Card className="p-12 text-center text-xs text-slate-400">加载中…</Card>
-          )}
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+          {loading && <Card className="p-12 text-center text-xs text-slate-400">加载中…</Card>}
 
           {!loading && total === 0 && (
             <Card className="p-12 text-center text-xs text-slate-400">
@@ -365,9 +365,9 @@ export function ModelsPage() {
           {!loading && view === "grid" && total > 0 && (
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
               {pageModels.map((model) => (
-                <Card key={model.id} className="group flex flex-col p-4">
+                <Card key={model.id} className="group flex min-h-36 flex-col p-3">
                   <div className="flex items-start justify-between">
-                    <div className="flex min-w-0 items-center gap-3">
+                    <div className="flex min-w-0 items-center gap-2.5">
                       <ModelLogo model={model} />
                       <div className="min-w-0">
                         <div
@@ -394,11 +394,11 @@ export function ModelsPage() {
                   </div>
 
                   {model.capabilities.length > 0 && (
-                    <div className="mt-3 flex flex-wrap gap-1">
+                    <div className="mt-2 flex flex-wrap gap-1">
                       {model.capabilities.slice(0, 5).map((capability) => (
                         <span
                           key={capability}
-                          className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-medium text-violet-600"
+                          className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600"
                         >
                           {CAPABILITY_LABELS[capability] ?? capability}
                         </span>
@@ -406,7 +406,7 @@ export function ModelsPage() {
                     </div>
                   )}
 
-                  <div className="mt-3 space-y-1.5">
+                  <div className="mt-2 space-y-1">
                     {model.context_window && (
                       <div className="flex items-baseline justify-between text-xs">
                         <span className="text-slate-400">上下文</span>
@@ -417,7 +417,7 @@ export function ModelsPage() {
                     )}
                   </div>
 
-                  <div className="mt-auto flex items-center justify-between border-t border-slate-100 pt-3">
+                  <div className="mt-auto flex items-center justify-between border-t border-slate-100 pt-2.5">
                     <div className="flex items-center gap-1.5">
                       {!model.is_enabled && (
                         <span className="rounded-full bg-red-50 px-2 py-0.5 text-[10px] text-red-500">
@@ -490,7 +490,7 @@ export function ModelsPage() {
                             {model.capabilities.slice(0, 3).map((capability) => (
                               <span
                                 key={capability}
-                                className="rounded bg-violet-50 px-1.5 py-0.5 text-[10px] text-violet-600"
+                                className="rounded bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-600"
                               >
                                 {CAPABILITY_LABELS[capability] ?? capability}
                               </span>
@@ -530,6 +530,7 @@ export function ModelsPage() {
               </div>
             </Card>
           )}
+          </div>
           {!loading && total > 0 && (
             <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
               <label className="flex items-center gap-2 text-xs text-slate-500">

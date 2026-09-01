@@ -227,10 +227,10 @@ def test_delete_blocked_while_enabled_api_key_references_connection(client, admi
     assert client.delete(f"/api/im-connections/{connection_id}", headers=headers).status_code == 204
 
 
-def test_qr_login_returns_base64_qrcode_and_token_writeback(
+def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
     client, admin_headers, monkeypatch
 ) -> None:
-    """扫码登录：二维码 bytes 转 base64；confirmed 后前端可把 bot_token 写回 config。"""
+    """扫码登录：二维码 bytes 转 base64；confirmed 后服务端保存参数并完成绑定。"""
     import base64 as b64
 
     from app.services.connection_service import ConnectionService
@@ -249,7 +249,12 @@ def test_qr_login_returns_base64_qrcode_and_token_writeback(
             return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
 
         async def poll_login(self):
-            return {"status": "confirmed", "bot_token": "bot-token-1"}
+            return {
+                "status": "confirmed",
+                "bot_token": "bot-token-1",
+                "baseurl": "https://ilink.example.test",
+                "ilink_user_id": "wx-user-1",
+            }
 
     def _fake_login_connector(self, row):
         connector = _FakeConnector()
@@ -266,20 +271,14 @@ def test_qr_login_returns_base64_qrcode_and_token_writeback(
 
     polled = client.get(f"/api/im-connections/{created['id']}/login", headers=headers)
     assert polled.status_code == 200
-    assert polled.json()["bot_token"] == "bot-token-1"
-
-    # 前端把 bot_token 写回 config（secret 字段：空串跳过、新值覆盖）。
-    patched = client.patch(
-        f"/api/im-connections/{created['id']}",
-        headers=headers,
-        json={"config": {"token": "bot-token-1"}},
-    )
-    assert patched.status_code == 200, patched.text
+    assert polled.json() == {"status": "confirmed", "bound": True}
     with database.SessionLocal() as session:
         row = session.get(ImConnection, int(created["id"]))
         assert row is not None
         decrypted = ConnectionService().decrypt_config(row)
         assert decrypted.get("token") == "bot-token-1"
+        assert decrypted.get("base_url") == "https://ilink.example.test"
+        assert row.bound_external_user_id == "wx-user-1"
 
 
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:
@@ -333,6 +332,7 @@ def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
     assert status == {"bound": False, "binding_pending": False, "binding_expires_at": None}
 
     binding = client.post(f"/api/im-connections/{connection_id}/binding", headers=headers).json()
+    assert binding["binding_code"] == "connect binding"
     assert binding["binding_code"]
     assert (
         client.get(f"/api/im-connections/{connection_id}/binding/status", headers=headers).json()[
@@ -458,6 +458,32 @@ def test_webhook_inbound_requires_connection_token(client, admin_headers) -> Non
         ).status_code
         == 401
     )
+
+
+def test_watchdog_check_disables_abnormal_enabled_connection(client, admin_headers) -> None:
+    from app.domain.enums import ConnectionState
+    from app.repositories.models import ImConnection
+
+    headers = _create_user(client, admin_headers, "watchdog-owner")
+    created = _create_connection(client, headers, name="watchdog-error")
+    connection_id = int(created["id"])
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.desired_running = True
+        row.state = ConnectionState.ERROR
+        row.last_error_code = "network_error"
+        row.last_error_message = "连接测试异常"
+        session.commit()
+
+    checked = client.post("/api/im-connections/check", headers=headers)
+    assert checked.status_code == 200, checked.text
+    report = checked.json()
+    assert len(report) == 1
+    assert report[0]["abnormal"] is True
+    assert report[0]["auto_disabled"] is True
+    assert report[0]["desired_running"] is False
+    with database.SessionLocal() as session:
+        assert session.get(ImConnection, connection_id).desired_running is False
 
 
 def test_http_poll_cursor_reply_and_ack_are_idempotent(client, admin_headers) -> None:

@@ -11,6 +11,7 @@ import {
 import { Card } from "../../components/data-display/Card";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
@@ -112,7 +113,7 @@ export function ToolsPage() {
   };
 
   const removeTool = async (tool: ToolItem) => {
-    if (!window.confirm(`确认删除工具「${tool.name}」？`)) return;
+    if (!(await confirmAction({ message: `确认删除工具「${tool.name}」？` }))) return;
     try {
       await deleteTool(tool.id);
       notify("工具已删除");

@@ -60,7 +60,6 @@ async def test_openai_chat(
     *,
     base_url: str,
     api_key: str,
-    extra_headers: dict[str, str] | None = None,
     timeout_seconds: float = LLM_CONNECT_TEST_TIMEOUT_SECONDS,
 ) -> ConnTestOutcome:
     blocked = await _ssrf_precheck(base_url)
@@ -68,8 +67,6 @@ async def test_openai_chat(
         return blocked
     url = _normalize_openai_models_url(base_url)
     headers = {"Authorization": f"Bearer {api_key}"}
-    if extra_headers:
-        headers.update(extra_headers)
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
             response = await client.get(url, headers=headers)
@@ -92,7 +89,6 @@ async def test_anthropic(
     base_url: str,
     api_key: str,
     real_model: str,
-    extra_headers: dict[str, str] | None = None,
     timeout_seconds: float = LLM_CONNECT_TEST_TIMEOUT_SECONDS,
 ) -> ConnTestOutcome:
     """Anthropic 没有 list_models；最小 messages 请求是连通 + 鉴权的标准做法。"""
@@ -105,8 +101,6 @@ async def test_anthropic(
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-    if extra_headers:
-        headers.update(extra_headers)
     body = {
         "model": real_model,
         "max_tokens": 1,
@@ -134,7 +128,6 @@ async def test_openai_responses(
     base_url: str,
     api_key: str,
     real_model: str,
-    extra_headers: dict[str, str] | None = None,
     timeout_seconds: float = LLM_CONNECT_TEST_TIMEOUT_SECONDS,
 ) -> ConnTestOutcome:
     """OpenAI Responses 无列表端点；用最小真实请求度量连通性。"""
@@ -143,8 +136,6 @@ async def test_openai_responses(
         return blocked
     url = base_url.rstrip("/") + "/responses"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    if extra_headers:
-        headers.update(extra_headers)
     body = {"model": real_model, "input": "ping", "max_output_tokens": 4}
     try:
         async with httpx.AsyncClient(timeout=timeout_seconds) as client:
@@ -169,28 +160,24 @@ async def run_connectivity_test(
     base_url: str,
     api_key: str,
     real_model: str,
-    extra_headers: dict[str, str] | None = None,
 ) -> ConnTestOutcome:
     """按协议分发；统一超时上限 10s（独立于配置 timeout_seconds）。"""
     if protocol is LLMProtocol.OPENAI_CHAT:
         return await test_openai_chat(
             base_url=base_url,
             api_key=api_key,
-            extra_headers=extra_headers,
         )
     if protocol is LLMProtocol.OPENAI_RESPONSES:
         return await test_openai_responses(
             base_url=base_url,
             api_key=api_key,
             real_model=real_model,
-            extra_headers=extra_headers,
         )
     if protocol is LLMProtocol.ANTHROPIC_MESSAGES:
         return await test_anthropic(
             base_url=base_url,
             api_key=api_key,
             real_model=real_model,
-            extra_headers=extra_headers,
         )
     return ConnTestOutcome(False, "unsupported_protocol", f"未知协议: {protocol}", None)
 

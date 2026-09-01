@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
+import io
 import json
 from datetime import timedelta
 from typing import Any
@@ -27,7 +28,7 @@ from ..core.logging import get_request_id
 from ..core.security import (
     decrypt_secret,
     encrypt_secret,
-    generate_binding_code,
+    hash_binding_code,
     verify_binding_code,
 )
 from ..core.time import utc_now
@@ -360,7 +361,8 @@ class ConnectionService:
     def create_binding_code(
         self, session: Session, *, row: ImConnection, actor_user_id: int
     ) -> dict[str, Any]:
-        code, code_hash = generate_binding_code()
+        code = f"connect {row.name}"
+        code_hash = hash_binding_code(code)
         ttl = getattr(get_settings(), "binding_code_ttl_seconds", BINDING_CODE_TTL_FALLBACK_SECONDS)
         expires_at = utc_now() + timedelta(seconds=ttl)
         self.repo.set_binding_code(session, row.id, code_hash, expires_at)
@@ -389,7 +391,7 @@ class ConnectionService:
             ),
         }
 
-    def start_login(
+    async def start_login(
         self, session: Session, *, row: ImConnection, actor_user_id: int
     ) -> dict[str, Any]:
         spec = self.registry.require_spec(row.platform)
@@ -399,13 +401,14 @@ class ConnectionService:
             )
         connector = self._login_connector(row)
         try:
-            result = _run_coroutine(connector.start_login())
+            result = await connector.start_login()
         except ConnectorError as exc:
             raise _login_domain_error(exc) from exc
-        # qrcode_img_content 可能是 PNG bytes（转 base64）或图片 URL 字符串（原样透传）。
-        raw_img = result.get("qrcode_img_content")
-        if isinstance(raw_img, (bytes, bytearray)):
-            result["qrcode_img_content"] = base64.b64encode(bytes(raw_img)).decode("ascii")
+        # openilink 返回的 qrcode_img_content 是待编码内容（通常为 URL），不是图片 URL。
+        # 统一在服务端生成 PNG base64，前端只负责展示，避免误当 URL 导致破图。
+        result["qrcode_img_content"] = _qr_image_base64(
+            result.get("qrcode_img_content") or result.get("qrcode") or ""
+        )
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_LOGIN_STARTED,
@@ -417,7 +420,9 @@ class ConnectionService:
         )
         return result
 
-    def poll_login(self, session: Session, *, row: ImConnection) -> dict[str, Any]:
+    async def poll_login(
+        self, session: Session, *, row: ImConnection, actor_user_id: int
+    ) -> dict[str, Any]:
         connector = self._login_connectors.get(row.id)
         if connector is None:
             raise DomainError(
@@ -426,9 +431,46 @@ class ConnectionService:
                 status_code=400,
             )
         try:
-            return _run_coroutine(connector.poll_login())
+            result = await connector.poll_login()
         except ConnectorError as exc:
             raise _login_domain_error(exc) from exc
+        if result.get("status") != "confirmed":
+            return {"status": str(result.get("status") or "wait")}
+
+        token = str(result.get("bot_token") or "").strip()
+        external_user_id = str(result.get("ilink_user_id") or "").strip()
+        if not token or not external_user_id:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "扫码确认信息不完整，请重新扫码",
+                status_code=400,
+            )
+        config = self.decrypt_config(row)
+        config["token"] = token
+        base_url = str(result.get("baseurl") or "").strip()
+        if base_url:
+            config["base_url"] = base_url
+        problems = self.registry.validate_config(row.platform, config)
+        if problems:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED, "; ".join(problems), status_code=400
+            )
+        row.config_ciphertext = self._encrypt_config(config)
+        self.repo.bind_external_user(session, row.id, external_user_id)
+        await run_in_threadpool(session.flush)
+        await run_in_threadpool(session.refresh, row)
+        self._login_connectors.pop(row.id, None)
+        self.audit.add(
+            session,
+            action=AuditAction.CONNECTION_UPDATED,
+            resource_type="im_connection",
+            resource_id=str(row.id),
+            actor_user_id=actor_user_id,
+            owner_user_id=row.owner_user_id,
+            metadata={"fields": ["login", "binding"]},
+        )
+        # Token 由服务端原子保存，不再返回浏览器。
+        return {"status": "confirmed", "bound": True}
 
     def _login_connector(self, row: ImConnection) -> Connector:
         """登录流程的连接器实例按 connection_id 缓存。
@@ -706,6 +748,31 @@ def _login_domain_error(exc: ConnectorError) -> DomainError:
         exc.message or "扫码登录失败，请重试",
         status_code=status,
     )
+
+
+def _qr_image_base64(content: Any) -> str:
+    """把 SDK 的二维码内容规范为 PNG base64。"""
+    if isinstance(content, (bytes, bytearray)):
+        return base64.b64encode(bytes(content)).decode("ascii")
+    value = str(content or "").strip()
+    if not value:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED, "二维码内容为空，请重试", status_code=400
+        )
+    if value.startswith("data:image/") and ";base64," in value:
+        return value.split(",", 1)[1]
+    try:
+        decoded = base64.b64decode(value, validate=True)
+        if decoded.startswith(b"\x89PNG"):
+            return value
+    except (ValueError, TypeError):
+        pass
+
+    import qrcode
+
+    output = io.BytesIO()
+    qrcode.make(value).save(output, format="PNG")
+    return base64.b64encode(output.getvalue()).decode("ascii")
 
 
 def _run_coroutine(coro):

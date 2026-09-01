@@ -43,7 +43,6 @@ class LlmConfig(TimestampMixin, Base):
     base_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     real_model: Mapped[str] = mapped_column(String(255), nullable=False)
     secret_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
-    headers_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     encryption_key_version: Mapped[int] = mapped_column(Integer, nullable=False)
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

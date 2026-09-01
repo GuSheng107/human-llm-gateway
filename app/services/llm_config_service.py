@@ -1,13 +1,12 @@
 """LLM 配置用例：CRUD、Secret 加密、连通性测试与引用安全删除（M7-A）。
 
-LLM Secret 和自定义 Header 整体按 Secret 处理：服务端加密落库，
-任何响应（列表 / 详情 / 连通性测试）只返回"已设置 / 未设置"标记，
+LLM Secret 由服务端加密落库，任何响应（列表 / 详情 / 连通性测试）
+只返回"已设置 / 未设置"标记，
 绝不回显明文。被 API Key 或活动任务引用的配置不允许删除，返回 409。
 """
 
 from __future__ import annotations
 
-import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from urllib.parse import urlparse
@@ -18,9 +17,6 @@ from sqlalchemy.orm import Session
 from ..core.config import get_settings
 from ..core.constants import (
     LLM_BASE_URL_MAX_LENGTH,
-    LLM_HEADER_NAME_MAX_LENGTH,
-    LLM_HEADER_VALUE_MAX_LENGTH,
-    LLM_MAX_HEADERS,
     LLM_MODEL_MAX_LENGTH,
     LLM_NAME_MAX_LENGTH,
     LLM_TIMEOUT_DEFAULT_SECONDS,
@@ -90,61 +86,6 @@ def _normalize_base_url(raw: str, protocol: LLMProtocol | None = None) -> str:
     return cleaned
 
 
-def _normalize_headers(raw: dict[str, str] | None) -> dict[str, str]:
-    if not raw:
-        return {}
-    if len(raw) > LLM_MAX_HEADERS:
-        raise DomainError(
-            DomainErrorCode.VALIDATION_FAILED,
-            f"自定义 Header 数量不能超过 {LLM_MAX_HEADERS}",
-            status_code=400,
-        )
-    normalized: dict[str, str] = {}
-    for key, value in raw.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                "自定义 Header 必须为字符串键值对",
-                status_code=400,
-            )
-        cleaned_key = key.strip()
-        cleaned_value = value.strip()
-        if not cleaned_key:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                "自定义 Header 名不能为空",
-                status_code=400,
-            )
-        if len(cleaned_key) > LLM_HEADER_NAME_MAX_LENGTH:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header 名长度不能超过 {LLM_HEADER_NAME_MAX_LENGTH}",
-                status_code=400,
-            )
-        if len(cleaned_value) > LLM_HEADER_VALUE_MAX_LENGTH:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header 值长度不能超过 {LLM_HEADER_VALUE_MAX_LENGTH}",
-                status_code=400,
-            )
-        if cleaned_key.lower() in {"authorization", "x-api-key"}:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header {cleaned_key} 不允许（API Key 通过 api_key 字段管理）",
-                status_code=400,
-            )
-        # 大小写不敏感去重：Foo 与 foo 在 HTTP 语义中同名，显式拒绝
-        # 而非静默覆盖。
-        if cleaned_key.lower() in {k.lower() for k in normalized}:
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                f"自定义 Header {cleaned_key} 与已有 Header 大小写冲突",
-                status_code=400,
-            )
-        normalized[cleaned_key] = cleaned_value
-    return normalized
-
-
 class LlmConfigService:
     def __init__(self) -> None:
         self.repo = LlmConfigRepository()
@@ -175,8 +116,8 @@ class LlmConfigService:
         return row
 
     @staticmethod
-    def get_secret_pair(session: Session, row: LlmConfig) -> tuple[str, dict[str, str]]:
-        """解密配置的 Secret 与自定义 Header（服务层内部共用）。
+    def get_secret(session: Session, row: LlmConfig) -> str:
+        """解密配置的 Secret（服务层内部共用）。
 
         不做归属校验（调用方已完成）；Secret 仅在内存使用，不进入响应。
         """
@@ -190,27 +131,14 @@ class LlmConfigService:
                 "LLM Secret 解密失败，请重新保存配置",
                 status_code=409,
             ) from exc
-        headers: dict[str, str] = {}
-        if row.headers_ciphertext:
-            try:
-                decoded = decrypt_secret(
-                    row.headers_ciphertext, get_settings().app_secret, _LLM_SECRET_PURPOSE
-                )
-                headers = json.loads(decoded)
-            except (ValueError, json.JSONDecodeError) as exc:
-                raise DomainError(
-                    DomainErrorCode.CONFLICT,
-                    "LLM 自定义 Header 解密失败，请重新保存配置",
-                    status_code=409,
-                ) from exc
-        return secret, headers
+        return secret
 
     def get_owned_with_secret(
         self, session: Session, config_id: int, user: User
-    ) -> tuple[LlmConfig, str, dict[str, str]]:
-        """取配置并解密 Secret / Headers。仅供服务层内部调用（如连通性测试）。
+    ) -> tuple[LlmConfig, str]:
+        """取配置并解密 Secret。仅供服务层内部调用（如连通性测试）。
 
-        Secret 与 Header 不进入响应，由调用方使用后丢弃。
+        Secret 不进入响应，由调用方使用后丢弃。
         """
         row = self.get_owned(session, config_id, user)
         try:
@@ -223,22 +151,7 @@ class LlmConfigService:
                 "LLM Secret 解密失败，请重新保存配置",
                 status_code=409,
             ) from exc
-        headers: dict[str, str] = {}
-        if row.headers_ciphertext:
-            try:
-                decoded = decrypt_secret(
-                    row.headers_ciphertext,
-                    get_settings().app_secret,
-                    _LLM_SECRET_PURPOSE,
-                )
-                headers = json.loads(decoded)
-            except Exception as exc:
-                raise DomainError(
-                    DomainErrorCode.CONFLICT,
-                    "LLM 自定义 Header 解密失败，请重新保存配置",
-                    status_code=409,
-                ) from exc
-        return row, secret, headers
+        return row, secret
 
     # ------------------------------------------------------------------
     # 创建
@@ -255,7 +168,6 @@ class LlmConfigService:
         api_key: str,
         model: str,
         timeout_seconds: int,
-        headers: dict[str, str] | None = None,
         enabled: bool = True,
         default_temperature: Decimal | None = None,
         default_top_p: Decimal | None = None,
@@ -289,7 +201,6 @@ class LlmConfigService:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED, "extra_body 必须是 JSON 对象", status_code=400
             )
-        normalized_headers = _normalize_headers(headers)
         if not api_key:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
@@ -313,15 +224,6 @@ class LlmConfigService:
             is_enabled=enabled,
             secret_ciphertext=encrypt_secret(
                 api_key, get_settings().app_secret, _LLM_SECRET_PURPOSE
-            ),
-            headers_ciphertext=(
-                encrypt_secret(
-                    json.dumps(normalized_headers, ensure_ascii=False),
-                    get_settings().app_secret,
-                    _LLM_SECRET_PURPOSE,
-                )
-                if normalized_headers
-                else None
             ),
             default_temperature=default_temperature,
             default_top_p=default_top_p,
@@ -355,7 +257,6 @@ class LlmConfigService:
                     "protocol",
                     "base_url_host",
                     "real_model",
-                    "headers_set",
                     "timeout_seconds",
                     "is_enabled",
                 ]
@@ -447,18 +348,6 @@ class LlmConfigService:
                     new_key.strip(), get_settings().app_secret, _LLM_SECRET_PURPOSE
                 )
                 changed.append("api_key")
-
-        if "headers" in fields:
-            new_headers = _normalize_headers(fields["headers"] or {})
-            if new_headers:
-                row.headers_ciphertext = encrypt_secret(
-                    json.dumps(new_headers, ensure_ascii=False),
-                    get_settings().app_secret,
-                    _LLM_SECRET_PURPOSE,
-                )
-            else:
-                row.headers_ciphertext = None
-            changed.append("headers")
 
         # ---- 采样参数（None 表示清空，缺省 key 表示保留）----
         for field_name in (
@@ -591,7 +480,7 @@ class LlmConfigService:
             resource_id=str(row.id),
             actor_user_id=actor.id,
             owner_user_id=row.owner_user_id,
-            metadata={"fields": ["is_enabled", "secret", "headers"]},
+            metadata={"fields": ["is_enabled", "secret"]},
         )
 
     # ------------------------------------------------------------------

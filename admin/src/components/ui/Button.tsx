@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { forwardRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 
 type Variant = "primary" | "ghost" | "danger";
 type Size = "md" | "lg";
@@ -22,7 +22,7 @@ const SIZE_CLASS: Record<Size, string> = {
   lg: "h-10 px-4 text-sm",
 };
 
-export function Button({
+export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button({
   variant = "primary",
   size = "md",
   loading = false,
@@ -30,10 +30,11 @@ export function Button({
   className = "",
   children,
   ...rest
-}: ButtonProps) {
+}, ref) {
   return (
     <button
       type="button"
+      ref={ref}
       disabled={disabled || loading}
       className={`inline-flex items-center justify-center gap-2 rounded-md font-medium transition focus-visible:outline-none focus-visible:ring-2 active:scale-[.98] disabled:cursor-not-allowed disabled:opacity-60 ${VARIANT_CLASS[variant]} ${SIZE_CLASS[size]} ${className}`}
       {...rest}
@@ -44,4 +45,4 @@ export function Button({
       {children}
     </button>
   );
-}
+});

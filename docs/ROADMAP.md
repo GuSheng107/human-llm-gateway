@@ -193,6 +193,8 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 - [x] IM 投递失败不影响 Web 任务可见性。
 - [x] IM 与 Web 首个成功回复生效，晚到回复只记录审计并提示任务结束。
 - [x] 进站消息按连接和外部消息 ID 全局幂等。
+- [x] 微信扫码确认后服务端原子保存参数并绑定；企微收到 `connect <连接名>` 命令后绑定。
+- [x] 连接页按平台配置操作按钮；手动检查与 60 秒看门狗复用同一检测逻辑，异常连接自动关闭启用开关。
 
 实现说明：监督循环与状态持久化由 `app/connectors/manager.py` 承担，平台能力通过
 `app/connectors/registry.py` 注册；Webhook/WebSocket/HTTP 轮询三个通用连接器可端到端
@@ -212,6 +214,7 @@ M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的�
 - [x] `/v1/models` 必须鉴权，并返回按可见范围、模型分组和 Key 选择计算出的有效集合。
 - [x] 不存在、停用或不在有效集合的 Fake Model 返回对应协议的 `model_not_found`。
 - [x] `/v1/models` 与三个推理入口复用同一个 effective-model 查询和权限测试。
+- [x] 模型广场桌面端外层不滚动，筛选与模型容器独立滚动，默认每页 12 条。
 
 ### M5-B：API Key、策略与用户级准入
 
@@ -269,10 +272,10 @@ M6 完成后达到首个可用 MVP。
 ### M7-A：用户级 LLM 配置管理
 
 - [x] 用户维护 OpenAI-compatible 或 Anthropic LLM 配置。
-- [x] 配置包含名称、协议、Base URL、API Key、真实模型、超时和自定义 Header。
+- [x] 配置包含名称、协议、Base URL、API Key、真实模型和超时；不开放自定义请求头。
 - [x] 支持连通性测试且不回显 Secret；OpenAI 协议 GET /models、Anthropic POST /v1/messages 最小请求，硬上限 10 秒。
 - [x] 被有效 API Key 或活动任务引用的配置删除返回 409；历史任务保存非敏感配置快照。
-- [x] 管理 API `/api/llm-configs` CRUD + `POST /test`；前端 LLM 管理页（列表 + 编辑 + 测试 + 引用头列表）。
+- [x] 管理 API `/api/llm-configs` CRUD + `POST /test`；前端 LLM 管理页（列表 + 编辑 + 测试）。
 
 ### M7-B：手动调用 LLM 生成草稿（已完成）
 

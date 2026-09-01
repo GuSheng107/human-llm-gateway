@@ -4,6 +4,7 @@ import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
@@ -77,11 +78,16 @@ export function UsersPage() {
     if (user.is_active) {
       const current = await getUser(user.id);
       const message = `确认禁用 ${user.username}？将撤销 ${current.impact.active_sessions} 个会话、停用 ${current.impact.enabled_api_keys} 个 API Key，并终止 ${current.impact.active_tasks} 个活动任务。`;
-      if (!window.confirm(message)) return;
+      if (!(await confirmAction({ title: "禁用用户", message, confirmLabel: "确认禁用" }))) return;
       await updateUser(user.id, { is_active: false });
       notify("用户已禁用，会话已撤销、Key 已停用、任务已终止");
     } else {
-      if (!window.confirm(`确认启用用户 ${user.username}？此前停用的 Key 不会自动恢复。`)) return;
+      if (!(await confirmAction({
+        title: "启用用户",
+        message: `确认启用用户 ${user.username}？此前停用的 Key 不会自动恢复。`,
+        confirmLabel: "确认启用",
+        variant: "primary",
+      }))) return;
       await updateUser(user.id, { is_active: true });
       notify("用户已启用");
     }

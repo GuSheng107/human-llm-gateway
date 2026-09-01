@@ -3,7 +3,7 @@
 任务工作台中用户选择 LLM 配置生成持久化草稿：
 - 仅同协议：Chat/Responses -> openai_chat LLM；Anthropic -> Anthropic LLM。
   跨协议转换在 M7-C 字段矩阵中实现，本阶段不开放。
-- 使用配置的 base_url / api_key / 自定义 Header 调上游最小请求（非流式）。
+- 使用配置的 base_url / api_key 调上游最小请求（非流式）。
 - 上游响应解析为 ReplyDraft 后落库为 source=llm 的活动草稿，用户继续编辑后提交。
 """
 
@@ -95,7 +95,7 @@ _INFERENCE_TO_LLM: dict[InferenceProtocol, LLMProtocol] = {
 }
 
 
-def _decrypt_config(row: LlmConfig) -> tuple[str, dict[str, str]]:
+def _decrypt_config(row: LlmConfig) -> str:
     try:
         secret = decrypt_secret(
             row.secret_ciphertext, get_settings().app_secret, _LLM_SECRET_PURPOSE
@@ -106,22 +106,7 @@ def _decrypt_config(row: LlmConfig) -> tuple[str, dict[str, str]]:
             "LLM Secret 解密失败，请重新保存配置",
             status_code=409,
         ) from exc
-    headers: dict[str, str] = {}
-    if row.headers_ciphertext:
-        try:
-            decoded = decrypt_secret(
-                row.headers_ciphertext,
-                get_settings().app_secret,
-                _LLM_SECRET_PURPOSE,
-            )
-            headers = json.loads(decoded)
-        except (ValueError, json.JSONDecodeError) as exc:
-            raise DomainError(
-                DomainErrorCode.CONFLICT,
-                "LLM 自定义 Header 解密失败，请重新保存配置",
-                status_code=409,
-            ) from exc
-    return secret, headers
+    return secret
 
 
 def _coerce_message_content(content: Any) -> str:
@@ -380,7 +365,6 @@ async def _post_chat_completions(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
     """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）。"""
@@ -388,7 +372,6 @@ async def _post_chat_completions(
         base_url=base_url,
         api_key=api_key,
         request_body=request_body,
-        extra_headers=extra_headers,
         timeout_seconds=timeout_seconds,
     )
 
@@ -398,7 +381,6 @@ async def _post_anthropic_messages(
     base_url: str,
     api_key: str,
     request_body: dict[str, Any],
-    extra_headers: dict[str, str],
     timeout_seconds: float,
 ) -> dict[str, Any]:
     """委托共享上游调用；保留原名供既有外部引用（内部已直连 llm_upstream）。"""
@@ -406,7 +388,6 @@ async def _post_anthropic_messages(
         base_url=base_url,
         api_key=api_key,
         request_body=request_body,
-        extra_headers=extra_headers,
         timeout_seconds=timeout_seconds,
     )
 
@@ -514,7 +495,7 @@ class LlmDraftService:
                 body = cross.to_anthropic_request(normalized, cfg.real_model)
                 _apply_config(body, cfg)
         # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch）
-        secret, headers = _decrypt_config(cfg)
+        secret = _decrypt_config(cfg)
         cfg_id = cfg.id
         cfg_protocol = cfg.protocol
         cfg_base_url = cfg.base_url
@@ -528,7 +509,6 @@ class LlmDraftService:
                     base_url=cfg_base_url,
                     api_key=secret,
                     request_body=body,
-                    extra_headers=headers,
                     timeout_seconds=cfg_timeout_seconds,
                 )
                 draft = _parse_chat_response(upstream)
@@ -537,7 +517,6 @@ class LlmDraftService:
                     base_url=cfg_base_url,
                     api_key=secret,
                     request_body=body,
-                    extra_headers=headers,
                     timeout_seconds=cfg_timeout_seconds,
                 )
                 draft = _parse_responses_response(upstream)
@@ -546,7 +525,6 @@ class LlmDraftService:
                     base_url=cfg_base_url,
                     api_key=secret,
                     request_body=body,
-                    extra_headers=headers,
                     timeout_seconds=cfg_timeout_seconds,
                 )
                 draft = _parse_anthropic_response(upstream)

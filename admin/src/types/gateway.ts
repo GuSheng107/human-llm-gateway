@@ -59,6 +59,17 @@ export interface ConnectionHealth {
   runtime: { running: boolean; [key: string]: unknown };
 }
 
+export interface ConnectionCheckItem extends ConnectionHealth {
+  id: string;
+  name: string;
+  platform: string;
+  platform_label: string;
+  owner_username: string | null;
+  bound: boolean;
+  abnormal: boolean;
+  auto_disabled: boolean;
+}
+
 export interface BindingCode {
   binding_code: string;
   expires_at: string;
@@ -234,11 +245,6 @@ export interface ReplyResult {
 // LLM 配置（docs/API_CONTRACT.md §6）
 // ---------------------------------------------------------------------------
 
-export interface LlmConfigHeader {
-  name: string;
-  value_set: boolean;
-}
-
 export interface LlmConfig {
   id: string;
   name: string;
@@ -249,7 +255,6 @@ export interface LlmConfig {
   timeout_seconds: number;
   is_enabled: boolean;
   api_key_set: boolean;
-  headers: LlmConfigHeader[];
   default_temperature: number | null;
   default_top_p: number | null;
   default_top_k: number | null;

@@ -427,7 +427,7 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 - 邀请码和 API Key：仅哈希，另存不可用于认证的短前缀。
 - LLM 和 IM Secret：应用级认证加密，密码学契约固定为 HKDF-SHA256 派生 + AES-256-GCM + 96-bit 随机 nonce + 含 key_version 的 envelope（详见 DATABASE §2.4），主密钥来自环境变量 `APP_SECRET`（32 字节 CSPRNG 的 base64url）。
 - 登录二维码：仅短期返回给资源所有者，不持久化到普通日志。
-- 自定义 Header：整体视为 Secret。
+- LLM 配置不开放自定义请求头；协议鉴权头由服务端统一生成。
 
 ### 12.2 结构化日志
 

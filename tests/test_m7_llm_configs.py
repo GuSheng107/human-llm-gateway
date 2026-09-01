@@ -73,7 +73,7 @@ def test_create_returns_view_without_secret(client, created_user) -> None:
     assert body["real_model"] == "gpt-4o-mini"
     assert body["is_enabled"] is True
     assert body["api_key_set"] is True
-    assert body["headers"] == []
+    assert "headers" not in body
     assert "api_key" not in body
     assert "secret" not in body
 
@@ -127,28 +127,10 @@ def test_create_strips_trailing_slash(client, created_user) -> None:
     assert resp.json()["base_url"] == "https://api.example.com/v1"
 
 
-def test_create_with_headers_returns_header_names_only(client, created_user) -> None:
-    body = _create_body(
-        headers=[
-            {"name": "X-Org", "value": "alpha"},
-            {"name": "X-Trace", "value": "true"},
-        ]
-    )
+def test_create_rejects_removed_custom_headers_field(client, created_user) -> None:
+    body = _create_body(headers=[{"name": "X-Org", "value": "alpha"}])
     resp = client.post("/api/llm-configs", headers=created_user.headers, json=body)
-    assert resp.status_code == 201
-    view = resp.json()
-    names = sorted(h["name"] for h in view["headers"])
-    assert names == ["X-Org", "X-Trace"]
-    for header in view["headers"]:
-        assert "value" not in header or header.get("value_set") is True
-        assert "value" not in header  # 永远不返回明文
-
-
-def test_create_rejects_authorization_header(client, created_user) -> None:
-    body = _create_body(headers=[{"name": "Authorization", "value": "Bearer x"}])
-    resp = client.post("/api/llm-configs", headers=created_user.headers, json=body)
-    assert resp.status_code == 400
-    assert "Authorization" in resp.text
+    assert resp.status_code == 422
 
 
 def test_create_rejects_duplicate_name(client, created_user) -> None:
@@ -207,7 +189,7 @@ def test_get_returns_redacted_view(client, created_user) -> None:
     body = resp.json()
     assert body["api_key_set"] is True
     assert "api_key" not in body
-    for key in ("secret", "secret_ciphertext", "headers_ciphertext"):
+    for key in ("secret", "secret_ciphertext", "headers", "headers_ciphertext"):
         assert key not in body
 
 
@@ -361,19 +343,6 @@ def test_update_api_key_strips_whitespace(client, created_user) -> None:
         row = session.execute(select(LlmConfig).where(LlmConfig.id == config_id)).scalar_one()
         plaintext = decrypt_secret(row.secret_ciphertext, get_settings().app_secret, "llm-config")
     assert plaintext == "sk-new-42"
-
-
-def test_create_rejects_case_conflicting_headers(client, created_user) -> None:
-    """Foo 与 foo 在 HTTP 语义中同名：显式 400 而非静默覆盖。"""
-    body = _create_body(
-        headers=[
-            {"name": "X-Org", "value": "a"},
-            {"name": "x-org", "value": "b"},
-        ]
-    )
-    resp = client.post("/api/llm-configs", headers=created_user.headers, json=body)
-    assert resp.status_code == 400
-    assert "冲突" in resp.json()["error"]["message"]
 
 
 def test_delete_unreferenced_removes_row(client, created_user) -> None:

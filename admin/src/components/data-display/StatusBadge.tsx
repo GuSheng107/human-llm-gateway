@@ -1,5 +1,7 @@
 const STATUS_META: Record<string, { label: string; className: string; dot: string }> = {
   online: { label: "在线", className: "border-emerald-200 bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
+  starting: { label: "启动中", className: "border-blue-200 bg-blue-50 text-blue-700", dot: "bg-blue-500 animate-pulse" },
+  auth_required: { label: "需要认证", className: "border-red-200 bg-red-50 text-red-700", dot: "bg-red-500" },
   connecting: { label: "连接中", className: "border-blue-200 bg-blue-50 text-blue-700", dot: "bg-blue-500 animate-pulse" },
   offline: { label: "离线", className: "border-slate-200 bg-slate-50 text-slate-500", dot: "bg-slate-400" },
   error: { label: "异常", className: "border-red-200 bg-red-50 text-red-700", dot: "bg-red-500" },

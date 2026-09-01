@@ -5,7 +5,6 @@ import {
   listLlmConfigs,
   testLlmConfig,
   updateLlmConfig,
-  type LlmConfigHeaderInput,
   type LlmConfigPayload,
   type LlmConfigUpdatePayload,
   type LlmProtocol,
@@ -16,6 +15,7 @@ import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
@@ -46,7 +46,6 @@ interface LlmFormState {
   api_key: string;
   model: string;
   timeout_seconds: number;
-  headers: LlmConfigHeaderInput[];
   enabled: boolean;
   full_url: boolean;
   default_temperature: string;
@@ -69,7 +68,6 @@ const blankForm = (): LlmFormState => ({
   api_key: "",
   model: "",
   timeout_seconds: 120,
-  headers: [],
   enabled: true,
   full_url: false,
   default_temperature: "",
@@ -150,7 +148,6 @@ export function LlmConfigsPage() {
       api_key: "",
       model: cfg.real_model,
       timeout_seconds: cfg.timeout_seconds,
-      headers: cfg.headers.map((header) => ({ name: header.name, value: "" })),
       enabled: cfg.is_enabled,
       full_url: /\/(chat\/completions|responses|messages)\/?$/.test(cfg.base_url),
       default_temperature: cfg.default_temperature?.toString() ?? "",
@@ -226,7 +223,6 @@ export function LlmConfigsPage() {
           base_url: form.base_url.trim(),
           model: form.model.trim(),
           timeout_seconds: form.timeout_seconds,
-          headers: form.headers,
           enabled: form.enabled,
           ...advanced,
           ...(form.api_key.trim() ? { api_key: form.api_key } : {}),
@@ -238,7 +234,6 @@ export function LlmConfigsPage() {
           api_key: form.api_key,
           model: form.model.trim(),
           timeout_seconds: form.timeout_seconds,
-          headers: form.headers,
           enabled: form.enabled,
           ...advanced,
         };
@@ -263,7 +258,7 @@ export function LlmConfigsPage() {
 
   const remove = async (cfg: LlmConfig) => {
     if (isAdmin) return;
-    if (!window.confirm(`确认删除 LLM 配置「${cfg.name}」？`)) return;
+    if (!(await confirmAction({ message: `确认删除 LLM 配置「${cfg.name}」？` }))) return;
     try {
       await deleteLlmConfig(cfg.id);
       notify("LLM 配置已删除");
@@ -292,24 +287,6 @@ export function LlmConfigsPage() {
     } finally {
       setTestingId(null);
     }
-  };
-
-  const updateHeader = (index: number, patch: Partial<LlmConfigHeaderInput>) => {
-    if (!form) return;
-    setForm({
-      ...form,
-      headers: form.headers.map((header, i) => (i === index ? { ...header, ...patch } : header)),
-    });
-  };
-
-  const addHeader = () => {
-    if (!form) return;
-    setForm({ ...form, headers: [...form.headers, { name: "", value: "" }] });
-  };
-
-  const removeHeader = (index: number) => {
-    if (!form) return;
-    setForm({ ...form, headers: form.headers.filter((_, i) => i !== index) });
   };
 
   return (
@@ -363,7 +340,6 @@ export function LlmConfigsPage() {
                 <th className="px-4 py-3 font-medium">Base URL</th>
                 <th className="px-4 py-3 font-medium">真实模型</th>
                 <th className="px-4 py-3 font-medium">密钥</th>
-                <th className="px-4 py-3 font-medium">自定义头</th>
                 <th className="px-4 py-3 font-medium">最近测试</th>
                 <th className="px-4 py-3 font-medium">状态</th>
                 {isAdmin && <th className="px-4 py-3 font-medium">所有者</th>}
@@ -389,15 +365,6 @@ export function LlmConfigsPage() {
                       </span>
                     ) : (
                       <span className="text-slate-400">未设置</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">
-                    {cfg.headers.length === 0 ? (
-                      <span className="text-slate-400">—</span>
-                    ) : (
-                      cfg.headers
-                        .map((header) => header.name)
-                        .join("、")
                     )}
                   </td>
                   <td className="px-4 py-3 text-slate-500">
@@ -453,7 +420,7 @@ export function LlmConfigsPage() {
               {!loading && items.length === 0 && (
                 <tr>
                   <td
-                    colSpan={isAdmin ? 10 : 9}
+                    colSpan={isAdmin ? 9 : 8}
                     className="px-4 py-12 text-center text-slate-400"
                   >
                     暂无 LLM 配置
@@ -471,7 +438,7 @@ export function LlmConfigsPage() {
       {form && !isAdmin && (
         <Modal
           title={form.id ? "编辑 LLM 配置" : "新建 LLM 配置"}
-          description="密钥与自定义 Header 只写不读，保存后不再展示。"
+          description="密钥只写不读，保存后不再展示。"
           onClose={() => setForm(null)}
           width="max-w-3xl"
         >
@@ -768,48 +735,6 @@ export function LlmConfigsPage() {
                 </label>
               </div>
             </details>
-
-            <div className="rounded-md border border-slate-200 bg-slate-50/60 p-4">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-medium text-slate-600">
-                  自定义 Header（不包含 Authorization）
-                </p>
-                <Button variant="ghost" type="button" onClick={addHeader}>
-                  <Icon name="plus" className="h-3 w-3" />
-                  添加
-                </Button>
-              </div>
-              {form.headers.length === 0 ? (
-                <p className="text-xs text-slate-400">无</p>
-              ) : (
-                <div className="space-y-2">
-                  {form.headers.map((header, index) => (
-                    <div key={index} className="flex gap-2">
-                      <input
-                        value={header.name}
-                        onChange={(event) => updateHeader(index, { name: event.target.value })}
-                        placeholder="X-Header-Name"
-                        className="field-input w-1/3 font-mono"
-                      />
-                      <input
-                        value={header.value}
-                        onChange={(event) => updateHeader(index, { value: event.target.value })}
-                        placeholder="value"
-                        className="field-input flex-1 font-mono"
-                      />
-                      <Button
-                        variant="ghost"
-                        type="button"
-                        onClick={() => removeHeader(index)}
-                        aria-label="删除自定义 Header"
-                      >
-                        <Icon name="close" className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
 
             <label className="flex items-center gap-2 text-xs text-slate-600">
               <input

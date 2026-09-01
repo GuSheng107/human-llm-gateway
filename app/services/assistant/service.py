@@ -169,7 +169,6 @@ class AssistantService:
             protocol,
             base_url,
             secret,
-            headers,
             timeout_seconds,
             request_body,
         ) = await self._build_request(
@@ -185,7 +184,6 @@ class AssistantService:
                     base_url=base_url,
                     api_key=secret,
                     request_body=request_body,
-                    extra_headers=headers,
                     timeout_seconds=timeout_seconds,
                 )
             )
@@ -194,7 +192,6 @@ class AssistantService:
                 base_url=base_url,
                 api_key=secret,
                 request_body=request_body,
-                extra_headers=headers,
                 timeout_seconds=timeout_seconds,
             )
         else:
@@ -202,7 +199,6 @@ class AssistantService:
                 base_url=base_url,
                 api_key=secret,
                 request_body=request_body,
-                extra_headers=headers,
                 timeout_seconds=timeout_seconds,
             )
         collected: dict[str, Any] = {}
@@ -363,10 +359,10 @@ class AssistantService:
         config_id: int | None,
         context_json: str | None,
         session_id: int,
-    ) -> tuple[LLMProtocol, str, str, dict[str, str], float, dict[str, Any]]:
+    ) -> tuple[LLMProtocol, str, str, float, dict[str, Any]]:
         """加载配置与历史并组装上游请求（同步/流式共用）。
 
-        返回 (protocol, base_url, api_key, headers, timeout, request_body)；
+        返回 (protocol, base_url, api_key, timeout, request_body)；
         网络 I/O 前结束读取事务（rollback），历史与凭据均已复制到局部。
         """
         if config_id is None:
@@ -382,7 +378,7 @@ class AssistantService:
                 "LLM 配置不可用",
                 status_code=400,
             )
-        secret, headers = LlmConfigService.get_secret_pair(session, cfg)
+        secret = LlmConfigService.get_secret(session, cfg)
 
         # 组装 Chat messages：系统定位 + 历史轮次 + 本条（含上下文摘要）。
         messages: list[dict[str, Any]] = [
@@ -452,7 +448,7 @@ class AssistantService:
         _apply_config(request_body, cfg)
         # 历史与配置均已复制到局部变量；网络 I/O 前结束读取事务。
         session.rollback()
-        return protocol, base_url, secret, headers, float(timeout_seconds), request_body
+        return protocol, base_url, secret, float(timeout_seconds), request_body
 
     async def _call_llm(
         self,
@@ -468,7 +464,6 @@ class AssistantService:
             protocol,
             base_url,
             secret,
-            headers,
             timeout_seconds,
             request_body,
         ) = await self._build_request(
@@ -483,7 +478,6 @@ class AssistantService:
                 base_url=base_url,
                 api_key=secret,
                 request_body=request_body,
-                extra_headers=headers,
                 timeout_seconds=timeout_seconds,
             )
         elif protocol is LLMProtocol.OPENAI_RESPONSES:
@@ -491,7 +485,6 @@ class AssistantService:
                 base_url=base_url,
                 api_key=secret,
                 request_body=request_body,
-                extra_headers=headers,
                 timeout_seconds=timeout_seconds,
             )
         else:
@@ -499,7 +492,6 @@ class AssistantService:
                 base_url=base_url,
                 api_key=secret,
                 request_body=request_body,
-                extra_headers=headers,
                 timeout_seconds=timeout_seconds,
             )
         reply_text, finish = self._extract_reply(upstream)

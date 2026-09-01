@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { ToastHost } from "./components/feedback/Toast";
+import { ConfirmDialogHost } from "./components/feedback/ConfirmDialog";
 import { AppShell } from "./components/layout/AppShell";
 import { ApiKeysPage } from "./features/apikeys/ApiKeysPage";
 import { AuthProvider, useAuth } from "./features/auth/AuthContext";
@@ -167,6 +168,7 @@ export default function App() {
         <Route path="*" element={<Navigate to="/console" replace />} />
       </Routes>
       <ToastHost />
+      <ConfirmDialogHost />
     </AuthProvider>
   );
 }

@@ -5,11 +5,6 @@ export type LlmProtocol = "openai_chat" | "openai_responses" | "anthropic_messag
 export type ThinkingMode = "model_default" | "enabled" | "disabled";
 export type ThinkingLevel = "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
-export interface LlmConfigHeaderInput {
-  name: string;
-  value: string;
-}
-
 export interface LlmConfigPayload {
   name: string;
   protocol: LlmProtocol;
@@ -17,7 +12,6 @@ export interface LlmConfigPayload {
   api_key: string;
   model: string;
   timeout_seconds: number;
-  headers?: LlmConfigHeaderInput[];
   enabled?: boolean;
   default_temperature?: number | null;
   default_top_p?: number | null;
@@ -39,7 +33,6 @@ export interface LlmConfigUpdatePayload {
   api_key?: string;
   model?: string;
   timeout_seconds?: number;
-  headers?: LlmConfigHeaderInput[];
   enabled?: boolean;
   default_temperature?: number | null;
   default_top_p?: number | null;

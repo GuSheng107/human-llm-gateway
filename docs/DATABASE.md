@@ -54,14 +54,13 @@
 
 ### 2.4 Secret 加密契约
 
-所有 `*_ciphertext` 字段（IM 连接配置、LLM Secret、自定义 Header）和加密自检 sentinel 使用同一套密码学契约，M2 不允许实现者自由发挥：
+所有 `*_ciphertext` 字段（IM 连接配置、LLM Secret）和加密自检 sentinel 使用同一套密码学契约，M2 不允许实现者自由发挥：
 
 1. **主密钥格式**：`APP_SECRET` 是 32 字节 CSPRNG 随机值的 base64url 表示（无填充，43 个字符）。启动时校验：缺失、解码后不是 32 字节，或仍为 `.env.example` 默认值（`replace-with-a-long-random-secret`）时直接启动失败，不降级为警告。
 2. **密钥派生**：使用 HKDF-SHA256 从 APP_SECRET 的 32 字节原始值派生当前版本加密密钥；HKDF info 固定为 `human-llm-gateway/secret-encryption/v1`，salt 为空。
 3. **加密算法**：AES-256-GCM。每次加密生成全新 CSPRNG 96-bit nonce，同一 nonce 绝不复用。
 4. **AAD（附加认证数据）**：固定为 `human-llm-gateway/<purpose>/v1`，按用途取值：
    - LLM Secret：`human-llm-gateway/llm-secret/v1`
-   - LLM 自定义 Header：`human-llm-gateway/llm-headers/v1`
    - IM 连接配置：`human-llm-gateway/im-config/v1`
    - 加密自检 sentinel：`human-llm-gateway/sentinel/v1`
 
@@ -269,7 +268,6 @@
 | `base_url` | varchar(2048) | 非空，规范化后保存 |
 | `real_model` | varchar(255) | 非空 |
 | `secret_ciphertext` | text | API Key 认证加密 |
-| `headers_ciphertext` | text nullable | 自定义 Header 整体认证加密 |
 | `encryption_key_version` | integer | 非空 |
 | `timeout_seconds` | integer | 非空，服务端范围校验 |
 | `is_enabled` | boolean | 非空，默认 true |

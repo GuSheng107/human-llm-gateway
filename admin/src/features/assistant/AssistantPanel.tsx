@@ -10,6 +10,7 @@ import {
 import { ApiError } from "../../api/client";
 import { listLlmConfigs } from "../../api/llmConfigs";
 import { notify } from "../../components/feedback/Toast";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
@@ -210,7 +211,7 @@ export function AssistantPanel() {
 
   const removeSession = useCallback(async () => {
     if (!activeSessionId) return;
-    if (!window.confirm("确认删除当前会话及其消息？")) return;
+    if (!(await confirmAction({ message: "确认删除当前会话及其消息？" }))) return;
     try {
       await deleteAssistantSession(activeSessionId);
       setActiveSessionId(null);

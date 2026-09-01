@@ -12,7 +12,7 @@ import logging
 from typing import Any
 
 from ...domain.connections import ERROR_AUTH, ERROR_DELIVERY, ERROR_NETWORK, ConnectorError
-from ..base import Connector, ConnectorContext, DeliveryEnvelope
+from ..base import Connector, ConnectorContext, DeliveryEnvelope, InboundMessage
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,41 @@ class WeComAibotConnector(Connector):
             bot_id=str(self.ctx.config["bot_id"]),
             secret=str(self.ctx.config["secret"]),
         )
+        self._client.on("message.text", self._handle_text_message)
         self._task = asyncio.create_task(self._run(), name=f"wecom-aibot-{self.ctx.connection_id}")
+
+    async def _handle_text_message(self, frame: Any) -> None:
+        """把企微文本消息桥接到统一入站流程；未绑定时文本即绑定码。"""
+        if self._inbound is None:
+            return
+        body = frame.get("body", {}) if isinstance(frame, dict) else getattr(frame, "body", {})
+        headers = (
+            frame.get("headers", {}) if isinstance(frame, dict) else getattr(frame, "headers", {})
+        )
+        sender = str((body.get("from") or {}).get("userid") or "").strip()
+        text = str((body.get("text") or {}).get("content") or "").strip()
+        external_id = str(body.get("msgid") or headers.get("req_id") or "").strip()
+        if not sender or not text or not external_id:
+            return
+        result = await self._inbound(
+            self.ctx.connection_id,
+            InboundMessage(
+                external_message_id=external_id,
+                sender_external_id=sender,
+                text=text,
+                binding_code=text,
+                raw={
+                    "chatid": body.get("chatid"),
+                    "chattype": body.get("chattype"),
+                },
+            ),
+        )
+        result_value = getattr(result, "value", result)
+        if result_value == "bound" and self._client is not None:
+            await self._client.reply(
+                frame,
+                {"msgtype": "text", "text": {"content": "连接绑定成功，可以开始接收任务。"}},
+            )
 
     async def _run(self) -> None:
         client = self._client
@@ -105,6 +139,9 @@ class WeComAibotConnector(Connector):
         if not target:
             raise ConnectorError(ERROR_DELIVERY, "缺少投递目标")
         try:
-            await client.send_message(target, envelope.prompt_text)
+            await client.send_message(
+                target,
+                {"msgtype": "markdown", "markdown": {"content": envelope.prompt_text}},
+            )
         except Exception as exc:
             raise _classify(exc) from exc

@@ -6,6 +6,7 @@ M4 接入连接器运行时；M5 接入 Fake Model 目录、模型分组、API K
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +44,7 @@ def create_app() -> FastAPI:
         from ..core.db import SessionLocal
         from ..services.bootstrap import BootstrapService
         from ..services.connection_service import ConnectionService
+        from ..services.connection_watchdog import connection_watchdog
 
         with SessionLocal() as db:
             BootstrapService().initialize(db, get_settings())
@@ -54,9 +56,17 @@ def create_app() -> FastAPI:
             snapshot = [(row, service.decrypt_config(row)) for row in rows]
         for row, config in snapshot:
             await manager.start(row, config, service.inbound_handler())
-        yield
-        # 优雅关闭：停止全部连接器实例。
-        await manager.stop_all()
+        watchdog_task = asyncio.create_task(connection_watchdog.run(), name="connection-watchdog")
+        try:
+            yield
+        finally:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass
+            # 优雅关闭：停止全部连接器实例。
+            await manager.stop_all()
 
     app = FastAPI(title="Human LLM Gateway", version="0.6.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)

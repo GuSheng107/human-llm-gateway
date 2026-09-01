@@ -56,6 +56,11 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
     assert pro["endpoint_type"] == "openai_chat"
     claude = seeded["claude-fable-5"]
     assert claude["endpoint_type"] == "anthropic_messages"
+    for model_id in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"):
+        gpt = seeded[model_id]
+        assert gpt["endpoint_type"] == "openai_responses"
+        assert gpt["context_window"] == 1_050_000
+        assert gpt["max_output_tokens"] == 128_000
 
     # 端点筛选。
     anthropic_only = client.get(

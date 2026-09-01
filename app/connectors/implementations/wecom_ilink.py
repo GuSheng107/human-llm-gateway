@@ -182,7 +182,9 @@ class WeComIlinkConnector(Connector):
         status = getattr(response, "status", "")
         result: dict[str, Any] = {"status": status}
         if status == "confirmed":
-            # bot_token 只在本次响应返回给所有者，由其保存到连接配置。
             result["bot_token"] = getattr(response, "bot_token", "")
+            result["baseurl"] = getattr(response, "baseurl", "")
+            result["ilink_user_id"] = getattr(response, "ilink_user_id", "")
+            result["ilink_bot_id"] = getattr(response, "ilink_bot_id", "")
             self._pending_qrcode = None
         return result

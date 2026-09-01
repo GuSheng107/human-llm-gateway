@@ -46,7 +46,6 @@ _SENSITIVE_EXACT_KEYS = frozenset(
         "key_hash",
         "code_hash",
         "config_ciphertext",
-        "headers_ciphertext",
         "secret_ciphertext",
         "invitation_code",
         "binding_code",

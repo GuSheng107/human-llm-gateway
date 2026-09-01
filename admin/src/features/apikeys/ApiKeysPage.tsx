@@ -7,6 +7,7 @@ import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
@@ -191,7 +192,7 @@ export function ApiKeysPage() {
   };
 
   const remove = async (key: ApiKey) => {
-    if (!window.confirm(`确认删除 Key「${key.name}」？删除后立即阻止新请求。`)) return;
+    if (!(await confirmAction({ message: `确认删除 Key「${key.name}」？删除后立即阻止新请求。` }))) return;
     try {
       await deleteApiKey(key.id);
       notify("Key 已删除");

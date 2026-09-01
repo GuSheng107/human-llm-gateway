@@ -9,6 +9,7 @@ import { Card } from "../../components/data-display/Card";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { PageHeader } from "../../components/layout/PageHeader";
+import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
 import { useAuth } from "../auth/AuthContext";
@@ -35,8 +36,9 @@ function Sparkline({ values }: { values: number[] }) {
     )
     .join(" ");
   return (
-    <svg viewBox="0 0 100 28" className="h-8 w-24" aria-hidden="true">
-      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2" />
+    <svg viewBox="0 0 100 28" className="h-8 w-16" aria-hidden="true">
+      <polygon points={`0,28 ${points} 100,28`} fill="currentColor" opacity=".08" />
+      <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -45,26 +47,34 @@ function StatCard({
   label,
   value,
   values,
+  icon,
+  tone,
 }: {
   label: string;
   value: number | string;
   values: number[];
+  icon: string;
+  tone: string;
 }) {
   return (
-    <Card>
-      <div className="flex min-h-24 items-center gap-4 px-5 py-4">
+    <Card className="overflow-hidden">
+      <div className="relative flex min-h-28 items-center gap-3 px-5 py-4">
+        <span className={`absolute inset-y-0 left-0 w-1 ${tone}`} />
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-blue-50 text-primary">
+          <Icon name={icon} className="h-5 w-5" />
+        </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs text-slate-400">
-            <span>{label}</span>
+          <div className="flex items-center gap-1.5 text-xs text-slate-400">
+            <span className="leading-5">{label}</span>
             <span className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-600">
               实时
             </span>
           </div>
-          <span className="mt-2 block text-3xl font-semibold tracking-tight text-slate-800">
+          <span className="mt-1.5 block text-2xl font-semibold tracking-tight text-slate-800">
             {value}
           </span>
         </div>
-        <div className="text-primary/70">
+        <div className="hidden text-primary/70 sm:block">
           <Sparkline values={values} />
         </div>
       </div>
@@ -101,12 +111,12 @@ function TaskTimeline({ data }: { data: DashboardData }) {
       <div className="border-b border-slate-100 px-5 py-3">
         <h2 className="text-sm font-medium text-slate-700">最近 7 天任务量</h2>
       </div>
-      <div className="flex h-52 items-end gap-3 px-5 pb-5 pt-8">
+      <div className="relative flex h-56 items-end gap-3 overflow-hidden px-5 pb-5 pt-8 before:absolute before:inset-x-5 before:top-1/4 before:border-t before:border-dashed before:border-slate-100 after:absolute after:inset-x-5 after:top-1/2 after:border-t after:border-dashed after:border-slate-100">
         {data.daily_tasks.map((item) => (
-          <div key={item.date} className="flex h-full min-w-0 flex-1 flex-col justify-end text-center">
+          <div key={item.date} className="relative z-1 flex h-full min-w-0 flex-1 flex-col justify-end text-center">
             <span className="mb-1 text-[11px] font-medium text-slate-500">{item.count}</span>
             <div
-              className="min-h-1 rounded-t bg-primary/75 transition-all"
+              className="min-h-1 rounded-t bg-gradient-to-t from-blue-600 to-cyan-400 transition-all"
               style={{ height: `${Math.max(4, (item.count / max) * 120)}px` }}
               title={`${item.date}: ${item.count}`}
             />
@@ -132,7 +142,7 @@ function ProtocolDistribution({ data }: { data: DashboardData }) {
       <div className="border-b border-slate-100 px-5 py-3">
         <h2 className="text-sm font-medium text-slate-700">协议分布</h2>
       </div>
-      <div className="flex min-h-52 items-center gap-6 p-5">
+      <div className="flex min-h-56 flex-col items-center gap-5 p-5 sm:flex-row">
         <div className="relative h-32 w-32 shrink-0">
           <svg viewBox="0 0 42 42" className="h-full w-full -rotate-90" aria-label="协议分布图">
             <circle cx="21" cy="21" r="15.915" fill="none" stroke="#e2e8f0" strokeWidth="6" />
@@ -202,19 +212,19 @@ export function DashboardPage() {
 
   const values = useMemo(() => data?.daily_tasks.map((item) => item.count) ?? [], [data]);
   const stats = data?.stats;
-  const cards: Array<[string, number | string]> = stats
+  const cards: Array<{ label: string; value: number | string; icon: string; tone: string }> = stats
     ? isAdmin
       ? [
-          ["用户（启用/总计）", `${stats.active_users}/${stats.total_users}`],
-          ["全局活动任务", stats.global_active_tasks],
-          ["累计任务", stats.total_tasks],
-          ["API Key / IM 连接", `${stats.total_api_keys}/${stats.total_connections}`],
+          { label: "用户（启用/总计）", value: `${stats.active_users}/${stats.total_users}`, icon: "users", tone: "bg-blue-500" },
+          { label: "全局活动任务", value: stats.global_active_tasks, icon: "reply", tone: "bg-cyan-500" },
+          { label: "累计任务", value: stats.total_tasks, icon: "dashboard", tone: "bg-emerald-500" },
+          { label: "API Key / IM 连接", value: `${stats.total_api_keys}/${stats.total_connections}`, icon: "link", tone: "bg-amber-500" },
         ]
       : [
-          ["进行中的任务", stats.my_active_tasks],
-          ["累计任务", stats.my_total_tasks],
-          ["API Key", stats.my_api_keys],
-          ["LLM 配置", stats.my_llm_configs],
+          { label: "进行中的任务", value: stats.my_active_tasks, icon: "reply", tone: "bg-blue-500" },
+          { label: "累计任务", value: stats.my_total_tasks, icon: "dashboard", tone: "bg-cyan-500" },
+          { label: "API Key", value: stats.my_api_keys, icon: "key", tone: "bg-emerald-500" },
+          { label: "LLM 配置", value: stats.my_llm_configs, icon: "gateway", tone: "bg-amber-500" },
         ]
     : [];
 
@@ -232,18 +242,20 @@ export function DashboardPage() {
       )}
       <PageHeader
         title={isAdmin ? "监管控制台" : "控制台"}
+        description="任务、协议与连接状态每 30 秒自动刷新。"
         dismissId="dashboard"
+        actions={<Button variant="ghost" loading={refreshing} onClick={() => void load()}><Icon name="refresh" className="h-4 w-4" />立即刷新</Button>}
       />
       {error && <ErrorBanner message={error} />}
 
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
-        {cards.map(([label, value]) => (
-          <StatCard key={label} label={label} value={value} values={values} />
+        {cards.map((card) => (
+          <StatCard key={card.label} {...card} values={values} />
         ))}
       </div>
 
       {data && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
           <div className="space-y-5">
             <div className="grid gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.8fr)]">
               <TaskTimeline data={data} />

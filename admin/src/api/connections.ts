@@ -2,6 +2,7 @@ import { api } from "./client";
 import type {
   BindingCode,
   BindingStatus,
+  ConnectionCheckItem,
   ConnectionHealth,
   ImConnection,
   Page,
@@ -72,6 +73,10 @@ export function connectionHealth(id: string): Promise<ConnectionHealth> {
   return api<ConnectionHealth>(`/api/im-connections/${id}/health`);
 }
 
+export function checkConnections(): Promise<ConnectionCheckItem[]> {
+  return api<ConnectionCheckItem[]>("/api/im-connections/check", { method: "POST" });
+}
+
 export function createBinding(id: string): Promise<BindingCode> {
   return api<BindingCode>(`/api/im-connections/${id}/binding`, { method: "POST" });
 }
@@ -87,7 +92,7 @@ export interface QrLoginStart {
 
 export interface QrLoginPoll {
   status: string;
-  bot_token?: string;
+  bound?: boolean;
 }
 
 export function startQrLogin(id: string): Promise<QrLoginStart> {

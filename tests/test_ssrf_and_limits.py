@@ -225,7 +225,6 @@ def test_post_chat_completions_prechecks_before_request() -> None:
                 base_url="http://10.0.0.5:8080/v1",
                 api_key="sk",
                 request_body={"model": "m", "messages": []},
-                extra_headers={},
                 timeout_seconds=10,
             )
         )
