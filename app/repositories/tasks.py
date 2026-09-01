@@ -153,7 +153,9 @@ class TaskRepository:
         )
         return result.rowcount == 1
 
-    def cancel_caller_disconnected(self, session: Session, task_id: int) -> bool:
+    def cancel_caller_disconnected(
+        self, session: Session, task_id: int, *, reason: str = "caller_disconnected"
+    ) -> bool:
         """外部调用方断开取消（首个合法转换获胜）。"""
         result = session.execute(
             update(RequestTask)
@@ -171,7 +173,7 @@ class TaskRepository:
             )
             .values(
                 **_terminal_values(TaskState.CANCELLED),
-                cancel_reason_code="caller_disconnected",
+                cancel_reason_code=reason,
             )
         )
         return result.rowcount == 1

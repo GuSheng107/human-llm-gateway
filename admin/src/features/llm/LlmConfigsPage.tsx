@@ -51,7 +51,6 @@ interface LlmFormState {
   default_temperature: string;
   default_top_p: string;
   default_top_k: string;
-  max_output_tokens: string;
   context_window_input: string;
   context_window_output: string;
   max_tool_call_rounds: number;
@@ -73,7 +72,6 @@ const blankForm = (): LlmFormState => ({
   default_temperature: "",
   default_top_p: "",
   default_top_k: "",
-  max_output_tokens: "",
   context_window_input: "",
   context_window_output: "",
   max_tool_call_rounds: 16,
@@ -153,7 +151,6 @@ export function LlmConfigsPage() {
       default_temperature: cfg.default_temperature?.toString() ?? "",
       default_top_p: cfg.default_top_p?.toString() ?? "",
       default_top_k: cfg.default_top_k?.toString() ?? "",
-      max_output_tokens: cfg.max_output_tokens?.toString() ?? "",
       context_window_input: cfg.context_window_input?.toString() ?? "",
       context_window_output: cfg.context_window_output?.toString() ?? "",
       max_tool_call_rounds: cfg.max_tool_call_rounds,
@@ -204,7 +201,6 @@ export function LlmConfigsPage() {
       default_temperature: temperature,
       default_top_p: topP,
       default_top_k: topK,
-      max_output_tokens: optionalNumber(form.max_output_tokens),
       context_window_input: optionalNumber(form.context_window_input),
       context_window_output: optionalNumber(form.context_window_output),
       max_tool_call_rounds: form.max_tool_call_rounds,
@@ -293,7 +289,6 @@ export function LlmConfigsPage() {
     <div className="space-y-5">
       <PageHeader
         title="LLM 管理"
-        dismissId="llm-configs"
       />
 
       {isAdmin && (
@@ -438,13 +433,14 @@ export function LlmConfigsPage() {
       {form && !isAdmin && (
         <Modal
           title={form.id ? "编辑 LLM 配置" : "新建 LLM 配置"}
-          description="密钥只写不读，保存后不再展示。"
           onClose={() => setForm(null)}
           width="max-w-3xl"
         >
           <div className="max-h-[82vh] space-y-4 overflow-y-auto p-6">
             <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">名称</span>
+              <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                名称<span className="ml-0.5 text-danger">*</span>
+              </span>
               <input
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -499,9 +495,10 @@ export function LlmConfigsPage() {
             </div>
 
             <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                {form.full_url ? "完整请求 URL" : "API Base URL"}
-              </span>
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                  {form.full_url ? "完整请求 URL" : "API Base URL"}
+                  <span className="ml-0.5 text-danger">*</span>
+                </span>
               <input
                 value={form.base_url}
                 onChange={(event) => setForm({ ...form, base_url: event.target.value })}
@@ -523,7 +520,7 @@ export function LlmConfigsPage() {
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                  真实模型
+                  真实模型<span className="ml-0.5 text-danger">*</span>
                 </span>
                 <input
                   value={form.model}
@@ -534,7 +531,7 @@ export function LlmConfigsPage() {
               </label>
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                  API Key
+                  API Key<span className="ml-0.5 text-danger">*</span>
                   {form.id && (
                     <span className="ml-2 text-slate-400">
                       （留空表示保留旧值）
@@ -580,7 +577,7 @@ export function LlmConfigsPage() {
                       ))}
                     </div>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     <label className="block text-[11px] text-slate-500">
                       输入窗口
                       <input
@@ -605,19 +602,6 @@ export function LlmConfigsPage() {
                         }
                         className="field-input mt-1"
                         placeholder="留空跟随模型"
-                      />
-                    </label>
-                    <label className="block text-[11px] text-slate-500">
-                      单次最大输出
-                      <input
-                        type="number"
-                        min={1}
-                        value={form.max_output_tokens}
-                        onChange={(event) =>
-                          setForm({ ...form, max_output_tokens: event.target.value })
-                        }
-                        className="field-input mt-1"
-                        placeholder="留空不覆盖"
                       />
                     </label>
                   </div>

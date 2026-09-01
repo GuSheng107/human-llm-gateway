@@ -11,9 +11,10 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..core.config import get_settings
 from ..core.constants import HUMAN_TIMEOUT_MAX_SECONDS, HUMAN_TIMEOUT_MIN_SECONDS
 from ..core.db import begin_immediate_if_sqlite
-from ..core.security import generate_api_key
+from ..core.security import encrypt_secret, generate_api_key
 from ..domain.enums import (
     AuditAction,
     DeliveryMode,
@@ -26,6 +27,8 @@ from ..repositories.catalog import FakeModelRepository
 from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ApiKey, User
 from ..repositories.system import AuditRepository
+
+_API_KEY_PURPOSE = "api-key"
 
 
 class ApiKeyService:
@@ -92,6 +95,7 @@ class ApiKeyService:
         plaintext, prefix, key_hash = generate_api_key()
         row.key_prefix = prefix
         row.key_hash = key_hash
+        row.key_ciphertext = encrypt_secret(plaintext, get_settings().app_secret, _API_KEY_PURPOSE)
         self.repo.add(session, row)
         try:
             session.flush()

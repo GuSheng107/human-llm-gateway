@@ -19,9 +19,12 @@ import {
   REPLY_STRATEGY_LABELS,
   STATE_FILTER_OPTIONS,
   formatDateTime,
+  isTerminalTaskState,
 } from "./labels";
 
 const PAGE_SIZE = 20;
+// 自动刷新间隔（毫秒）：页面隐藏时暂停。
+const REFRESH_INTERVAL_MS = 5000;
 
 type Bucket = "all" | "in_progress" | "finished" | "failed";
 
@@ -62,26 +65,37 @@ export function TasksPage() {
     setSearchParams(params, { replace: true });
   };
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const result = await listTasks({
-        page,
-        search,
-        state: stateFilter || undefined,
-        bucket: bucket === "all" ? undefined : bucket,
-      });
-      setItems(result.items);
-      setTotal(result.total);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, [page, search, stateFilter, bucket]);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const result = await listTasks({
+          page,
+          search,
+          state: stateFilter || undefined,
+          bucket: bucket === "all" ? undefined : bucket,
+        });
+        setItems(result.items);
+        setTotal(result.total);
+        setError("");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "加载失败");
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [page, search, stateFilter, bucket],
+  );
 
   useEffect(() => void load(), [load]);
+
+  // 自动轮询：任务状态随推进刷新，避免页面停留在过期状态。
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void load(true);
+    }, REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [load]);
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
@@ -102,7 +116,6 @@ export function TasksPage() {
     <div className="space-y-5">
       <PageHeader
         title="任务记录"
-        dismissId="tasks"
       />
 
       <Card>
@@ -210,7 +223,11 @@ export function TasksPage() {
                     {formatDateTime(task.created_at)}
                   </td>
                   <td className="px-4 py-3">
-                    <DeadlineBadge deadline={task.human_deadline_at} />
+                    {isTerminalTaskState(task.state) ? (
+                      <span className="text-slate-300">-</span>
+                    ) : (
+                      <DeadlineBadge deadline={task.human_deadline_at} />
+                    )}
                   </td>
                   {isAdmin && (
                     <td className="px-4 py-3 text-slate-500">

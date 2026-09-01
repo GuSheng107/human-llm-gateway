@@ -59,6 +59,13 @@ export const STATE_FILTER_OPTIONS: { value: string; label: string }[] = [
   { value: "cancelled", label: "已取消" },
 ];
 
+const TERMINAL_TASK_STATES = new Set(["completed", "failed", "timed_out", "cancelled"]);
+
+/** 终态任务不再展示人工截止倒计时（截止语义只属于等待中的任务）。 */
+export function isTerminalTaskState(state: string): boolean {
+  return TERMINAL_TASK_STATES.has(state);
+}
+
 export function formatDateTime(value: string | null): string {
   if (!value) return "-";
   return new Date(value).toLocaleString();

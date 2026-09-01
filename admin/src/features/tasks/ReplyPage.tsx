@@ -11,6 +11,7 @@ import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { copyText } from "../../utils/clipboard";
 import type { LlmConfig, ReplyDraft, TaskDetail, TaskEvent, ToolCall } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 import { registerEditBridge } from "../assistant/bridge";
@@ -20,6 +21,7 @@ import {
   PROTOCOL_LABELS,
   formatDateTime,
   formatDeadline,
+  isTerminalTaskState,
 } from "./labels";
 
 // ---------------------------------------------------------------------------
@@ -33,8 +35,9 @@ interface ToolCallEditor {
 }
 
 function toEditors(draft: ReplyDraft | null): ToolCallEditor[] {
+  // 工具调用不是必须的：无调用时返回空数组（编辑器允许 0 条）。
   if (!draft || draft.tool_calls.length === 0) {
-    return [{ id: "", name: "", argumentsText: "{}" }];
+    return [];
   }
   return draft.tool_calls.map((call) => ({
     id: call.id,
@@ -50,6 +53,14 @@ function nextCallId(existing: ToolCallEditor[]): string {
   return `call_${String(index).padStart(2, "0")}`;
 }
 
+function defaultToolArguments(tool: ToolItem): string {
+  const arguments_: Record<string, string> = {};
+  Object.keys(tool.arguments_schema?.properties ?? {}).forEach((name) => {
+    arguments_[name] = "";
+  });
+  return JSON.stringify(arguments_, null, 2);
+}
+
 type BuildResult =
   | { ok: true; draft: ReplyDraft }
   | { ok: false; error: string };
@@ -61,7 +72,12 @@ function buildDraft(
 ): BuildResult {
   const parsed: ToolCall[] = [];
   for (const editor of toolCalls) {
-    if (!editor.id.trim() || !editor.name.trim()) {
+    // 整行留空视为未添加调用（允许 0 条工具调用直接提交）。
+    const hasId = editor.id.trim().length > 0;
+    const hasName = editor.name.trim().length > 0;
+    const hasArguments = editor.argumentsText.trim().length > 0;
+    if (!hasId && !hasName && !hasArguments) continue;
+    if (!hasId || !hasName) {
       return { ok: false, error: "每个工具调用的 id 与 name 不能为空" };
     }
     let args: Record<string, unknown> = {};
@@ -94,6 +110,11 @@ function buildDraft(
 // ---------------------------------------------------------------------------
 
 type TabKey = "reasoning" | "final" | "tools";
+
+// 提示词超过该字数时提供「展开全部」（默认折叠高度约可见 800 字）。
+const PROMPT_COLLAPSE_THRESHOLD = 800;
+// 原始请求渲染上限（字符）：Agent 请求可达 MB 级，全量渲染会卡死页面。
+const RAW_REQUEST_RENDER_LIMIT = 200_000;
 
 const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: "reasoning", label: "思考链", icon: "list" },
@@ -143,9 +164,7 @@ export function ReplyPage() {
 
   const [reasoning, setReasoning] = useState("");
   const [finalText, setFinalText] = useState("");
-  const [toolCalls, setToolCalls] = useState<ToolCallEditor[]>([
-    { id: "", name: "", argumentsText: "{}" },
-  ]);
+  const [toolCalls, setToolCalls] = useState<ToolCallEditor[]>([]);
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
@@ -156,6 +175,7 @@ export function ReplyPage() {
   const [generateError, setGenerateError] = useState("");
   const [dslInput, setDslInput] = useState("");
   const [dslError, setDslError] = useState("");
+  const [promptExpanded, setPromptExpanded] = useState(false);
   // 截止时间每秒重渲染（formatDeadline 是"剩余时间"语义）。
   const [, setTick] = useState(0);
 
@@ -211,6 +231,12 @@ export function ReplyPage() {
   }, [reasoning, toolCalls, finalText]);
 
   const liveDsl = useMemo(() => (liveDraft ? serializeReply(liveDraft) : ""), [liveDraft]);
+
+  // 原始请求序列化一次；超限截断渲染，避免 MB 级文本拖垮页面。
+  const rawRequestText = useMemo(
+    () => (task?.raw_request ? JSON.stringify(task.raw_request, null, 2) : ""),
+    [task?.raw_request],
+  );
 
   // 编辑器桥：全局助手读取未提交草稿与覆盖写入（与独立页共享同一契约）。
   const liveDraftRef = useRef<ReplyDraft | null>(liveDraft);
@@ -341,19 +367,25 @@ export function ReplyPage() {
   };
 
   const removeCall = (index: number) => {
-    setToolCalls((prev) =>
-      prev.length === 1 ? [{ id: "", name: "", argumentsText: "{}" }] : prev.filter((_, i) => i !== index),
-    );
+    // 允许删到 0 条：工具调用不是必须的。
+    setToolCalls((prev) => prev.filter((_, i) => i !== index));
   };
 
   /** 允许工具勾选：勾选新增一条调用，取消移除同名调用。 */
-  const toggleTool = (toolName: string, checked: boolean) => {
+  const toggleTool = (tool: ToolItem, checked: boolean) => {
     setToolCalls((prev) => {
       if (checked) {
-        if (prev.some((c) => c.name === toolName)) return prev;
-        return [...prev, { id: nextCallId(prev), name: toolName, argumentsText: "{}" }];
+        if (prev.some((c) => c.name === tool.name)) return prev;
+        return [
+          ...prev,
+          {
+            id: nextCallId(prev),
+            name: tool.name,
+            argumentsText: defaultToolArguments(tool),
+          },
+        ];
       }
-      return prev.filter((c) => c.name !== toolName);
+      return prev.filter((c) => c.name !== tool.name);
     });
     if (checked) setTab("tools");
   };
@@ -401,7 +433,6 @@ export function ReplyPage() {
     <div className="space-y-5">
       <PageHeader
         title={`回复任务 #${task.public_id}`}
-        dismissId="reply-page"
         actions={
           <>
             <Button variant="ghost" onClick={() => navigate("/tasks")}>
@@ -436,7 +467,7 @@ export function ReplyPage() {
         <span className="text-slate-400">
           {PROTOCOL_LABELS[task.protocol] ?? task.protocol}
         </span>
-        {task.human_deadline_at && (
+        {task.human_deadline_at && !isTerminalTaskState(task.state) && (
           <span className={`font-medium ${deadlineTone(task.human_deadline_at)}`}>
             {formatDeadline(task.human_deadline_at)}
           </span>
@@ -463,12 +494,37 @@ export function ReplyPage() {
         {/* 左栏：任务上下文（sticky） */}
         <aside className="space-y-5 xl:sticky xl:top-24 xl:self-start">
           <Card>
-            <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700">
-              提示词
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+              <span className="text-sm font-medium text-slate-700">提示词</span>
+              <span className="flex items-center gap-1 text-[11px] text-slate-400">
+                <span>{(task.prompt_text || "").length.toLocaleString()} 字</span>
+                <button
+                  type="button"
+                  aria-label="复制提示词"
+                  title="复制提示词"
+                  onClick={() => void copyText(task.prompt_text || "", "提示词")}
+                  className="rounded p-1 text-slate-400 transition hover:bg-slate-100 hover:text-primary"
+                >
+                  <Icon name="copy" className="h-3.5 w-3.5" />
+                </button>
+              </span>
             </div>
-            <pre className="max-h-56 overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[11px] text-slate-600">
+            <pre
+              className={`overflow-auto whitespace-pre-wrap px-4 py-3 font-mono text-[11px] text-slate-600 ${
+                promptExpanded ? "max-h-[70vh]" : "max-h-56"
+              }`}
+            >
               {task.prompt_text || "(空)"}
             </pre>
+            {(task.prompt_text || "").length > PROMPT_COLLAPSE_THRESHOLD && (
+              <button
+                type="button"
+                onClick={() => setPromptExpanded((value) => !value)}
+                className="w-full border-t border-slate-100 py-2 text-xs text-primary transition hover:bg-slate-50"
+              >
+                {promptExpanded ? "收起" : "展开全部"}
+              </button>
+            )}
             {!task.is_owner && (
               <p className="px-4 pb-3 text-[11px] text-slate-400">非归属用户仅显示前 200 字</p>
             )}
@@ -500,7 +556,9 @@ export function ReplyPage() {
                     原始请求
                   </summary>
                   <pre className="mt-2 max-h-56 overflow-auto rounded border border-slate-100 bg-slate-50 p-3 font-mono text-[11px] text-slate-600">
-                    {JSON.stringify(task.raw_request, null, 2)}
+                    {rawRequestText.length > RAW_REQUEST_RENDER_LIMIT
+                      ? `${rawRequestText.slice(0, RAW_REQUEST_RENDER_LIMIT)}\n…（原始请求过大，已截断显示）`
+                      : rawRequestText}
                   </pre>
                 </details>
               </div>
@@ -584,8 +642,13 @@ export function ReplyPage() {
               {tab === "tools" && (
                 <div className="space-y-3">
                   <p className="text-xs text-slate-400">
-                    仅作为回复结构转发，系统不会执行；可从右侧「允许的工具」勾选自动填充
+                    仅作为回复结构转发，系统不会执行；工具调用不是必须的，可从右侧「允许的工具」勾选自动填充
                   </p>
+                  {toolCalls.length === 0 && (
+                    <p className="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">
+                      未添加工具调用；仅填写正式回复即可提交
+                    </p>
+                  )}
                   {toolCalls.map((call, index) => (
                     <div
                       key={index}
@@ -730,7 +793,7 @@ export function ReplyPage() {
                       type="checkbox"
                       checked={checked}
                       disabled={!canEdit}
-                      onChange={(event) => toggleTool(tool.name, event.target.checked)}
+                      onChange={(event) => toggleTool(tool, event.target.checked)}
                       className="mt-0.5"
                     />
                     <span className="min-w-0 flex-1">

@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
         from ..services.bootstrap import BootstrapService
         from ..services.connection_service import ConnectionService
         from ..services.connection_watchdog import connection_watchdog
+        from ..services.task_sweeper import task_sweeper
 
         with SessionLocal() as db:
             BootstrapService().initialize(db, get_settings())
@@ -57,14 +58,18 @@ def create_app() -> FastAPI:
         for row, config in snapshot:
             await manager.start(row, config, service.inbound_handler())
         watchdog_task = asyncio.create_task(connection_watchdog.run(), name="connection-watchdog")
+        # 僵尸任务收敛：等待循环消失（进程重启/断开未检测）后的兜底驱动。
+        sweeper_task = asyncio.create_task(task_sweeper.run(), name="task-sweeper")
         try:
             yield
         finally:
             watchdog_task.cancel()
-            try:
-                await watchdog_task
-            except asyncio.CancelledError:
-                pass
+            sweeper_task.cancel()
+            for background in (watchdog_task, sweeper_task):
+                try:
+                    await background
+                except asyncio.CancelledError:
+                    pass
             # 优雅关闭：停止全部连接器实例。
             await manager.stop_all()
 

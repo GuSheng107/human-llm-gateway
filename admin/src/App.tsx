@@ -9,6 +9,7 @@ import { ForcePasswordPage } from "./features/auth/ForcePasswordPage";
 import { LoginPage } from "./features/auth/LoginPage";
 import { RegisterPage } from "./features/auth/RegisterPage";
 import { ConnectionsPage } from "./features/connections/ConnectionsPage";
+import { AdminConnectionsPage } from "./features/connections/AdminConnectionsPage";
 import { DashboardPage } from "./features/dashboard/DashboardPage";
 import { ModelsPage } from "./features/models/ModelsPage";
 import { LlmConfigsPage } from "./features/llm/LlmConfigsPage";
@@ -108,6 +109,7 @@ export default function App() {
     logs: <LogsPage />,
     invitations: <InvitationsPage />,
     users: <UsersPage />,
+    adminConnections: <AdminConnectionsPage />,
     account: <AccountPage />,
   };
 

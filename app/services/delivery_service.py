@@ -23,6 +23,9 @@ from ..repositories.models import ImConnection, RequestTask
 # 使用 outbox 可靠投递的平台（docs/DATABASE.md §4.2）
 OUTBOX_PLATFORMS = frozenset({"webhook", "http_poll", "websocket"})
 
+# 展示用提示词摘要上限（字符）；超长保留尾部（Agent 提示词提问在末尾）。
+_PROMPT_SUMMARY_CAP = 4000
+
 
 @dataclass
 class DeliveryOutcome:
@@ -203,7 +206,12 @@ class DeliveryService:
                     name = tool.get("name") or (tool.get("function", {}) or {}).get("name")
                     if isinstance(name, str):
                         tool_names.append(name)
-        return prompt[:4000], tool_names
+        # Agent 工具（opencode 等）的提示词前面是海量系统上下文，真正的
+        # 提问在末尾：超长时保留尾部，仅省略前缀。
+        if len(prompt) > _PROMPT_SUMMARY_CAP:
+            omitted = len(prompt) - _PROMPT_SUMMARY_CAP
+            prompt = f"…（前面 {omitted} 字已省略）\n{prompt[-_PROMPT_SUMMARY_CAP:]}"
+        return prompt, tool_names
 
     @staticmethod
     def _add_event(

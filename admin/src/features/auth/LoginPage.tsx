@@ -222,7 +222,9 @@ export function LoginPage() {
             <p className="mt-1.5 text-xs text-slate-400">使用账号与密码访问能工智人网关</p>
             <form onSubmit={submit} className="mt-7 space-y-4">
               <label className="block">
-                <span className="mb-1.5 block text-xs font-medium text-slate-600">账号</span>
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                  账号<span className="ml-0.5 text-danger">*</span>
+                </span>
                 <input
                   autoComplete="username"
                   required
@@ -234,7 +236,9 @@ export function LoginPage() {
               </label>
               <label className="block">
                 <span className="mb-1.5 flex items-center justify-between text-xs font-medium text-slate-600">
-                  密码
+                  <span>
+                    密码<span className="ml-0.5 text-danger">*</span>
+                  </span>
                   <button
                     type="button"
                     onClick={() => setShowForgot(true)}
@@ -261,7 +265,9 @@ export function LoginPage() {
                 记住密码
               </label>
               <div className="block">
-                <span className="mb-1.5 block text-xs font-medium text-slate-600">验证码</span>
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                  验证码<span className="ml-0.5 text-danger">*</span>
+                </span>
                 <CaptchaInput
                   key={captchaKey}
                   value={captchaCode}

@@ -48,6 +48,18 @@ class ConnectionWatchdog:
                 reports: list[dict[str, Any]] = []
                 for row in rows:
                     connector = manager.get_instance(row.id)
+                    binding_expired = bool(
+                        not row.desired_running
+                        and row.bound_external_user_id is None
+                        and row.binding_code_hash
+                        and row.binding_code_expires_at
+                        and row.binding_code_expires_at <= utc_now()
+                    )
+                    if connector is not None and binding_expired:
+                        await manager.stop(row.id)
+                        row.state = ConnectionState.STOPPED
+                        row.next_retry_at = None
+                        connector = None
                     runtime: dict[str, Any] = {"running": connector is not None}
                     check_error: str | None = None
                     if connector is not None:

@@ -50,7 +50,7 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
     assert pro["input_price_per_million"] == 4.0
     assert pro["output_price_per_million"] == 16.0
     assert pro["cached_input_price_per_million"] == 0.4
-    assert pro["context_window"] == 128_000
+    assert pro["context_window"] == 1_000_000
     assert "tools" in pro["capabilities"]
     assert pro["billing_tier"] == "pay_as_you_go"
     assert pro["endpoint_type"] == "openai_chat"

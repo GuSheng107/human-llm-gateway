@@ -150,7 +150,9 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
           {tab === "basic" && (
             <>
               <label className="block">
-                <span className="mb-1.5 block text-xs font-medium text-slate-600">model_id</span>
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                  model_id<span className="ml-0.5 text-danger">*</span>
+                </span>
                 <input
                   value={form.model_id}
                   disabled={model !== null}
@@ -211,7 +213,9 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
                 </div>
               </div>
               <div>
-                <span className="mb-1.5 block text-xs font-medium text-slate-600">端点协议</span>
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                  端点协议<span className="ml-0.5 text-danger">*</span>
+                </span>
                 <div className="space-y-2">
                   {ENDPOINT_OPTIONS.map((endpoint) => (
                     <label

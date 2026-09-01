@@ -19,9 +19,20 @@ export function listPlatforms(): Promise<PlatformSpec[]> {
   return api<PlatformSpec[]>("/api/im-platforms");
 }
 
-export function listConnections(page: number, search = ""): Promise<Page<ImConnection>> {
-  const query = new URLSearchParams({ page: String(page), page_size: "20" });
-  if (search.trim()) query.set("search", search.trim());
+export interface ConnectionFilter {
+  platform?: string;
+  state?: string;
+}
+
+export function listConnections(
+  page = 1,
+  search = "",
+  filters: ConnectionFilter = {},
+): Promise<Page<ImConnection>> {
+  const query = new URLSearchParams({ page: String(page), page_size: "100" });
+  if (search) query.set("search", search);
+  if (filters.platform) query.set("platform", filters.platform);
+  if (filters.state) query.set("state", filters.state);
   return api<Page<ImConnection>>(`/api/im-connections?${query}`);
 }
 

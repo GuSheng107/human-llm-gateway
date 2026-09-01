@@ -50,7 +50,7 @@ def test_text_message_uses_generic_connect_command_for_binding() -> None:
             "msgid": "msg-1",
             "from": {"userid": "user-1"},
             "text": {"content": "connect mycom"},
-            "chatid": "chat-1",
+            "chatid": "user-1",
             "chattype": "single",
         },
     }
@@ -61,6 +61,33 @@ def test_text_message_uses_generic_connect_command_for_binding() -> None:
     assert message.sender_external_id == "user-1"
     assert message.binding_code == "connect mycom"
     assert client.replies[0][1]["text"]["content"].startswith("连接绑定成功")
+
+
+def test_group_chat_cannot_bind_wecom_connection() -> None:
+    connector = _connector()
+    client = _FakeClient()
+    connector._client = client
+    captured = []
+
+    async def inbound(connection_id, message):
+        captured.append((connection_id, message))
+        return "unbound"
+
+    connector.bind_inbound(inbound)
+    frame = {
+        "headers": {"req_id": "req-group"},
+        "body": {
+            "msgid": "msg-group",
+            "from": {"userid": "user-1"},
+            "text": {"content": "connect mycom"},
+            "chatid": "room-1",
+            "chattype": "group",
+        },
+    }
+    asyncio.run(connector._handle_text_message(frame))
+
+    assert captured[0][1].binding_code is None
+    assert "个人会话" in client.replies[0][1]["text"]["content"]
 
 
 def test_delivery_uses_sdk_message_body_contract() -> None:

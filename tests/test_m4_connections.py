@@ -64,12 +64,15 @@ def _create_connection(
     payload = {
         "name": name,
         "platform": platform,
-        "config": config
-        or {
-            "inbound_token": "in-token-1",
-            "outbound_url": "https://example.test/hook",
-            "outbound_token": "out-token-1",
-        },
+        "config": (
+            config
+            if config is not None
+            else {
+                "inbound_token": "in-token-1",
+                "outbound_url": "https://example.test/hook",
+                "outbound_token": "out-token-1",
+            }
+        ),
     }
     response = client.post("/api/im-connections", headers=headers, json=payload)
     assert response.status_code == 201, response.text
@@ -84,6 +87,15 @@ def test_platform_catalog_exposes_five_platforms_with_config_schema(client, admi
     websocket = next(item for item in response.json() if item["code"] == "websocket")
     assert websocket["config_schema"][0]["secret"] is True
     assert websocket["config_schema"][0]["name"] == "connection_token"
+    wechat = next(item for item in response.json() if item["code"] == "wecom_ilink")
+    wecom = next(item for item in response.json() if item["code"] == "wecom_aibot")
+    http_poll = next(item for item in response.json() if item["code"] == "http_poll")
+    assert wechat["requires_binding"] is True
+    assert wechat["binding_command"] is None
+    assert wechat["config_schema"] == []
+    assert wecom["requires_binding"] is True
+    assert wecom["binding_command"] == "connect mycom"
+    assert http_poll["requires_binding"] is False
 
 
 def test_connection_config_is_encrypted_and_secrets_never_echoed(client, admin_headers) -> None:
@@ -100,6 +112,67 @@ def test_connection_config_is_encrypted_and_secrets_never_echoed(client, admin_h
         assert row is not None
         assert "in-token-1" not in row.config_ciphertext
         assert row.config_ciphertext.startswith("hlg1.1.")
+
+
+def test_each_user_can_only_create_one_connection_per_platform(client, admin_headers) -> None:
+    headers = _create_user(client, admin_headers, "single-platform-owner")
+    first = _create_connection(client, headers, name="first-webhook")
+
+    duplicate = client.post(
+        "/api/im-connections",
+        headers=headers,
+        json={
+            "name": "second-webhook",
+            "platform": "webhook",
+            "config": {
+                "inbound_token": "another-token",
+                "outbound_url": "https://example.test/another-hook",
+            },
+        },
+    )
+    assert duplicate.status_code == 409
+    assert "每个平台只能创建一条连接" in duplicate.json()["error"]["message"]
+
+    another_platform = client.post(
+        "/api/im-connections",
+        headers=headers,
+        json={
+            "name": first["name"],
+            "platform": "http_poll",
+            "config": {"pull_token": "pull-token"},
+        },
+    )
+    assert another_platform.status_code == 201, another_platform.text
+
+
+def test_wechat_credentials_can_only_be_saved_by_qr_login(client, admin_headers) -> None:
+    headers = _create_user(client, admin_headers, "wechat-qr-only")
+    rejected = client.post(
+        "/api/im-connections",
+        headers=headers,
+        json={
+            "name": "微信 iLink",
+            "platform": "wecom_ilink",
+            "config": {"token": "manual-token"},
+        },
+    )
+    assert rejected.status_code == 400
+    assert "扫码绑定" in rejected.json()["error"]["message"]
+
+    created = _create_connection(
+        client,
+        headers,
+        name="微信 iLink",
+        platform="wecom_ilink",
+        config={},
+    )
+    changed = client.patch(
+        f"/api/im-connections/{created['id']}",
+        headers=headers,
+        json={"config": {"token": "manual-token"}},
+    )
+    assert changed.status_code == 400
+    assert "扫码绑定" in changed.json()["error"]["message"]
 
 
 def response_text(payload: dict) -> str:
@@ -241,7 +314,7 @@ def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
         headers,
         name="ilink-qr",
         platform="wecom_ilink",
-        config={"token": ""},
+        config={},
     )
 
     class _FakeConnector:
@@ -285,7 +358,7 @@ def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) 
     """扫码会话跨请求共享：未先 start 直接 poll 返回 400，而不是未处理 500。"""
     headers = _create_user(client, admin_headers, "qr-poll-first")
     created = _create_connection(
-        client, headers, name="ilink-poll", platform="wecom_ilink", config={"token": ""}
+        client, headers, name="ilink-poll", platform="wecom_ilink", config={}
     )
     resp = client.get(f"/api/im-connections/{created['id']}/login", headers=headers)
     assert resp.status_code == 400, resp.text
@@ -301,7 +374,7 @@ def test_qr_login_connector_error_mapped_to_domain_error(
 
     headers = _create_user(client, admin_headers, "qr-err")
     created = _create_connection(
-        client, headers, name="ilink-err", platform="wecom_ilink", config={"token": ""}
+        client, headers, name="ilink-err", platform="wecom_ilink", config={}
     )
 
     class _FailingConnector:
@@ -332,8 +405,9 @@ def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
     assert status == {"bound": False, "binding_pending": False, "binding_expires_at": None}
 
     binding = client.post(f"/api/im-connections/{connection_id}/binding", headers=headers).json()
-    assert binding["binding_code"] == "connect binding"
+    assert binding["binding_code"] == "connect webhook"
     assert binding["binding_code"]
+    assert binding["expires_at"] is not None
     assert (
         client.get(f"/api/im-connections/{connection_id}/binding/status", headers=headers).json()[
             "binding_pending"
@@ -375,6 +449,68 @@ def test_binding_code_flow_and_unbound_inbound(client, admin_headers) -> None:
         headers={"X-Webhook-Token": "in-token-1"},
     )
     assert stranger.json()["result"] == InboundResult.UNBOUND.value
+
+
+def test_social_connections_must_bind_before_start(client, admin_headers) -> None:
+    headers = _create_user(client, admin_headers, "conn-owner-bind-first")
+    wechat = _create_connection(
+        client,
+        headers,
+        name="wechat-unbound",
+        platform="wecom_ilink",
+        config={},
+    )
+    wecom = _create_connection(
+        client,
+        headers,
+        name="wecom-unbound",
+        platform="wecom_aibot",
+        config={"bot_id": "bot-1", "secret": "secret-1"},
+    )
+
+    for connection in (wechat, wecom):
+        response = client.post(
+            f"/api/im-connections/{connection['id']}/start",
+            headers=headers,
+        )
+        assert response.status_code == 400
+        assert "绑定成功后才能启用" in response.json()["error"]["message"]
+
+
+def test_wecom_binding_uses_fixed_command_and_keeps_switch_off(
+    client, admin_headers, monkeypatch
+) -> None:
+    from app.connectors import connection_manager as manager
+
+    headers = _create_user(client, admin_headers, "conn-owner-wecom-bind")
+    created = _create_connection(
+        client,
+        headers,
+        name="name-does-not-change-command",
+        platform="wecom_aibot",
+        config={"bot_id": "bot-2", "secret": "secret-2"},
+    )
+    starts: list[int] = []
+
+    async def fake_start(row, _config, _inbound) -> None:
+        starts.append(row.id)
+
+    monkeypatch.setattr(manager, "start", fake_start)
+    response = client.post(
+        f"/api/im-connections/{created['id']}/binding",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["binding_code"] == "connect mycom"
+    assert response.json()["expires_at"] is not None
+    assert starts == [int(created["id"])]
+    current = client.get(
+        f"/api/im-connections/{created['id']}",
+        headers=headers,
+    ).json()
+    assert current["desired_running"] is False
+    assert current["bound"] is False
 
 
 def test_webhook_inbound_is_idempotent_and_first_reply_wins(client, admin_headers) -> None:

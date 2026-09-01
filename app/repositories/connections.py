@@ -35,6 +35,16 @@ class ConnectionRepository:
             return None
         return row
 
+    def get_by_owner_platform(
+        self, session: Session, owner_user_id: int, platform: str
+    ) -> ImConnection | None:
+        return session.execute(
+            select(ImConnection).where(
+                ImConnection.owner_user_id == owner_user_id,
+                ImConnection.platform == platform,
+            )
+        ).scalar_one_or_none()
+
     def list_page(
         self,
         session: Session,
@@ -159,7 +169,7 @@ class ConnectionRepository:
     # ------------------------------------------------------------------
 
     def set_binding_code(
-        self, session: Session, connection_id: int, code_hash: str, expires_at: datetime
+        self, session: Session, connection_id: int, code_hash: str, expires_at: datetime | None
     ) -> None:
         session.execute(
             update(ImConnection)

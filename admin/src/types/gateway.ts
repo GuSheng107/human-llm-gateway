@@ -25,6 +25,8 @@ export interface PlatformSpec {
   kind: "server" | "client";
   supports_delivery: boolean;
   supports_login: boolean;
+  requires_binding: boolean;
+  binding_command: string | null;
   config_schema: PlatformFieldSchema[];
 }
 
@@ -72,7 +74,7 @@ export interface ConnectionCheckItem extends ConnectionHealth {
 
 export interface BindingCode {
   binding_code: string;
-  expires_at: string;
+  expires_at: string | null;
 }
 
 export interface BindingStatus {
@@ -143,6 +145,8 @@ export interface ApiKey {
   created_at: string;
   owner_user_id: string | null;
   owner_username: string | null;
+  /** 完整明文，仅 owner 本人视角返回；admin 监管他人 Key 时为 null。 */
+  key?: string | null;
 }
 
 export interface ApiKeyCreated extends ApiKey {
@@ -211,6 +215,8 @@ export interface TaskItem {
   api_key_prefix: string;
   stream_requested: boolean;
   has_tools: boolean;
+  /** 提示词尾部预览（Agent 提示词的提问在末尾）。 */
+  prompt_preview: string;
   response_id: string | null;
   human_deadline_at: string | null;
   created_at: string;

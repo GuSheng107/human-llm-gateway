@@ -25,9 +25,9 @@ class ImConnection(TimestampMixin, Base):
     __tablename__ = "im_connections"
     __table_args__ = (
         Index(
-            "uq_im_connections_owner_name",
+            "uq_im_connections_owner_platform",
             "owner_user_id",
-            "name",
+            "platform",
             unique=True,
         ),
         Index("ix_im_connections_platform_state", "platform", "state"),

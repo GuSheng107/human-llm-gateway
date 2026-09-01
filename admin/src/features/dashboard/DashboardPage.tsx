@@ -27,6 +27,14 @@ const PROTOCOL_COLORS: Record<string, string> = {
   anthropic_messages: "#d97706",
 };
 
+// 统计卡片配色：左侧渐变条 + 同色系图标底。
+const STAT_TONES: Record<string, { bar: string; chip: string; glow: string }> = {
+  blue: { bar: "from-blue-500 to-blue-400", chip: "bg-blue-50 text-blue-600", glow: "from-blue-50/70" },
+  cyan: { bar: "from-cyan-500 to-cyan-400", chip: "bg-cyan-50 text-cyan-600", glow: "from-cyan-50/70" },
+  emerald: { bar: "from-emerald-500 to-emerald-400", chip: "bg-emerald-50 text-emerald-600", glow: "from-emerald-50/70" },
+  amber: { bar: "from-amber-500 to-amber-400", chip: "bg-amber-50 text-amber-600", glow: "from-amber-50/70" },
+};
+
 function Sparkline({ values }: { values: number[] }) {
   const max = Math.max(1, ...values);
   const points = values
@@ -56,11 +64,12 @@ function StatCard({
   icon: string;
   tone: string;
 }) {
+  const palette = STAT_TONES[tone] ?? STAT_TONES.blue;
   return (
-    <Card className="overflow-hidden">
-      <div className="relative flex min-h-28 items-center gap-3 px-5 py-4">
-        <span className={`absolute inset-y-0 left-0 w-1 ${tone}`} />
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-blue-50 text-primary">
+    <Card className="group overflow-hidden transition-shadow duration-200 hover:shadow-lg">
+      <div className={`relative flex min-h-28 items-center gap-3 bg-gradient-to-br ${palette.glow} to-transparent px-5 py-4`}>
+        <span className={`absolute inset-y-0 left-0 w-1 bg-gradient-to-b ${palette.bar}`} />
+        <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-lg shadow-sm transition-transform duration-200 group-hover:scale-105 ${palette.chip}`}>
           <Icon name={icon} className="h-5 w-5" />
         </span>
         <div className="min-w-0 flex-1">
@@ -70,11 +79,11 @@ function StatCard({
               实时
             </span>
           </div>
-          <span className="mt-1.5 block text-2xl font-semibold tracking-tight text-slate-800">
+          <span className="mt-1.5 block text-2xl font-semibold tabular-nums tracking-tight text-slate-800">
             {value}
           </span>
         </div>
-        <div className="hidden text-primary/70 sm:block">
+        <div className={`hidden opacity-70 sm:block ${palette.chip.split(" ")[1]}`}>
           <Sparkline values={values} />
         </div>
       </div>
@@ -215,22 +224,50 @@ export function DashboardPage() {
   const cards: Array<{ label: string; value: number | string; icon: string; tone: string }> = stats
     ? isAdmin
       ? [
-          { label: "用户（启用/总计）", value: `${stats.active_users}/${stats.total_users}`, icon: "users", tone: "bg-blue-500" },
-          { label: "全局活动任务", value: stats.global_active_tasks, icon: "reply", tone: "bg-cyan-500" },
-          { label: "累计任务", value: stats.total_tasks, icon: "dashboard", tone: "bg-emerald-500" },
-          { label: "API Key / IM 连接", value: `${stats.total_api_keys}/${stats.total_connections}`, icon: "link", tone: "bg-amber-500" },
+          { label: "用户（启用/总计）", value: `${stats.active_users}/${stats.total_users}`, icon: "users", tone: "blue" },
+          { label: "全局活动任务", value: stats.global_active_tasks, icon: "reply", tone: "cyan" },
+          { label: "累计任务", value: stats.total_tasks, icon: "dashboard", tone: "emerald" },
+          { label: "API Key / IM 连接", value: `${stats.total_api_keys}/${stats.total_connections}`, icon: "link", tone: "amber" },
         ]
       : [
-          { label: "进行中的任务", value: stats.my_active_tasks, icon: "reply", tone: "bg-blue-500" },
-          { label: "累计任务", value: stats.my_total_tasks, icon: "dashboard", tone: "bg-cyan-500" },
-          { label: "API Key", value: stats.my_api_keys, icon: "key", tone: "bg-emerald-500" },
-          { label: "LLM 配置", value: stats.my_llm_configs, icon: "gateway", tone: "bg-amber-500" },
+          { label: "进行中的任务", value: stats.my_active_tasks, icon: "reply", tone: "blue" },
+          { label: "累计任务", value: stats.my_total_tasks, icon: "dashboard", tone: "cyan" },
+          { label: "API Key", value: stats.my_api_keys, icon: "key", tone: "emerald" },
+          { label: "LLM 配置", value: stats.my_llm_configs, icon: "gateway", tone: "amber" },
         ]
     : [];
 
-  const copyCurlExample = async () => {
-    const command = `curl "${window.location.origin}/v1/models" -H "Authorization: Bearer <API_KEY>"`;
-    await copyText(command, "curl 命令");
+  // 接入命令统一为 PowerShell 版本：curl.exe 规避 Windows PowerShell 5.1
+  // 中 curl 被 Invoke-WebRequest 别名占用；反引号续行；JSON 内层双引号以
+  // \" 转义（PowerShell 会剥离传给原生程序的参数中未转义的双引号）。
+  const modelsCommand = `curl.exe "${window.location.origin}/v1/models" -H "Authorization: Bearer <API_KEY>"`;
+  // PowerShell 反引号续行符单独提取：避免模板字符串尾部出现「转义反引号
+  // 紧跟结束定界符」的连写，可读性差且容易写错。
+  const BT = "`";
+  const openAiCommand = [
+    `curl.exe "${window.location.origin}/v1/chat/completions" ${BT}`,
+    `  -H "Content-Type: application/json" ${BT}`,
+    `  -H "Authorization: Bearer <API_KEY>" ${BT}`,
+    `  -d '{\\"model\\": \\"glm-5.3\\", \\"messages\\": [{\\"role\\": \\"user\\", \\"content\\": \\"你好\\"}]}'`,
+  ].join("\n");
+  const anthropicCommand = [
+    `curl.exe "${window.location.origin}/v1/messages" ${BT}`,
+    `  -H "Content-Type: application/json" ${BT}`,
+    `  -H "x-api-key: <API_KEY>" ${BT}`,
+    `  -H "anthropic-version: 2023-06-01" ${BT}`,
+    `  -d '{\\"model\\": \\"claude-sonnet-5\\", \\"max_tokens\\": 1024, \\"messages\\": [{\\"role\\": \\"user\\", \\"content\\": \\"你好\\"}]}'`,
+  ].join("\n");
+
+  const copyModelsCommand = async () => {
+    await copyText(modelsCommand, "模型获取信息命令");
+  };
+
+  const copyOpenAiCommand = async () => {
+    await copyText(openAiCommand, "OpenAI 调用命令");
+  };
+
+  const copyAnthropicCommand = async () => {
+    await copyText(anthropicCommand, "Anthropic 调用命令");
   };
 
   return (
@@ -242,8 +279,7 @@ export function DashboardPage() {
       )}
       <PageHeader
         title={isAdmin ? "监管控制台" : "控制台"}
-        description="任务、协议与连接状态每 30 秒自动刷新。"
-        dismissId="dashboard"
+        description={`数据每 30 秒自动刷新${user?.username ? ` · ${user.username}` : ""}`}
         actions={<Button variant="ghost" loading={refreshing} onClick={() => void load()}><Icon name="refresh" className="h-4 w-4" />立即刷新</Button>}
       />
       {error && <ErrorBanner message={error} />}
@@ -296,28 +332,80 @@ export function DashboardPage() {
               </div>
               <div className="grid grid-cols-2 gap-2 p-4 text-xs">
                 {[
-                  ["连接 IM", "/connections", "link"],
-                  ["API 管理", "/api-keys", "key"],
-                  ["模型广场", "/models", "cpu"],
-                  ["LLM 管理", "/llm-configs", "gateway"],
-                ].map(([label, path, icon]) => (
+                  ["连接 IM", "/connections", "link", "bg-cyan-50 text-cyan-600"],
+                  ["API 管理", "/api-keys", "key", "bg-blue-50 text-blue-600"],
+                  ["模型广场", "/models", "cpu", "bg-emerald-50 text-emerald-600"],
+                  ["LLM 管理", "/llm-configs", "gateway", "bg-amber-50 text-amber-600"],
+                ].map(([label, path, icon, chip]) => (
                   <button
                     key={path}
                     onClick={() => navigate(path)}
-                    className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2.5 text-left text-slate-600 hover:border-primary/40 hover:text-primary"
+                    className="group flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2.5 text-left text-slate-600 transition-colors hover:border-primary/40 hover:text-primary"
                   >
-                    <Icon name={icon} className="h-4 w-4" />
+                    <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-md ${chip}`}>
+                      <Icon name={icon} className="h-3.5 w-3.5" />
+                    </span>
                     {label}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => void copyCurlExample()}
-                  className="col-span-2 flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2.5 text-left text-slate-600 hover:border-primary/40 hover:text-primary"
-                >
-                  <Icon name="copy" className="h-4 w-4" />
-                  复制 API 调用 curl
-                </button>
+              </div>
+            </Card>
+
+            <Card>
+              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+                <span className="text-sm font-medium text-slate-700">接入指引</span>
+                <span className="flex items-center gap-1.5">
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500">
+                    PowerShell
+                  </span>
+                  <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] text-slate-500">
+                    {window.location.origin}
+                  </span>
+                </span>
+              </div>
+              <div className="space-y-2 p-4 text-xs">
+                {[
+                  {
+                    label: "获取模型列表",
+                    protocol: "openai_chat",
+                    command: modelsCommand,
+                    run: copyModelsCommand,
+                  },
+                  {
+                    label: "OpenAI 调用",
+                    protocol: "openai_chat",
+                    command: openAiCommand,
+                    run: copyOpenAiCommand,
+                  },
+                  {
+                    label: "Anthropic 调用",
+                    protocol: "anthropic_messages",
+                    command: anthropicCommand,
+                    run: copyAnthropicCommand,
+                  },
+                ].map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    onClick={() => void item.run()}
+                    className="group flex w-full items-center gap-3 rounded-lg border border-slate-200 bg-slate-50/60 px-3 py-2.5 text-left transition-colors hover:border-primary/40 hover:bg-white"
+                  >
+                    <span
+                      className="h-2 w-2 shrink-0 rounded-full"
+                      style={{ backgroundColor: PROTOCOL_COLORS[item.protocol] ?? "#64748b" }}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-slate-700">{item.label}</span>
+                      <span className="mt-0.5 block truncate font-mono text-[11px] text-slate-400 group-hover:text-slate-500">
+                        {item.command}
+                      </span>
+                    </span>
+                    <Icon
+                      name="copy"
+                      className="h-4 w-4 shrink-0 text-slate-300 transition-colors group-hover:text-primary"
+                    />
+                  </button>
+                ))}
               </div>
             </Card>
 

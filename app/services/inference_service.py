@@ -242,8 +242,10 @@ class InferenceService:
             return True
         return False
 
-    def cancel_caller_disconnected(self, session: Session, task_id: int) -> bool:
-        if self.tasks.cancel_caller_disconnected(session, task_id):
+    def cancel_caller_disconnected(
+        self, session: Session, task_id: int, *, reason: str = "caller_disconnected"
+    ) -> bool:
+        if self.tasks.cancel_caller_disconnected(session, task_id, reason=reason):
             task = self.tasks.get(session, task_id)
             if task is not None:
                 self.admission.release_slot(session, task.owner_user_id)

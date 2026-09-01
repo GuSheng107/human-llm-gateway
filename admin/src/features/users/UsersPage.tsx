@@ -204,7 +204,11 @@ export function UsersPage() {
             </div>
             <div className="flex justify-end">
               <Button
-                onClick={() => void copyText(oneTime.password, "临时密码")}
+                onClick={() =>
+                  void copyText(oneTime.password, "临时密码").then((result) => {
+                    if (result.ok) setOneTime(null);
+                  })
+                }
               >
                 <Icon name="copy" className="h-4 w-4" />
                 复制

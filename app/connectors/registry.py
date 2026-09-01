@@ -21,6 +21,7 @@ class ConfigField:
     required: bool = False
     secret: bool = False
     description: str = ""
+    user_configurable: bool = True
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,10 @@ class PlatformSpec:
     kind: str  # server: 服务端接收进站；client: 主动连接外部平台
     supports_delivery: bool  # 是否能把任务包投递回外部平台
     supports_login: bool = False  # 是否支持交互式登录（扫码等）
+    requires_binding: bool = False  # 启用前是否必须完成扫码或消息绑定
+    # 固定的人工绑定命令；仅需要在平台消息中完成绑定的连接器配置。
+    # 命令由平台注册表提供，避免服务层按平台散落硬编码。
+    binding_command: str | None = None
     config_fields: tuple[ConfigField, ...] = ()
 
     def config_schema(self) -> list[dict[str, Any]]:
@@ -44,7 +49,11 @@ class PlatformSpec:
                 "description": f.description,
             }
             for f in self.config_fields
+            if f.user_configurable
         ]
+
+    def user_config_field_names(self) -> set[str]:
+        return {field.name for field in self.config_fields if field.user_configurable}
 
 
 class ConnectorRegistry:
@@ -127,19 +136,22 @@ def build_default_registry() -> ConnectorRegistry:
             kind="client",
             supports_delivery=True,
             supports_login=True,
+            requires_binding=True,
             config_fields=(
-                # token 非必填：扫码登录成功后由前端写回；也可手动粘贴已有 token。
+                # 以下字段只供扫码流程在服务端持久化，不暴露给用户配置。
                 ConfigField(
                     name="token",
                     label="iLink Token",
                     secret=True,
-                    description="通过扫码登录自动获取，或手动粘贴已有 Token。",
+                    description="扫码登录成功后由服务端自动保存。",
+                    user_configurable=False,
                 ),
                 ConfigField(
                     name="base_url",
                     label="服务地址",
                     field_type="url",
-                    description="默认官方地址，一般无需修改。",
+                    description="扫码登录流程使用的服务地址。",
+                    user_configurable=False,
                 ),
             ),
         ),
@@ -152,6 +164,8 @@ def build_default_registry() -> ConnectorRegistry:
             description="企微智能机器人 WebSocket 长连接（wecom-aibot-sdk）。",
             kind="client",
             supports_delivery=True,
+            requires_binding=True,
+            binding_command="connect mycom",
             config_fields=(
                 ConfigField(name="bot_id", label="Bot ID", required=True),
                 ConfigField(name="secret", label="Bot Secret", required=True, secret=True),
@@ -166,6 +180,7 @@ def build_default_registry() -> ConnectorRegistry:
             description="服务端接收入站消息，按配置 URL 推送任务。",
             kind="server",
             supports_delivery=True,
+            binding_command="connect webhook",
             config_fields=(
                 ConfigField(name="inbound_token", label="入站 Token", required=True, secret=True),
                 ConfigField(name="outbound_url", label="推送 URL", field_type="url", required=True),
@@ -181,6 +196,7 @@ def build_default_registry() -> ConnectorRegistry:
             description="带连接 Token 的双向 WebSocket 会话。",
             kind="server",
             supports_delivery=True,
+            binding_command="connect websocket",
             config_fields=(
                 ConfigField(
                     name="connection_token", label="连接 Token", required=True, secret=True

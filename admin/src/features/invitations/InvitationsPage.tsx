@@ -179,7 +179,11 @@ export function InvitationsPage() {
             </div>
             <div className="flex justify-end">
               <Button
-                onClick={() => void copyText(created.code, "邀请码")}
+                onClick={() =>
+                  void copyText(created.code, "邀请码").then((result) => {
+                    if (result.ok) setCreated(null);
+                  })
+                }
               >
                 <Icon name="copy" className="h-4 w-4" />
                 复制

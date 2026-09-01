@@ -78,6 +78,7 @@ def test_restricted_session_only_allows_me_logout_and_password(client) -> None:
         "invitation.manage",
         "user.manage",
         "connection.manage",
+        "connection.admin",
         "model.manage",
         "api_key.manage",
         "logs.manage",

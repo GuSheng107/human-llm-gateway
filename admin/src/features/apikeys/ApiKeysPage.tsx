@@ -202,6 +202,39 @@ export function ApiKeysPage() {
     }
   };
 
+  // 复制完整 Key：策略为直接转发 / 超时降级 LLM 时先做泄露风险提示。
+  const copyFullKey = async (key: ApiKey) => {
+    if (!key.key) return;
+    if (key.reply_strategy !== "human") {
+      const confirmed = await confirmAction({
+        title: "复制 API Key",
+        message:
+          "该 Key 会把请求转发到真实 LLM 上游，请勿在公开渠道分享，避免被他人盗用消耗额度。",
+        confirmLabel: "我已知晓，继续复制",
+        variant: "primary",
+      });
+      if (!confirmed) return;
+    }
+    await copyText(key.key, "API Key");
+  };
+
+  // 创建弹窗里的复制：同样按策略提示泄露风险。
+  const copyCreatedKey = async () => {
+    if (!created) return;
+    if (created.reply_strategy !== "human") {
+      const confirmed = await confirmAction({
+        title: "复制 API Key",
+        message:
+          "该 Key 会把请求转发到真实 LLM 上游，请勿在公开渠道分享，避免被他人盗用消耗额度。",
+        confirmLabel: "我已知晓，继续复制",
+        variant: "primary",
+      });
+      if (!confirmed) return;
+    }
+    const result = await copyText(created.plaintext, "API Key");
+    if (result.ok) setCreated(null);
+  };
+
   return (
     <div className="space-y-5">
       <PageHeader
@@ -223,7 +256,7 @@ export function ApiKeysPage() {
             <thead className="bg-slate-50 text-slate-400">
               <tr>
                 <th className="px-4 py-3 font-medium">名称</th>
-                <th className="px-4 py-3 font-medium">前缀</th>
+                <th className="px-4 py-3 font-medium">API Key</th>
                 <th className="px-4 py-3 font-medium">入口</th>
                 <th className="px-4 py-3 font-medium">回复策略</th>
                 <th className="px-4 py-3 font-medium">模型筛选</th>
@@ -239,18 +272,33 @@ export function ApiKeysPage() {
                 <tr key={key.id} className="group hover:bg-slate-50/60">
                   <td className="px-4 py-3 font-medium text-slate-700">{key.name}</td>
                   <td className="px-4 py-3 text-slate-500">
-                    <span className="inline-flex items-center gap-1.5 font-mono">
-                      {key.key_prefix}…
-                      <button
-                        type="button"
-                        aria-label="复制 API Key 前缀"
-                        title="复制前缀"
-                        onClick={() => void copyText(key.key_prefix, "API Key 前缀")}
-                        className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
-                      >
-                        <Icon name="copy" className="h-3.5 w-3.5" />
-                      </button>
-                    </span>
+                    {key.key ? (
+                      <span className="inline-flex items-start gap-1.5 font-mono">
+                        <span className="break-all text-[11px] leading-5">{key.key}</span>
+                        <button
+                          type="button"
+                          aria-label="复制完整 API Key"
+                          title="复制完整 Key"
+                          onClick={() => void copyFullKey(key)}
+                          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                        >
+                          <Icon name="copy" className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 font-mono">
+                        {key.key_prefix}…
+                        <button
+                          type="button"
+                          aria-label="复制 API Key 前缀"
+                          title="复制前缀"
+                          onClick={() => void copyText(key.key_prefix, "API Key 前缀")}
+                          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                        >
+                          <Icon name="copy" className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-slate-500">
                     {DELIVERY_LABEL[key.delivery_mode] ?? key.delivery_mode}
@@ -309,7 +357,9 @@ export function ApiKeysPage() {
         >
           <div className="space-y-4 p-6">
             <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">名称</span>
+              <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                名称<span className="ml-0.5 text-danger">*</span>
+              </span>
               <input
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -334,7 +384,9 @@ export function ApiKeysPage() {
               </label>
               {form.delivery_mode === "im" && (
                 <label className="block">
-                  <span className="mb-1.5 block text-xs font-medium text-slate-600">IM 连接</span>
+                  <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                    IM 连接<span className="ml-0.5 text-danger">*</span>
+                  </span>
                   <select
                     value={form.im_connection_id}
                     onChange={(event) => setForm({ ...form, im_connection_id: event.target.value })}
@@ -378,7 +430,7 @@ export function ApiKeysPage() {
               {form.reply_strategy !== "human" && (
                 <label className="block">
                   <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                    LLM 配置（支持跨协议）
+                    LLM 配置（支持跨协议）<span className="ml-0.5 text-danger">*</span>
                   </span>
                   <select
                     value={form.llm_config_id}
@@ -404,7 +456,7 @@ export function ApiKeysPage() {
               )}
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                  人工超时（秒，10-1800）
+                  人工超时（秒，10-1800）<span className="ml-0.5 text-danger">*</span>
                 </span>
                 <input
                   type="number"
@@ -508,7 +560,6 @@ export function ApiKeysPage() {
       {created && (
         <Modal
           title="API Key 已创建"
-          description="关闭后不再显示明文，请立即复制并妥善保存。"
           onClose={() => setCreated(null)}
         >
           <div className="space-y-4 p-6">
@@ -517,7 +568,7 @@ export function ApiKeysPage() {
             </div>
             <div className="flex justify-end">
               <Button
-                onClick={() => void copyText(created.plaintext, "API Key")}
+                onClick={() => void copyCreatedKey()}
               >
                 <Icon name="copy" className="h-4 w-4" />
                 复制

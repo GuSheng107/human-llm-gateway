@@ -267,7 +267,9 @@ export function ToolsPage() {
         >
           <div className="space-y-4 p-6">
             <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">名称</span>
+              <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                名称<span className="ml-0.5 text-danger">*</span>
+              </span>
               <input
                 value={form.name}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
@@ -285,7 +287,9 @@ export function ToolsPage() {
               />
             </label>
             <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">命令模板</span>
+              <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                命令模板<span className="ml-0.5 text-danger">*</span>
+              </span>
               <input
                 value={form.command_template}
                 onChange={(event) =>
@@ -307,7 +311,7 @@ export function ToolsPage() {
             </label>
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                超时（秒，1-120）
+                超时（秒，1-120）<span className="ml-0.5 text-danger">*</span>
               </span>
               <input
                 type="number"

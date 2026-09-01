@@ -17,19 +17,6 @@ const PAGE_SIZE = 20;
 
 type Tab = "audit" | "app";
 
-const RESULT_BADGE: Record<string, string> = {
-  success: "active",
-  denied: "failed",
-  failed: "failed",
-};
-
-const LEVEL_BADGE: Record<string, string> = {
-  debug: "inactive",
-  info: "active",
-  warning: "pending_restart",
-  error: "failed",
-};
-
 function formatTime(value: string): string {
   return value ? new Date(value).toLocaleString() : "-";
 }
@@ -210,10 +197,7 @@ export function LogsPage() {
                       {item.fields.length ? item.fields.join("、") : "-"}
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge
-                        status={RESULT_BADGE[item.result] ?? "inactive"}
-                        fallback={item.result}
-                      />
+                      <StatusBadge status={item.result} fallback={item.result} />
                     </td>
                   </tr>
                 ))}
@@ -244,10 +228,7 @@ export function LogsPage() {
                       {formatTime(item.created_at)}
                     </td>
                     <td className="px-4 py-3">
-                      <StatusBadge
-                        status={LEVEL_BADGE[item.level] ?? "inactive"}
-                        fallback={item.level}
-                      />
+                      <StatusBadge status={item.level} fallback={item.level} />
                     </td>
                     <td className="px-4 py-3 font-mono text-slate-600">{item.event || "-"}</td>
                     <td className="max-w-[320px] truncate px-4 py-3 text-slate-500">

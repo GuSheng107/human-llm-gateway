@@ -9,36 +9,11 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type { TaskItem } from "../../types/gateway";
+import { DeadlineBadge } from "./DeadlineBadge";
 
 const PAGE_SIZE = 20;
-
-// 工作台状态徽章：进行中的细分状态统一归为“待回复/处理中”。
-const WORKBENCH_BADGE: Record<string, string> = {
-  received: "connecting",
-  waiting_human: "pending_restart",
-  forwarding_llm: "connecting",
-  response_ready: "active",
-  responding: "connecting",
-};
-
-function stateLabel(state: string): string {
-  const labels: Record<string, string> = {
-    received: "已接收",
-    waiting_human: "等待回复",
-    forwarding_llm: "LLM 处理中",
-    response_ready: "待确认输出",
-    responding: "输出中",
-  };
-  return labels[state] ?? state;
-}
-
-function deadlineText(task: TaskItem): string {
-  if (!task.human_deadline_at) return "-";
-  const remainingMs = new Date(task.human_deadline_at).getTime() - Date.now();
-  if (remainingMs <= 0) return "已超时";
-  const minutes = Math.ceil(remainingMs / 60000);
-  return minutes >= 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分` : `${minutes} 分钟`;
-}
+// 自动刷新间隔（毫秒）：页面隐藏时暂停。
+const REFRESH_INTERVAL_MS = 5000;
 
 export function RepliesWorkbenchPage() {
   const navigate = useNavigate();
@@ -48,29 +23,39 @@ export function RepliesWorkbenchPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
-    try {
-      const result = await listTasks({ page, bucket: "in_progress" });
-      setItems(result.items);
-      setTotal(result.total);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
-    } finally {
-      setLoading(false);
-    }
-  }, [page]);
+  const load = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const result = await listTasks({ page, bucket: "in_progress" });
+        setItems(result.items);
+        setTotal(result.total);
+        setError("");
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : "加载失败");
+      } finally {
+        if (!silent) setLoading(false);
+      }
+    },
+    [page],
+  );
 
   useEffect(() => {
     void load();
+  }, [load]);
+
+  // 自动轮询：状态与倒计时随任务推进刷新（与任务记录页同一节奏）。
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void load(true);
+    }, REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
   }, [load]);
 
   return (
     <div className="space-y-5">
       <PageHeader
         title="回复工作台"
-        dismissId="replies"
         actions={
           <Button variant="ghost" onClick={() => void load()}>
             <Icon name="refresh" className="h-4 w-4" />
@@ -90,13 +75,14 @@ export function RepliesWorkbenchPage() {
           </div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="min-w-[860px] w-full text-left text-xs">
+            <table className="min-w-[1080px] w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-400">
                 <tr>
                   <th className="px-4 py-3 font-medium">任务</th>
                   <th className="px-4 py-3 font-medium">模型</th>
                   <th className="px-4 py-3 font-medium">状态</th>
                   <th className="px-4 py-3 font-medium">回复剩余时间</th>
+                  <th className="px-4 py-3 font-medium">提示词</th>
                   <th className="px-4 py-3 font-medium">创建时间</th>
                   <th className="sticky right-0 z-10 bg-slate-50 px-4 py-3 text-right font-medium">
                     操作
@@ -113,12 +99,17 @@ export function RepliesWorkbenchPage() {
                     </td>
                     <td className="px-4 py-3 text-slate-500">{task.fake_model_name}</td>
                     <td className="px-4 py-3">
-                      <StatusBadge
-                        status={WORKBENCH_BADGE[task.state] ?? "inactive"}
-                        fallback={stateLabel(task.state)}
-                      />
+                      <StatusBadge status={task.state} />
                     </td>
-                    <td className="px-4 py-3 text-slate-500">{deadlineText(task)}</td>
+                    <td className="px-4 py-3">
+                      <DeadlineBadge deadline={task.human_deadline_at} />
+                    </td>
+                    <td
+                      className="max-w-[320px] truncate px-4 py-3 text-slate-500"
+                      title={task.prompt_preview || undefined}
+                    >
+                      {task.prompt_preview || "-"}
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 text-slate-400">
                       {new Date(task.created_at).toLocaleString()}
                     </td>

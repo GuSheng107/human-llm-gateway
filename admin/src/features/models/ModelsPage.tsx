@@ -37,7 +37,12 @@ const ENDPOINT_GROUP_LABELS: Record<string, string> = {
 
 function formatContext(value: number | null): string {
   if (!value) return "-";
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value % 1_000_000 ? 1 : 0)}M`;
+  if (value >= 1_000_000) {
+    const remainder = value % 1_000_000;
+    // 偏差在 100K 内视为整百万，避免 1050000 之类孤值显示成 1.1M
+    if (remainder <= 100_000) return `${Math.floor(value / 1_000_000)}M`;
+    return `${(value / 1_000_000).toFixed(1)}M`;
+  }
   if (value >= 1000) return `${Math.round(value / 1000)}k`;
   return String(value);
 }
@@ -229,7 +234,6 @@ export function ModelsPage() {
     <div className="space-y-5 lg:flex lg:h-[calc(100dvh-7.5rem)] lg:min-h-0 lg:flex-col lg:gap-3 lg:space-y-0 lg:overflow-hidden">
       <PageHeader
         title="模型广场"
-        dismissId="models"
         actions={
           <>
             <Button variant="ghost" onClick={() => setGroupsOpen(true)}>

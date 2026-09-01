@@ -209,7 +209,7 @@
 
 约束和索引：
 
-- 同一用户连接名唯一：唯一索引 `(owner_user_id, lower(name))`。
+- 同一用户在每个平台只能有一条连接：唯一索引 `(owner_user_id, platform)`。
 - `(platform, state)`、`(owner_user_id, state)`。
 - `binding_code_hash` 存在时唯一。
 

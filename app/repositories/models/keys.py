@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -57,6 +58,7 @@ class ApiKey(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     key_prefix: Mapped[str] = mapped_column(String(8), nullable=False)
+    key_ciphertext: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     delivery_mode: Mapped[DeliveryMode] = mapped_column(sa_enum(DeliveryMode), nullable=False)
     im_connection_id: Mapped[int | None] = mapped_column(

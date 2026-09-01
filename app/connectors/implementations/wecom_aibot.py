@@ -74,18 +74,26 @@ class WeComAibotConnector(Connector):
         sender = str((body.get("from") or {}).get("userid") or "").strip()
         text = str((body.get("text") or {}).get("content") or "").strip()
         external_id = str(body.get("msgid") or headers.get("req_id") or "").strip()
+        chat_id = str(body.get("chatid") or "").strip()
+        chat_type = str(body.get("chattype") or "").strip().lower()
         if not sender or not text or not external_id:
             return
+        # 单聊帧经常缺少 chatid 或使用与 userid 不同的会话标识：
+        # 群聊才以 chatid 为准；其余一律视为与发送者的个人会话。
+        is_group_chat = chat_type in {"group", "room"}
+        if not is_group_chat and not chat_id:
+            chat_id = sender
+        is_personal_chat = not is_group_chat and (not chat_id or chat_id == sender)
         result = await self._inbound(
             self.ctx.connection_id,
             InboundMessage(
                 external_message_id=external_id,
                 sender_external_id=sender,
                 text=text,
-                binding_code=text,
+                binding_code=text if is_personal_chat else None,
                 raw={
-                    "chatid": body.get("chatid"),
-                    "chattype": body.get("chattype"),
+                    "chatid": chat_id,
+                    "chattype": chat_type,
                 },
             ),
         )
@@ -94,6 +102,14 @@ class WeComAibotConnector(Connector):
             await self._client.reply(
                 frame,
                 {"msgtype": "text", "text": {"content": "连接绑定成功，可以开始接收任务。"}},
+            )
+        elif text == "connect mycom" and not is_personal_chat and self._client is not None:
+            await self._client.reply(
+                frame,
+                {
+                    "msgtype": "text",
+                    "text": {"content": "绑定失败，请在与机器人的个人会话中发送 connect mycom。"},
+                },
             )
 
     async def _run(self) -> None:

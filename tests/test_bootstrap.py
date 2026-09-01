@@ -12,7 +12,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import Settings
 from app.core.constants import SCHEMA_VERSION
 from app.core.exceptions import SchemaVersionMismatch
-from app.repositories.models import User
+from app.repositories.models import ToolWhitelist, User
 from app.repositories.system import SystemSettingRepository
 from app.services.bootstrap import BootstrapService
 
@@ -47,6 +47,10 @@ def test_bootstrap_creates_schema_and_seed(engine, settings) -> None:
         admin = session.query(User).filter(User.username == "admin").one()
         assert admin.role.value == "admin"
         assert admin.must_change_password is True
+        print_tool = session.query(ToolWhitelist).filter(ToolWhitelist.name == "Print").one()
+        assert print_tool.description == "在控制台输出文字内容"
+        assert print_tool.command_template == "echo {text}"
+        assert print_tool.is_enabled is True
 
 
 def test_bootstrap_is_idempotent(engine, settings) -> None:
@@ -58,6 +62,7 @@ def test_bootstrap_is_idempotent(engine, settings) -> None:
     with SessionLocal() as session:
         count = session.query(User).filter(User.username == "admin").count()
         assert count == 1
+        assert session.query(ToolWhitelist).filter(ToolWhitelist.name == "Print").count() == 1
 
 
 def test_schema_version_mismatch_fails(engine, settings) -> None:

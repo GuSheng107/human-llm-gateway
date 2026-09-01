@@ -89,6 +89,8 @@ class ConnectionService:
         config = self.decrypt_config(row)
         result: dict[str, Any] = {}
         for field in spec.config_fields if spec else []:
+            if not field.user_configurable:
+                continue
             value = config.get(field.name)
             if field.secret:
                 result[field.name] = None  # 只表示"已设置"
@@ -137,12 +139,26 @@ class ConnectionService:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED, "不支持的连接平台", status_code=400
             )
+        unsupported_fields = set(config) - spec.user_config_field_names()
+        if unsupported_fields:
+            message = (
+                "微信 iLink 只支持扫码绑定，无需填写连接信息"
+                if spec.supports_login
+                else f"存在不可配置字段: {', '.join(sorted(unsupported_fields))}"
+            )
+            raise DomainError(DomainErrorCode.VALIDATION_FAILED, message, status_code=400)
         problems = self.registry.validate_config(platform, config)
         if problems:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED, "; ".join(problems), status_code=400
             )
         begin_immediate_if_sqlite(session)
+        if self.repo.get_by_owner_platform(session, owner.id, platform) is not None:
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                "每个平台只能创建一条连接",
+                status_code=409,
+            )
         row = ImConnection(
             owner_user_id=owner.id,
             name=name,
@@ -156,7 +172,11 @@ class ConnectionService:
         try:
             session.flush()
         except IntegrityError as exc:
-            raise DomainError(DomainErrorCode.CONFLICT, "同名连接已存在", status_code=409) from exc
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                "每个平台只能创建一条连接",
+                status_code=409,
+            ) from exc
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_CREATED,
@@ -186,6 +206,14 @@ class ConnectionService:
         merged = self.decrypt_config(row)
         changed_fields: list[str] = []
         if config_changes:
+            unsupported_fields = set(config_changes) - spec.user_config_field_names()
+            if unsupported_fields:
+                message = (
+                    "微信 iLink 参数由扫码绑定自动保存，不能手工修改"
+                    if spec.supports_login
+                    else f"存在不可配置字段: {', '.join(sorted(unsupported_fields))}"
+                )
+                raise DomainError(DomainErrorCode.VALIDATION_FAILED, message, status_code=400)
             for field in spec.config_fields:
                 if field.name not in config_changes:
                     continue
@@ -268,6 +296,14 @@ class ConnectionService:
     ) -> ImConnection:
         from ..connectors import connection_manager as manager
 
+        spec = self.registry.require_spec(row.platform)
+        if spec.requires_binding and row.bound_external_user_id is None:
+            action = "扫码登录" if spec.supports_login else "完成用户绑定"
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                f"请先{action}，绑定成功后才能启用连接",
+                status_code=400,
+            )
         row.desired_running = True
         await run_in_threadpool(session.flush)
         await manager.start(row, self.decrypt_config(row), self.inbound_handler())
@@ -361,7 +397,14 @@ class ConnectionService:
     def create_binding_code(
         self, session: Session, *, row: ImConnection, actor_user_id: int
     ) -> dict[str, Any]:
-        code = f"connect {row.name}"
+        spec = self.registry.require_spec(row.platform)
+        code = spec.binding_command
+        if code is None:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "该平台不使用消息绑定",
+                status_code=400,
+            )
         code_hash = hash_binding_code(code)
         ttl = getattr(get_settings(), "binding_code_ttl_seconds", BINDING_CODE_TTL_FALLBACK_SECONDS)
         expires_at = utc_now() + timedelta(seconds=ttl)
@@ -376,6 +419,19 @@ class ConnectionService:
             metadata={"fields": ["binding_code"]},
         )
         return {"binding_code": code, "expires_at": expires_at.isoformat() + "Z"}
+
+    async def start_binding_listener(self, row: ImConnection) -> None:
+        """为主动连接平台启动临时监听，等待用户发送固定绑定命令。
+
+        该监听不改变 ``desired_running``。绑定成功后进站回调会在开关仍关闭时
+        停止监听；绑定码过期时由看门狗停止，避免形成独立的“停用”状态。
+        """
+        spec = self.registry.require_spec(row.platform)
+        if spec.kind != "client" or spec.binding_command is None:
+            return
+        from ..connectors import connection_manager as manager
+
+        await manager.start(row, self.decrypt_config(row), self.inbound_handler())
 
     def binding_status(self, session: Session, row: ImConnection) -> dict[str, Any]:
         pending = row.binding_code_hash is not None and (
@@ -522,6 +578,13 @@ class ConnectionService:
                         return InboundResult.UNHANDLED.value
                     result = service.handle_inbound(session, row=row, message=message)
                     session.commit()
+                    if result is InboundResult.BOUND and not row.desired_running:
+                        from ..connectors import connection_manager as manager
+
+                        await manager.stop(connection_id)
+                        row.state = ConnectionState.STOPPED
+                        row.next_retry_at = None
+                        session.commit()
                     return result.value
                 except Exception:
                     session.rollback()

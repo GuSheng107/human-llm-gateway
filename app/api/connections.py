@@ -116,6 +116,8 @@ class PlatformView(BaseModel):
     kind: str
     supports_delivery: bool
     supports_login: bool
+    requires_binding: bool
+    binding_command: str | None
     config_schema: list[PlatformField]
 
 
@@ -124,13 +126,21 @@ class PlatformView(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _view(session: Session, row: ImConnection, *, include_owner: bool = False) -> ConnectionView:
+def _view(
+    session: Session,
+    row: ImConnection,
+    *,
+    include_owner: bool = False,
+    viewer_id: int | None = None,
+) -> ConnectionView:
     owner_username = None
     if include_owner:
         from ..repositories.models import User
 
         owner = session.get(User, row.owner_user_id)
         owner_username = owner.username if owner else None
+    # 仅连接 owner 本人可见脱敏配置；管理员监管他人连接时不返回任何配置信息。
+    config = _service._public_config(row) if viewer_id == row.owner_user_id else {}
     return ConnectionView(
         id=str(row.id),
         name=row.name,
@@ -143,7 +153,7 @@ def _view(session: Session, row: ImConnection, *, include_owner: bool = False) -
         bound=row.bound_external_user_id is not None,
         owner_user_id=str(row.owner_user_id) if include_owner else None,
         owner_username=owner_username,
-        config=_service._public_config(row),
+        config=config,
         last_error_code=row.last_error_code,
         last_error_message=row.last_error_message,
         retry_count=row.retry_count,
@@ -168,6 +178,8 @@ def list_platforms(_user: User = Depends(require_current_user)) -> list[Platform
             kind=spec.kind,
             supports_delivery=spec.supports_delivery,
             supports_login=spec.supports_login,
+            requires_binding=spec.requires_binding,
+            binding_command=spec.binding_command,
             config_schema=[PlatformField(**field) for field in spec.config_schema()],
         )
         for spec in _service.registry.list_specs()
@@ -200,7 +212,10 @@ def list_connections(
         state=state,
     )
     return ConnectionPage(
-        items=[_view(db, row, include_owner=user.role is UserRole.ADMIN) for row in rows],
+        items=[
+            _view(db, row, include_owner=user.role is UserRole.ADMIN, viewer_id=user.id)
+            for row in rows
+        ],
         page=page,
         page_size=page_size,
         total=total,
@@ -218,7 +233,7 @@ def create_connection(
     )
     db.commit()
     db.refresh(row)
-    return _view(db, row)
+    return _view(db, row, viewer_id=user.id)
 
 
 @router.post("/check", response_model=list[ConnectionCheckItem])
@@ -246,7 +261,7 @@ def get_connection(
     db: Session = Depends(get_db),
 ) -> ConnectionView:
     row = _get_visible_connection(db, connection_id, user)
-    return _view(db, row, include_owner=user.role is UserRole.ADMIN)
+    return _view(db, row, include_owner=user.role is UserRole.ADMIN, viewer_id=user.id)
 
 
 @router.patch("/{connection_id}", response_model=ConnectionView)
@@ -270,7 +285,7 @@ def update_connection(
     )
     db.commit()
     db.refresh(row)
-    return _view(db, row)
+    return _view(db, row, viewer_id=user.id)
 
 
 @router.delete("/{connection_id}", status_code=204)
@@ -300,7 +315,7 @@ async def start_connection(
     await _service.start(db, row=row, actor_user_id=user.id)
     await run_in_threadpool(db.commit)
     await run_in_threadpool(db.refresh, row)
-    return await run_in_threadpool(_view, db, row)
+    return await run_in_threadpool(_view, db, row, viewer_id=user.id)
 
 
 @router.post("/{connection_id}/stop", response_model=ConnectionView)
@@ -313,7 +328,7 @@ async def stop_connection(
     await _service.stop(db, row=row, actor_user_id=user.id)
     await run_in_threadpool(db.commit)
     await run_in_threadpool(db.refresh, row)
-    return await run_in_threadpool(_view, db, row)
+    return await run_in_threadpool(_view, db, row, viewer_id=user.id)
 
 
 @router.post("/{connection_id}/apply", response_model=ConnectionView)
@@ -326,7 +341,7 @@ async def apply_connection(
     await _service.apply(db, row=row, actor_user_id=user.id)
     await run_in_threadpool(db.commit)
     await run_in_threadpool(db.refresh, row)
-    return await run_in_threadpool(_view, db, row)
+    return await run_in_threadpool(_view, db, row, viewer_id=user.id)
 
 
 @router.get("/{connection_id}/health", response_model=ConnectionHealth)
@@ -376,7 +391,7 @@ async def poll_login(
 
 
 @router.post("/{connection_id}/binding", response_model=BindingCreated)
-def create_binding(
+async def create_binding(
     connection_id: int,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
@@ -384,7 +399,8 @@ def create_binding(
     row = _service.get_owned(db, connection_id, user.id)
     _require_owner(row, user)
     result = _service.create_binding_code(db, row=row, actor_user_id=user.id)
-    db.commit()
+    await run_in_threadpool(db.commit)
+    await _service.start_binding_listener(row)
     return BindingCreated(**result)
 
 

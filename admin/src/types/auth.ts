@@ -4,6 +4,7 @@ export type Capability =
   | "invitation.manage"
   | "user.manage"
   | "connection.manage"
+  | "connection.admin"
   | "model.manage"
   | "api_key.manage"
   | "logs.manage";

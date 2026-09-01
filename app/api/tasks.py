@@ -103,6 +103,7 @@ class TaskItem(BaseModel):
     api_key_prefix: str
     stream_requested: bool
     has_tools: bool
+    prompt_preview: str
     response_id: str | None
     human_deadline_at: str | None
     created_at: str
@@ -204,6 +205,18 @@ def _summary(task: RequestTask) -> tuple[str, list[str]]:
     return DeliveryService._extract_request_summary(task)
 
 
+# 列表预览长度（字符）；取摘要尾部（Agent 提示词的提问在末尾）。
+_PREVIEW_CAP = 160
+
+
+def _preview_text(prompt: str) -> str:
+    if not prompt:
+        return ""
+    if len(prompt) <= _PREVIEW_CAP:
+        return prompt
+    return f"…{prompt[-_PREVIEW_CAP:]}"
+
+
 def _batch_fake_model_names(session: Session, tasks: list[RequestTask]) -> dict[int, str]:
     """批量解析 FakeModel 名称；批量查询避免列表 N+1。"""
     ids = {t.fake_model_id for t in tasks if t.fake_model_id is not None}
@@ -253,6 +266,7 @@ def _item_view(
         api_key_prefix=task.api_key_prefix_snapshot,
         stream_requested=task.stream_requested,
         has_tools=bool(tool_names),
+        prompt_preview=_preview_text(_prompt),
         response_id=task.response_public_id,
         human_deadline_at=iso_utc(task.human_deadline_at),
         created_at=iso_utc(task.created_at) or "",

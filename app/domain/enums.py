@@ -18,6 +18,7 @@ class Capability(StrEnum):
     INVITATION_MANAGE = "invitation.manage"
     USER_MANAGE = "user.manage"
     CONNECTION_MANAGE = "connection.manage"
+    CONNECTION_ADMIN = "connection.admin"
     MODEL_MANAGE = "model.manage"
     API_KEY_MANAGE = "api_key.manage"
     LOGS_MANAGE = "logs.manage"

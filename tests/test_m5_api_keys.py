@@ -57,20 +57,29 @@ def _create_api_key(client, headers, **payload) -> tuple[dict, str]:
     return response, response.json() if response.status_code == 201 else {}
 
 
-def test_api_key_plaintext_shown_once_and_prefix_only_afterwards(client, admin_headers) -> None:
+def test_api_key_plaintext_visible_to_owner_not_admin(client, admin_headers) -> None:
+    """Owner 视角列表返回完整明文；admin 监管视角只可见前缀。"""
     headers = _create_user(client, admin_headers, "key-user")
-    response, body = _create_api_key(client, headers, name="一次性明文")
+    response, body = _create_api_key(client, headers, name="完整明文")
     assert response.status_code == 201, response.text
     plaintext = body["plaintext"]
     assert plaintext.startswith("sk-")
     assert len(plaintext) == 46
 
+    # Owner 本人：列表直接带完整明文 key，可显示可复制。
     listed = client.get("/api/api-keys", headers=headers).json()
     item = listed["items"][0]
     assert "plaintext" not in item
     assert item["key_prefix"] == plaintext[:8]
     assert len(item["key_prefix"]) == 8
-    assert plaintext not in response_text(listed)
+    assert item["key"] == plaintext
+
+    # Admin 监管：能看到该 Key 记录，但不返回完整明文。
+    admin_listed = client.get("/api/api-keys", headers=admin_headers).json()
+    admin_items = [i for i in admin_listed["items"] if i["name"] == "完整明文"]
+    assert admin_items, "admin 应能看到所有用户的 Key"
+    assert admin_items[0]["key"] is None
+    assert admin_items[0]["key_prefix"] == plaintext[:8]
 
 
 def response_text(payload) -> str:

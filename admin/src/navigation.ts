@@ -12,6 +12,7 @@ export type AppRouteId =
   | "logs"
   | "invitations"
   | "users"
+  | "adminConnections"
   | "account";
 
 export interface NavigationItem {
@@ -130,6 +131,14 @@ export const NAVIGATION: NavigationGroup[] = [
         description: "用户状态与密码管理",
         icon: "users",
         capability: "user.manage",
+      },
+      {
+        id: "adminConnections",
+        path: "/settings/im-connections",
+        label: "IM 连接监管",
+        description: "关闭或删除任意用户的 IM 连接",
+        icon: "link",
+        capability: "connection.admin",
       },
       {
         id: "account",
