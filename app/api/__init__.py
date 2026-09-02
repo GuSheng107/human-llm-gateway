@@ -41,8 +41,10 @@ def create_app() -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         from ..connectors import connection_manager as manager
+        from ..connectors.registry import default_registry
         from ..core.config import get_settings
         from ..core.db import SessionLocal
+        from ..core.readiness import protocols_ready
         from ..services.bootstrap import BootstrapService
         from ..services.connection_service import ConnectionService
         from ..services.connection_watchdog import connection_watchdog
@@ -51,6 +53,8 @@ def create_app() -> FastAPI:
 
         with SessionLocal() as db:
             BootstrapService().initialize(db, get_settings())
+        readiness = application.state.readiness
+        readiness.mark_bootstrap_complete()
         # 结构化日志异步落库线程 + 普通 logging 告警接入 app_logs。
         from ..core.logging import install_persistence, stop_log_persistence
 
@@ -65,9 +69,15 @@ def create_app() -> FastAPI:
         # 僵尸任务收敛：等待循环消失（进程重启/断开未检测）后的兜底驱动。
         sweeper_task = asyncio.create_task(task_sweeper.run(), name="task-sweeper")
         retention_task = asyncio.create_task(data_retention.run(), name="data-retention")
+        readiness.mark_runtime_started(
+            tasks=(watchdog_task, sweeper_task, retention_task),
+            protocols_ready=protocols_ready(),
+            connector_registry_ready=bool(default_registry.list_specs()),
+        )
         try:
             yield
         finally:
+            readiness.reset()
             watchdog_task.cancel()
             sweeper_task.cancel()
             retention_task.cancel()
@@ -81,6 +91,9 @@ def create_app() -> FastAPI:
             stop_log_persistence()
 
     app = FastAPI(title="Human LLM Gateway", version="0.6.0", lifespan=lifespan)
+    from ..core.readiness import ReadinessState
+
+    app.state.readiness = ReadinessState()
     app.add_middleware(RequestIdMiddleware)
     # 请求体大小上限必须在鉴权与解析之前生效，因此注册在最外层。
     app.add_middleware(BodySizeLimitMiddleware)
@@ -110,6 +123,16 @@ def create_app() -> FastAPI:
         from ..core.config import get_settings
 
         return {"status": "ok", "service": get_settings().app_name}
+
+    @app.get("/readyz")
+    def readiness() -> Any:
+        from fastapi.responses import JSONResponse
+
+        from ..core.config import get_settings
+
+        payload = app.state.readiness.snapshot(get_settings().app_name)
+        status_code = 200 if payload["status"] == "ready" else 503
+        return JSONResponse(status_code=status_code, content=payload)
 
     admin_dist = Path(__file__).resolve().parent.parent.parent / "admin" / "dist"
     if admin_dist.is_dir():

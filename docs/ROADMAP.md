@@ -283,8 +283,8 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 
 - [x] 完成单端口生产式部署说明：构建 `admin/dist`，由 `app.api:app` 托管管理台和 API，并通过 `/healthz` 检查存活。
 - [ ] GitHub Actions 在 `master` push 和手动触发时执行后端与前端完整质量门禁。
-- [ ] `/healthz` 只检查进程存活；新增 `/readyz` 检查 5 项就绪条件（startup、DB+Schema+写自测、加密 sentinel、协议 registry、协调器+connector registry）。
-- [ ] 单个 IM 连接故障不使整个实例未就绪，连接健康继续独立展示。
+- [x] `/healthz` 只检查进程存活；`/readyz` 检查 5 项就绪条件（startup、DB+Schema+启动写入、加密 sentinel、协议 registry、协调器+connector registry），未就绪返回 503。
+- [x] 单个 IM 连接故障不使整个实例未就绪，连接健康继续独立展示。
 - [ ] 提供 SQLite 在线备份、保留期、恢复命令和至少一次恢复演练，不在 WAL 写入时直接复制单文件。
 - [ ] 加密主密钥备份两级实践：首选 Vault/KMS/云 Secret Manager 与数据库分系统存放；小型自托管使用 age/SOPS 加密文件，恢复私钥存放于密码管理器或离线介质；数据库备份不包含明文主密钥。
 - [ ] 利用 `encryption_key_version` 字段实现 key ring 与主密钥轮换流程；未知 key_version 解密失败按配置错误处理。
@@ -329,7 +329,7 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] 工具执行需要当前用户权限和显式确认，并写入完整审计：`confirmed=false` 拒绝并审计（not_confirmed）；执行结果（成功/失败/超时/超限）与拒绝原因（disabled/not_found/invalid_arguments/not_confirmed）全部进审计。
 - [x] 前端工具沙箱页（/tools）：管理员 CRUD 表单（模板/Schema JSON/超时）；所有用户执行弹窗（参数输入 + 结果 stdout/stderr 展示）；执行历史分页（管理员看全部、用户看自己）。
 - [x] 全新数据库默认提供 `Print` 工具，用于 Fake Tool Call，并可在沙箱控制台输出 `text` 参数。
-- [x] 沙箱支持 stdin 传参（`stdin_parameter`，`docker run -i`、64 KiB 上限、不经 argv/shell）；内置工具扩展为 Print、ToUpper、ToLower、Base64Encode、Sha256、SystemInfo（SCHEMA_VERSION 8）。
+- [x] 沙箱支持 stdin 传参（`stdin_parameter`，`docker run -i`、64 KiB 上限、不经 argv/shell）；内置工具扩展为 Print、ToUpper、ToLower、Base64Encode、Sha256、SystemInfo（SCHEMA_VERSION 9）。
 - [x] 沙箱逃逸面、资源耗尽、网络越权、命令注入和 Secret 泄漏安全测试通过；完整运维与自定义镜像说明见 `docs/SANDBOX.md`。
 
 ---

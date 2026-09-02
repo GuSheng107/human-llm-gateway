@@ -153,6 +153,7 @@ cd admin && npm ci && npm run build
 cd ..
 uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
 curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/readyz
 ```
 
 高频数据保留 7 天。服务启动时清理一次，之后每 7 天清理 7 天前的数据；请求任务和正式回复草稿保留。

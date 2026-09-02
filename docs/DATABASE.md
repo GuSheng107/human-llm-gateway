@@ -52,7 +52,7 @@
 
 业务代码引用枚举成员，不散落裸字符串。
 
-当前部署使用 `SCHEMA_VERSION 8`。任务草稿的 `version` 用于乐观锁；工作台收件箱使用独立的 `task_inbox_states` 表保存已读游标，不把展示状态写回请求任务。
+当前部署使用 `SCHEMA_VERSION 9`。任务草稿的 `version` 用于乐观锁；工作台收件箱使用独立的 `task_inbox_states` 表保存已读游标，不把展示状态写回请求任务。
 
 ### 2.4 Secret 加密契约
 

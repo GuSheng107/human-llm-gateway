@@ -446,9 +446,9 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 ## 13. 部署与运维架构
 
 - `/healthz` 只表示进程存活，不访问数据库或连接器。
-- `/readyz` 固定 5 项就绪条件，全部满足才返回 200：①应用 startup 已完成；②数据库可访问、`schema_version` 匹配且最近一次写能力自测正常；③主加密密钥加载成功并能解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）；④三个协议 adapter/renderer registry 初始化成功；⑤任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。
+- `/readyz` 固定 5 项就绪条件，全部满足才返回 200：①应用 startup 已完成；②数据库初始化、`schema_version` 校验和启动阶段写入成功；③主加密密钥加载成功并能解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）；④三个协议 adapter/renderer registry 初始化成功；⑤任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。未满足时返回 503。
 - `/readyz` 不检查任何用户 IM 是否在线、不检查真实 LLM 连通、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
-  `/readyz` 本身不得为了探测而执行数据库写事务：写能力自测只在 startup 和后台低频周期任务（如每 60 秒）中执行并缓存最后成功时间，`/readyz` 只读取缓存状态并检查新鲜度窗口。这样避免 Kubernetes 每 5-10 秒的 readiness probe 与 SQLite 全库写锁产生高频竞争。
+- `/readyz` 本身不执行数据库、IM 或真实 LLM 探测，只读取启动缓存和后台协调器任务状态，避免 Kubernetes 每 5-10 秒的 readiness probe 与 SQLite 全库写锁产生高频竞争。
 - `/metrics` 使用 Prometheus exposition format，只暴露低基数指标；标签只允许有限枚举，禁止 `user_id`、`api_key_id`、`task_id`、`connection_id`、`model`、`base_url`、`error_message` 出现在 label 中。
 - SQLite 备份使用在线备份 API 或经过验证的 `VACUUM INTO` 流程，不在 WAL 写入期间直接复制单个数据库文件；发布前必须验证恢复。
 - 应用日志优先输出结构化 stderr，由 Docker、systemd 或部署平台轮转；数据库日志按保留期清理。
@@ -490,4 +490,4 @@ ROADMAP 的阶段编号是产品交付顺序，不代表所有前端开发严格
 - 管理员接口无法回读或代用用户 Secret；受限会话只能访问改密相关接口。
 - 错误和日志不会暴露人工流程、真实模型或凭据。
 - 当前数据库只使用一套 Schema 和 metadata；接口、前端类型和测试保持同步。
-- `/readyz` 与 `/metrics` 暂未开放；当前部署使用 `/healthz` 做存活检查。
+- `/healthz` 用于进程存活检查，`/readyz` 用于部署编排的就绪检查；`/metrics` 暂未开放。

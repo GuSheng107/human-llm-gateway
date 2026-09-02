@@ -13,7 +13,7 @@
 | `/v1/*` | 外部 LLM 兼容 API | 用户创建的 API Key |
 | `/connectors/*` | IM/Webhook/WebSocket/HTTP 连接器入口 | 每个连接独立凭据 |
 | `/healthz` | 进程存活检查，不访问数据库或连接器 | 无 |
-| `/readyz` | 预留就绪检查（当前部署使用 `/healthz` 存活检查） | 尚未开放 |
+| `/readyz` | 就绪检查；启动校验和后台协调器均正常时返回 200 | 无 |
 | `/metrics` | 预留 Prometheus 指标接口 | 尚未开放 |
 
 管理 API 与推理 API 使用不同的鉴权依赖和错误映射。用户登录 Token 不能调用 `/v1/*`，外部 API Key 不能调用 `/api/*`。
@@ -31,12 +31,12 @@
 
 草稿 `PATCH` 必须携带 `expected_version`；版本不匹配返回 `409 draft_version_conflict`。回复统一使用回复工作台。
 
-### 1.1 `/readyz` 就绪条件（预留设计，当前未开放）
+### 1.1 `/readyz` 就绪条件
 
 固定为 5 项，全部满足才返回 200：
 
 1. 应用 startup 已完成。
-2. 数据库可访问，`schema_version` 匹配，且最近一次写能力自测正常。写自测在 startup 和后台低频周期任务（如每 60 秒）中执行并缓存最后成功时间；`/readyz` 本身只读取缓存状态并检查新鲜度窗口，超过窗口才返回未就绪，不得为探测执行数据库写事务。
+2. 数据库初始化、`schema_version` 校验和启动阶段写入成功；`/readyz` 只读取启动缓存状态，不执行数据库写事务。
 3. 主加密密钥加载成功，并能成功解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）。
 4. 三个协议 adapter/renderer registry 初始化成功。
 5. 任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。

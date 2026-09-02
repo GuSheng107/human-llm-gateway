@@ -21,7 +21,7 @@ cd ..
 uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
 ```
 
-存活检查使用 `GET /healthz`。`/readyz` 和 `/metrics` 目前只是预留接口，不应作为当前部署依赖。
+存活检查使用 `GET /healthz`，就绪检查使用 `GET /readyz`。`/metrics` 暂未开放。
 
 ## 相关文档
 

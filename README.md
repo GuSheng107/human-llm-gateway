@@ -153,6 +153,7 @@ cd admin && npm ci && npm run build
 cd ..
 uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
 curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/readyz
 ```
 
 High-frequency records are retained for seven days. The service cleans records older than seven days at startup and every seven days; request tasks and formal reply drafts are retained.
