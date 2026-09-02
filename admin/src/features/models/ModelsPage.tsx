@@ -305,11 +305,14 @@ export function ModelsPage() {
             <h3 className="mb-2 text-xs font-semibold text-slate-700">端点类型</h3>
             {filterChips(
               Object.keys(ENDPOINT_GROUP_LABELS)
-                .filter((key) => key !== "" && models.some((model) => model.endpoint_type === key))
-                .map((key) => [key, models.filter((m) => m.endpoint_type === key).length] as [
-                  string,
-                  number,
-                ]),
+                .filter(
+                  (key) =>
+                    key !== "" && models.some((model) => model.endpoint_types.includes(key)),
+                )
+                .map((key) => [
+                  key,
+                  models.filter((m) => m.endpoint_types.includes(key)).length,
+                ] as [string, number]),
               endpointType,
               setEndpointType,
               (value) => ENDPOINT_GROUP_LABELS[value],
@@ -494,7 +497,16 @@ export function ModelsPage() {
                         </td>
                         <td className="px-4 py-3 text-slate-500">{model.display_name ?? "-"}</td>
                         <td className="px-4 py-3 text-slate-500">
-                          {ENDPOINT_LABELS[model.endpoint_type] ?? model.endpoint_type}
+                          <div className="flex max-w-48 flex-wrap gap-1">
+                            {model.endpoint_types.map((endpoint) => (
+                              <span
+                                key={endpoint}
+                                className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-500"
+                              >
+                                {ENDPOINT_LABELS[endpoint] ?? endpoint}
+                              </span>
+                            ))}
+                          </div>
                         </td>
                         <td className="px-4 py-3 font-mono text-slate-500">
                           {formatContext(model.context_window)}

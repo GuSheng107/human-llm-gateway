@@ -66,6 +66,35 @@ def _to_decimal(value: Any) -> Decimal | None:
     return result
 
 
+def _clean_endpoint_types(values: list[str] | None) -> list[str]:
+    """端点多选：None 表示全开三种协议；显式给定必须非空且值合法。"""
+    if values is None:
+        return [endpoint.value for endpoint in ModelEndpointType]
+    seen: set[str] = set()
+    cleaned: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if not normalized or normalized in seen:
+            continue
+        try:
+            ModelEndpointType(normalized)
+        except ValueError as exc:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                f"未知端点协议 {normalized}",
+                status_code=400,
+            ) from exc
+        seen.add(normalized)
+        cleaned.append(normalized)
+    if not cleaned:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            "至少选择一个对外端点协议",
+            status_code=400,
+        )
+    return cleaned
+
+
 def _clean_tags(values: list[str] | None) -> list[str]:
     if not values:
         return []
@@ -153,7 +182,7 @@ class FakeModelService:
                 result = [row for row in result if row.billing_tier.value == billing]
             endpoint = filters.get("endpoint_type")
             if endpoint:
-                result = [row for row in result if row.endpoint_type.value == endpoint]
+                result = [row for row in result if endpoint in (row.endpoint_types or [])]
             capability = filters.get("capability")
             if capability:
                 result = [row for row in result if capability in (row.capabilities or [])]
@@ -197,7 +226,7 @@ class FakeModelService:
         max_output_tokens: int | None = None,
         capabilities: list[str] | None = None,
         billing_tier: str | None = None,
-        endpoint_type: str | None = None,
+        endpoint_types: list[str] | None = None,
         logo_url: str | None = None,
         tags: list[str] | None = None,
     ) -> FakeModel:
@@ -232,7 +261,7 @@ class FakeModelService:
             max_output_tokens=max_output_tokens,
             capabilities=_clean_capabilities(capabilities),
             billing_tier=BillingTier(billing_tier or BillingTier.PAY_AS_YOU_GO.value),
-            endpoint_type=ModelEndpointType(endpoint_type or ModelEndpointType.OPENAI_CHAT.value),
+            endpoint_types=_clean_endpoint_types(endpoint_types),
             logo_url=(logo_url or "").strip() or None,
             tags=_clean_tags(tags),
         )
@@ -270,7 +299,7 @@ class FakeModelService:
             "max_output_tokens",
             "capabilities",
             "billing_tier",
-            "endpoint_type",
+            "endpoint_types",
             "logo_url",
             "tags",
         }
@@ -293,8 +322,8 @@ class FakeModelService:
                 value = _clean_tags(value)
             elif name == "billing_tier" and value is not None:
                 value = BillingTier(value)
-            elif name == "endpoint_type" and value is not None:
-                value = ModelEndpointType(value)
+            elif name == "endpoint_types":
+                value = _clean_endpoint_types(value)
             if getattr(row, name) != value:
                 setattr(row, name, value)
                 changed.append(name)

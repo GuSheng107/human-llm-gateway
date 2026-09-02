@@ -60,7 +60,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_050_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "openai_responses",
+                "endpoints": ["openai_chat", "openai_responses"],
                 "tags": ["旗舰", "多模态"],
             },
             "gpt-5.6-terra": {
@@ -70,7 +70,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_050_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "openai_responses",
+                "endpoints": ["openai_chat", "openai_responses"],
                 "tags": ["均衡"],
             },
             "gpt-5.6-luna": {
@@ -80,7 +80,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_050_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "openai_responses",
+                "endpoints": ["openai_chat", "openai_responses"],
                 "tags": ["轻量"],
             },
             "gpt-5.5": {
@@ -90,7 +90,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_050_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "openai_responses",
+                "endpoints": ["openai_chat", "openai_responses"],
                 "tags": [],
             },
             "gpt-5.4": {
@@ -100,7 +100,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_050_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "openai_responses",
+                "endpoints": ["openai_chat", "openai_responses"],
                 "tags": ["入门"],
             },
         },
@@ -117,7 +117,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "anthropic_messages",
+                "endpoints": ["anthropic_messages"],
                 "tags": ["旗舰", "长文本"],
             },
             "claude-opus-5": {
@@ -128,7 +128,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "anthropic_messages",
+                "endpoints": ["anthropic_messages"],
                 "tags": ["推理"],
             },
             "claude-sonnet-5": {
@@ -139,7 +139,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "anthropic_messages",
+                "endpoints": ["anthropic_messages"],
                 "tags": ["均衡"],
             },
             "claude-haiku-4-5": {
@@ -150,7 +150,7 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 200_000,
                 "max_output": 32_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "endpoint": "anthropic_messages",
+                "endpoints": ["anthropic_messages"],
                 "tags": ["轻量"],
             },
         },
@@ -618,7 +618,7 @@ class FakeModelRepository:
         max_output_tokens: int | None = None,
         capabilities: list[str] | None = None,
         billing_tier: BillingTier = BillingTier.PAY_AS_YOU_GO,
-        endpoint_type: ModelEndpointType = ModelEndpointType.OPENAI_CHAT,
+        endpoint_types: list[str] | None = None,
         tags: list[str] | None = None,
     ) -> FakeModel:
         row = FakeModel(
@@ -637,7 +637,11 @@ class FakeModelRepository:
             max_output_tokens=max_output_tokens,
             capabilities=capabilities or [],
             billing_tier=billing_tier,
-            endpoint_type=endpoint_type,
+            endpoint_types=(
+                list(endpoint_types)
+                if endpoint_types
+                else [endpoint.value for endpoint in ModelEndpointType]
+            ),
             tags=tags or [],
         )
         session.add(row)
@@ -685,7 +689,7 @@ class FakeModelRepository:
                         max_output_tokens=meta.get("max_output"),
                         capabilities=meta.get("capabilities", []),
                         billing_tier=BillingTier(meta.get("billing", "pay_as_you_go")),
-                        endpoint_type=ModelEndpointType(meta.get("endpoint", "openai_chat")),
+                        endpoint_types=meta.get("endpoints"),
                         tags=meta.get("tags", []),
                     )
                     session.flush()

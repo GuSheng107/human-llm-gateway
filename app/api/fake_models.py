@@ -42,7 +42,7 @@ class FakeModelCreate(StrictModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
     capabilities: list[str] = Field(default_factory=list, max_length=16)
     billing_tier: str | None = None
-    endpoint_type: str | None = None
+    endpoint_types: list[str] | None = Field(default=None, max_length=8)
     logo_url: str | None = Field(default=None, max_length=512)
     tags: list[str] = Field(default_factory=list, max_length=20)
 
@@ -60,7 +60,7 @@ class FakeModelUpdate(StrictModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
     capabilities: list[str] | None = Field(default=None, max_length=16)
     billing_tier: str | None = None
-    endpoint_type: str | None = None
+    endpoint_types: list[str] | None = Field(default=None, max_length=8)
     logo_url: str | None = Field(default=None, max_length=512)
     tags: list[str] | None = Field(default=None, max_length=20)
 
@@ -83,7 +83,7 @@ class FakeModelView(BaseModel):
     max_output_tokens: int | None
     capabilities: list[str]
     billing_tier: str
-    endpoint_type: str
+    endpoint_types: list[str]
     logo_url: str | None
     tags: list[str]
     created_at: str
@@ -162,7 +162,7 @@ def _model_view(row: FakeModel) -> FakeModelView:
         max_output_tokens=row.max_output_tokens,
         capabilities=list(row.capabilities or []),
         billing_tier=row.billing_tier.value,
-        endpoint_type=row.endpoint_type.value,
+        endpoint_types=list(row.endpoint_types or []),
         logo_url=row.logo_url,
         tags=list(row.tags or []),
         created_at=iso_utc(row.created_at) or "",
@@ -260,7 +260,7 @@ def create_fake_model(
         max_output_tokens=payload.max_output_tokens,
         capabilities=payload.capabilities,
         billing_tier=payload.billing_tier,
-        endpoint_type=payload.endpoint_type,
+        endpoint_types=payload.endpoint_types,
         logo_url=payload.logo_url,
         tags=payload.tags,
     )

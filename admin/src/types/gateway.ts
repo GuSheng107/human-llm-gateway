@@ -110,7 +110,7 @@ export interface FakeModel {
   max_output_tokens: number | null;
   capabilities: string[];
   billing_tier: string;
-  endpoint_type: string;
+  endpoint_types: string[];
   logo_url: string | null;
   tags: string[];
   created_at: string;

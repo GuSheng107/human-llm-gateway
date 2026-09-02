@@ -53,25 +53,37 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
     assert pro["context_window"] == 1_000_000
     assert "tools" in pro["capabilities"]
     assert pro["billing_tier"] == "pay_as_you_go"
-    assert pro["endpoint_type"] == "openai_chat"
+    # 未显式指定端点的模型默认三种协议全开。
+    assert sorted(pro["endpoint_types"]) == [
+        "anthropic_messages",
+        "openai_chat",
+        "openai_responses",
+    ]
     claude = seeded["claude-fable-5"]
-    assert claude["endpoint_type"] == "anthropic_messages"
+    assert claude["endpoint_types"] == ["anthropic_messages"]
     for model_id in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"):
         gpt = seeded[model_id]
-        assert gpt["endpoint_type"] == "openai_responses"
+        assert gpt["endpoint_types"] == ["openai_chat", "openai_responses"]
         assert gpt["context_window"] == 1_050_000
         assert gpt["max_output_tokens"] == 128_000
 
-    # 端点筛选。
+    # 端点筛选（包含语义：模型多端点时按任一匹配）。
     anthropic_only = client.get(
         "/api/fake-models", headers=admin_headers, params={"endpoint_type": "anthropic_messages"}
     ).json()
-    assert {item["model_id"] for item in anthropic_only["items"]} == {
+    anthropic_ids = {item["model_id"] for item in anthropic_only["items"]}
+    assert {
         "claude-fable-5",
         "claude-opus-5",
         "claude-sonnet-5",
         "claude-haiku-4-5",
-    }
+    } <= anthropic_ids
+    # GPT 种子仅开放 OpenAI 双协议，不应出现在 anthropic 筛选中。
+    assert "gpt-5.5" not in anthropic_ids
+    openai_only = client.get(
+        "/api/fake-models", headers=admin_headers, params={"endpoint_type": "openai_responses"}
+    ).json()
+    assert "claude-fable-5" not in {item["model_id"] for item in openai_only["items"]}
 
     # 能力筛选。
     vision = client.get(
@@ -101,13 +113,13 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
             "max_output_tokens": 32_000,
             "capabilities": ["tools", "vision"],
             "billing_tier": "subscription",
-            "endpoint_type": "openai_responses",
+            "endpoint_types": ["openai_chat", "openai_responses"],
             "tags": ["测试", "多模态"],
         },
     ).json()
     assert created["input_price_per_million"] == 1.5
     assert created["billing_tier"] == "subscription"
-    assert created["endpoint_type"] == "openai_responses"
+    assert created["endpoint_types"] == ["openai_chat", "openai_responses"]
     assert created["tags"] == ["测试", "多模态"]
 
     updated = client.patch(
@@ -346,6 +358,47 @@ def test_group_ownership_isolation(client, admin_headers) -> None:
     # 管理员治理视图能看到全部分组（含他人私有分组）。
     admin_groups = client.get("/api/model-groups", headers=admin_headers).json()["items"]
     assert any(item["id"] == group["id"] for item in admin_groups)
+
+
+def test_endpoint_types_validation(client, admin_headers) -> None:
+    """端点协议：显式传空数组或未知值拒绝；创建后可多选更新。"""
+    empty = client.post(
+        "/api/fake-models",
+        headers=admin_headers,
+        json={"model_id": "no-endpoint", "endpoint_types": []},
+    )
+    assert empty.status_code == 400
+
+    unknown = client.post(
+        "/api/fake-models",
+        headers=admin_headers,
+        json={"model_id": "bad-endpoint", "endpoint_types": ["not_a_protocol"]},
+    )
+    assert unknown.status_code == 400
+
+    created = client.post(
+        "/api/fake-models",
+        headers=admin_headers,
+        json={
+            "model_id": "dual-endpoint",
+            "endpoint_types": ["openai_chat", "anthropic_messages"],
+        },
+    ).json()
+    assert created["endpoint_types"] == ["openai_chat", "anthropic_messages"]
+
+    updated = client.patch(
+        f"/api/fake-models/{created['id']}",
+        headers=admin_headers,
+        json={"endpoint_types": ["openai_responses", "openai_responses"]},
+    ).json()
+    assert updated["endpoint_types"] == ["openai_responses"]
+
+    cleared = client.patch(
+        f"/api/fake-models/{created['id']}",
+        headers=admin_headers,
+        json={"endpoint_types": []},
+    )
+    assert cleared.status_code == 400
 
 
 def test_function_calling_capability_merged_into_tools(client, admin_headers) -> None:

@@ -296,6 +296,8 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `description` | text nullable | 非敏感说明 |
 | `sort_order` | integer | 默认 0 |
 | `is_enabled` | boolean | 默认 true |
+| `endpoint_types` | json | 对外开放的推理端点协议列表（`openai_chat` / `openai_responses` / `anthropic_messages`，可多选、非空；未显式指定默认全开）。调用方只能经列表内协议发起推理，其余入口按 `model_not_found` 处理 |
+| `capabilities` | json | 能力标签白名单（vision/tools/thinking/audio/video/streaming 等）：调用请求触发模型未声明的能力时在准入前返回协议兼容 400 |
 | `created_by_user_id` | integer | FK users，用于审计 |
 | `created_at` / `updated_at` | datetime | 非空 |
 

@@ -30,7 +30,7 @@ interface FormState {
   context_window: string;
   max_output_tokens: string;
   capabilities: string[];
-  endpoint_type: string;
+  endpoint_types: string[];
 }
 
 const EMPTY_FORM: FormState = {
@@ -40,7 +40,7 @@ const EMPTY_FORM: FormState = {
   context_window: "",
   max_output_tokens: "",
   capabilities: [],
-  endpoint_type: "openai_chat",
+  endpoint_types: [...ENDPOINT_OPTIONS],
 };
 
 function fromModel(model: FakeModel): FormState {
@@ -51,7 +51,7 @@ function fromModel(model: FakeModel): FormState {
     context_window: model.context_window ? String(model.context_window) : "",
     max_output_tokens: model.max_output_tokens ? String(model.max_output_tokens) : "",
     capabilities: [...model.capabilities],
-    endpoint_type: model.endpoint_type,
+    endpoint_types: [...model.endpoint_types],
   };
 }
 
@@ -97,7 +97,7 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
           context_window: intOrNull(form.context_window),
           max_output_tokens: intOrNull(form.max_output_tokens),
           capabilities: form.capabilities,
-          endpoint_type: form.endpoint_type,
+          endpoint_types: form.endpoint_types,
         };
         await updateFakeModel(model.id, payload);
         notify("模型已更新");
@@ -109,7 +109,7 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
           context_window: intOrNull(form.context_window),
           max_output_tokens: intOrNull(form.max_output_tokens),
           capabilities: form.capabilities,
-          endpoint_type: form.endpoint_type,
+          endpoint_types: form.endpoint_types,
         };
         await createFakeModel(payload);
         notify("模型已创建");
@@ -214,24 +214,40 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
               </div>
               <div>
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                  端点协议<span className="ml-0.5 text-danger">*</span>
+                  端点协议（可多选）<span className="ml-0.5 text-danger">*</span>
                 </span>
                 <div className="space-y-2">
-                  {ENDPOINT_OPTIONS.map((endpoint) => (
-                    <label
-                      key={endpoint}
-                      className="flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-xs text-slate-600"
-                    >
-                      <input
-                        type="radio"
-                        name="endpoint_type"
-                        checked={form.endpoint_type === endpoint}
-                        onChange={() => patch({ endpoint_type: endpoint })}
-                      />
-                      {ENDPOINT_LABELS[endpoint]}
-                    </label>
-                  ))}
+                  {ENDPOINT_OPTIONS.map((endpoint) => {
+                    const checked = form.endpoint_types.includes(endpoint);
+                    return (
+                      <label
+                        key={endpoint}
+                        className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs transition ${
+                          checked
+                            ? "border-primary bg-primary/5 text-primary"
+                            : "border-slate-200 text-slate-600 hover:border-slate-300"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={checked && form.endpoint_types.length === 1}
+                          onChange={() =>
+                            patch({
+                              endpoint_types: checked
+                                ? form.endpoint_types.filter((item) => item !== endpoint)
+                                : [...form.endpoint_types, endpoint],
+                            })
+                          }
+                        />
+                        {ENDPOINT_LABELS[endpoint]}
+                      </label>
+                    );
+                  })}
                 </div>
+                <p className="mt-1.5 text-[10px] text-slate-400">
+                  至少保留一个；调用方只能通过勾选的协议端点调用该模型。
+                </p>
               </div>
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">

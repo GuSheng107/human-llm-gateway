@@ -308,6 +308,11 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 
 Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型或回复策略。管理员创建的系统模型对全部用户可见；普通用户创建的私有模型只对所有者可见，其他普通用户即使猜到 ID 也返回 404。管理员治理私有模型时不能把它改绑或转授给其他用户。
 
+每个 Fake Model 声明 `endpoint_types`（可多选、非空；创建时未提供则默认三种协议全开）与 `capabilities` 能力标签。推理请求在两个维度被强制限制：
+
+- **端点门禁**：请求协议不在模型 `endpoint_types` 内时返回协议兼容的 404 `model_not_found`，与模型不存在/不可用不可区分。
+- **能力门禁**：请求触发模型未声明的能力时在任务创建前返回协议兼容的 400 `invalid_request_error`。判定项：`vision`（Chat `image_url` / Responses `input_image` / Anthropic `image`/`document`、`file`/`input_file` 内容块）、`audio`（`input_audio`）、`tools`（`tools` / `tool_choice`）、`thinking`（Chat `reasoning_effort` / Responses `reasoning` / Anthropic `thinking`）、`streaming`（`stream=true`）。`previous_response_id` 展开的历史上下文同样参与检测，不允许借历史链绕过。纯文本、无工具、非流式请求不依赖任何能力标签。
+
 ### 7.2 模型分组（M5）
 
 | 方法 | 路径 | 说明 |
