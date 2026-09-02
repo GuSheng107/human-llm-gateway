@@ -132,7 +132,42 @@ class RequestIdMiddleware:
         path: str = scope.get("path", "")
         is_admin_api = path.startswith("/api/")
 
+        # /api/* JSON 响应需要改写 body 注入 trace_id。ASGI 的
+        # http.response.body 消息不带 headers，无法事后删除 start 阶段已发送的
+        # content-length；因此缓冲完整 body 后统一修正 start 的 content-length
+        # 再按序发送。仅缓冲 content-type 为 application/json 的响应，SSE 等
+        # 流式响应保持逐块透传。
+        held_start: dict[str, Any] | None = None
+        body_chunks: list[bytes] = []
+        buffering_failed = False
+
+        async def flush_buffered() -> None:
+            nonlocal held_start, buffering_failed
+            start_msg = held_start
+            held_start = None
+            full_body = b"".join(body_chunks)
+            body_chunks.clear()
+            if not buffering_failed and full_body[:1] == b"{":
+                try:
+                    payload = json.loads(full_body)
+                    if isinstance(payload, dict) and "trace_id" not in payload:
+                        payload["trace_id"] = request_id
+                        new_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+                        headers = [
+                            (k, v)
+                            for k, v in (start_msg.get("headers") or [])
+                            if k != b"content-length"
+                        ]
+                        headers.append((b"content-length", str(len(new_body)).encode("ascii")))
+                        start_msg = {**start_msg, "headers": headers}
+                        full_body = new_body
+                except (ValueError, TypeError):
+                    pass
+            await send(start_msg)
+            await send({"type": "http.response.body", "body": full_body, "more_body": False})
+
         async def send_with_request_id(message: dict[str, Any]) -> None:
+            nonlocal held_start, buffering_failed, body_chunks
             if message["type"] == "http.response.start":
                 headers = [*(message.get("headers") or [])]
                 # 移除可能已存在的同名头，避免重复。
@@ -140,22 +175,38 @@ class RequestIdMiddleware:
                 headers.append((b"x-request-id", header_value))
                 headers.append((b"x-trace-id", header_value))
                 message = {**message, "headers": headers}
-            elif is_admin_api and message["type"] == "http.response.body":
-                body = message.get("body", b"")
-                if body[:1] == b"{" and not message.get("more_body", False):
-                    try:
-                        payload = json.loads(body)
-                        if isinstance(payload, dict) and "trace_id" not in payload:
-                            payload["trace_id"] = request_id
-                            new_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-                            headers = [
-                                (k, v)
-                                for k, v in message.get("headers") or []
-                                if k != b"content-length"
-                            ]
-                            message = {**message, "body": new_body, "headers": headers}
-                    except (ValueError, TypeError):
-                        pass
+                if is_admin_api and any(
+                    k == b"content-type" and v.lower().startswith(b"application/json")
+                    for k, v in headers
+                ):
+                    # 缓冲 JSON 响应：start 暂存，等待完整 body 后统一发送。
+                    held_start = message
+                    return
+            elif message["type"] == "http.response.body":
+                if held_start is not None:
+                    if message.get("more_body", False):
+                        # JSON 响应被分块流式发送，放弃注入以避免阻塞流式交付。
+                        buffering_failed = True
+                        body_chunks.append(message.get("body", b""))
+                        start_msg = held_start
+                        held_start = None
+                        buffered = body_chunks
+                        body_chunks = []
+                        await send(start_msg)
+                        await send(
+                            {
+                                "type": "http.response.body",
+                                "body": b"".join(buffered),
+                                "more_body": True,
+                            }
+                        )
+                        return
+                    body_chunks.append(message.get("body", b""))
+                    await flush_buffered()
+                    return
+                if buffering_failed:
+                    await send(message)
+                    return
             await send(message)
 
         try:

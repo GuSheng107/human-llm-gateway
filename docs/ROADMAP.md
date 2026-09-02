@@ -420,4 +420,6 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] Anthropic：修正事件顺序与 usage；人工路径不返回 thinking block（无法伪造 signature）。
 - [x] 统一确定性 token 估算器（pp/domain/tokens.py）：三协议共用同一份快照，流式与非流式数值一致。
 - [x] 任务详情页：所有者完整提示词无截断；原始请求 JSON 按需加载（独立端点 + 懒加载）。
+- [x] 修复 RequestIdMiddleware trace_id 注入后 content-length 过期、生产环境 `/api/*` JSON 响应被截断的缺陷（ASGI body 消息不带 headers，改为缓冲 start+body 后重写 content-length）。
+- [x] 生产部署上线：https://newapi.rjgjx.top（部署相关问题优先以线上表现为准核对）。
 - [ ] M11 用户验收：1440/1024/390 布局实测与浏览器冒烟。
