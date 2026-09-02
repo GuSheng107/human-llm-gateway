@@ -7,6 +7,7 @@ interface ConnectionPlatformPanelProps {
   platform: PlatformSpec;
   connection: ImConnection | null;
   busy: boolean;
+  readOnly?: boolean;
   onToggle: () => void;
   onPrimaryAction: () => void;
   onDelete: () => void;
@@ -21,14 +22,16 @@ function RunningSwitch({
   connection,
   busy,
   onToggle,
+  readOnly = false,
 }: {
   platform: PlatformSpec;
   connection: ImConnection | null;
   busy: boolean;
   onToggle: () => void;
+  readOnly?: boolean;
 }) {
   const running = Boolean(connection?.desired_running);
-  const disabled = !connection || busy;
+  const disabled = !connection || busy || readOnly;
   return (
     <label className="inline-flex shrink-0 items-center gap-2 text-xs text-slate-500">
       <button
@@ -59,26 +62,29 @@ function ActionButton({
   children,
   danger = false,
   disabled = false,
+  title,
   onClick,
 }: {
   children: string;
   danger?: boolean;
   disabled?: boolean;
+  title?: string;
   onClick: () => void;
 }) {
   return (
     <button
       type="button"
       disabled={disabled}
+      title={title}
       onClick={onClick}
-      className={`rounded-md px-2.5 py-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 disabled:cursor-wait disabled:opacity-50 ${
+      className={`rounded-md px-2.5 py-2 text-xs font-medium transition focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50 ${
         danger
           ? "text-red-500 hover:bg-red-50 focus-visible:ring-red-200"
           : "text-primary hover:bg-blue-50 focus-visible:ring-primary/20"
       }`}
     >
       {children}
-    </button>
+   </button>
   );
 }
 
@@ -86,6 +92,7 @@ export function ConnectionPlatformPanel({
   platform,
   connection,
   busy,
+  readOnly = false,
   onToggle,
   onPrimaryAction,
   onDelete,
@@ -154,15 +161,21 @@ export function ConnectionPlatformPanel({
             platform={platform}
             connection={connection}
             busy={busy}
+            readOnly={readOnly}
             onToggle={onToggle}
           />
           <ActionButton disabled={busy} onClick={onPrimaryAction}>
             {isWechat ? "绑定（扫码）" : "配置"}
           </ActionButton>
-          {connection && (
-            <ActionButton danger disabled={busy} onClick={onDelete}>
+          {connection && !readOnly && (
+            <ActionButton
+              danger
+              disabled={busy || connection.desired_running}
+              title={connection.desired_running ? "请先关闭连接后再删除" : undefined}
+              onClick={onDelete}
+            >
               删除
-            </ActionButton>
+           </ActionButton>
           )}
         </div>
       </div>

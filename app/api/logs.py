@@ -17,13 +17,12 @@ from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..core.time import iso_utc, utc_now
-from ..domain.enums import TaskState, UserRole
+from ..domain.enums import FakeModelScope, UserRole
 from ..domain.tasks import TERMINAL_STATES
 from ..repositories.models import (
     ApiKey,
     AuditLog,
-    ImConnection,
-    LlmConfig,
+    FakeModel,
     RequestTask,
     User,
 )
@@ -70,6 +69,7 @@ class AppLogView(BaseModel):
     request_id: str | None
     logger: str | None
     user_id: str | None
+    username: str | None
     task_id: str | None
     api_key_id: str | None
     connection_id: str | None
@@ -90,19 +90,14 @@ class AppLogPage(BaseModel):
 
 
 class DashboardStats(BaseModel):
-    role: str
-    # 用户视角
-    my_active_tasks: int = 0
-    my_total_tasks: int = 0
-    my_api_keys: int = 0
-    my_llm_configs: int = 0
-    # 管理员视角
+    """全站统一口径：所有用户看到同一组数据，控制台不区分用户身份。"""
+
     total_users: int = 0
     active_users: int = 0
     total_tasks: int = 0
-    global_active_tasks: int = 0
+    active_tasks: int = 0
     total_api_keys: int = 0
-    total_connections: int = 0
+    active_models: int = 0
 
 
 class RecentTask(BaseModel):
@@ -125,23 +120,11 @@ class ProtocolCount(BaseModel):
     count: int
 
 
-class ConnectionHealth(BaseModel):
-    id: str
-    name: str
-    platform: str
-    state: str
-    retry_count: int
-    last_error: str | None
-
-
 class DashboardResponse(BaseModel):
     stats: DashboardStats
     recent_tasks: list[RecentTask]
     daily_tasks: list[DailyTaskPoint]
     protocol_counts: list[ProtocolCount]
-    urgent_tasks: list[RecentTask]
-    problem_tasks: list[RecentTask]
-    connection_health: list[ConnectionHealth]
 
 
 # ----------------------------------------------------------------------
@@ -257,46 +240,45 @@ def list_app_logs(
         except (ValueError, TypeError):
             return None
 
+    # 本页内统一解析用户名（user_id -> username），避免逐行查询。
+    from ..repositories.models import User as _User
+
+    user_ids = sorted({row.user_id for row in rows if row.user_id is not None})
+    username_map: dict[int, str] = {}
+    if user_ids:
+        username_map = {
+            row_user.id: row_user.username
+            for row_user in db.scalars(select(_User).where(_User.id.in_(user_ids)))
+        }
+
+    def _username(row) -> str | None:
+        return username_map.get(row.user_id) if row.user_id is not None else None
+
+    def _base(row) -> dict[str, Any]:
+        return {
+            "id": str(row.id),
+            "level": row.level,
+            "event": row.event,
+            "message": row.message,
+            "request_id": row.request_id,
+            "logger": row.logger,
+            "user_id": str(row.user_id) if row.user_id else None,
+            "username": _username(row),
+            "task_id": str(row.task_id) if row.task_id else None,
+            "api_key_id": str(row.api_key_id) if row.api_key_id else None,
+            "connection_id": str(row.connection_id) if row.connection_id else None,
+            "created_at": iso_utc(row.created_at) or "",
+        }
+
     if with_context:
         return AppLogPage(
-            items=[
-                AppLogDetail(
-                    id=str(row.id),
-                    level=row.level,
-                    event=row.event,
-                    message=row.message,
-                    request_id=row.request_id,
-                    logger=row.logger,
-                    user_id=str(row.user_id) if row.user_id else None,
-                    task_id=str(row.task_id) if row.task_id else None,
-                    api_key_id=str(row.api_key_id) if row.api_key_id else None,
-                    connection_id=str(row.connection_id) if row.connection_id else None,
-                    created_at=iso_utc(row.created_at) or "",
-                    context=_context_of(row),
-                )
-                for row in rows
-            ],
+            items=[AppLogDetail(**_base(row), context=_context_of(row)) for row in rows],
             page=page,
             page_size=page_size,
             total=total,
         )
     return AppLogPage(
-        items=[
-            AppLogView(
-                id=str(row.id),
-                level=row.level,
-                event=row.event,
-                message=row.message,
-                request_id=row.request_id,
-                logger=row.logger,
-                user_id=str(row.user_id) if row.user_id else None,
-                task_id=str(row.task_id) if row.task_id else None,
-                api_key_id=str(row.api_key_id) if row.api_key_id else None,
-                connection_id=str(row.connection_id) if row.connection_id else None,
-                created_at=iso_utc(row.created_at) or "",
-            )
-            for row in rows
-        ],
+        items=[AppLogView(**_base(row)) for row in rows],
         page=page,
         page_size=page_size,
         total=total,
@@ -317,71 +299,46 @@ def dashboard(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> DashboardResponse:
-    """控制台统计：普通用户看个人概览，管理员追加全局治理数据。"""
-    is_admin = user.role is UserRole.ADMIN
-    stats = DashboardStats(role=user.role.value)
-    if not is_admin:
-        stats.my_active_tasks = _count(
+    """控制台统计：全站统一口径，所有用户看到同一组数据。"""
+    stats = DashboardStats(
+        total_users=_count(db, User),
+        active_users=_count(db, User, User.is_active.is_(True)),
+        total_tasks=_count(db, RequestTask),
+        active_tasks=_count(db, RequestTask, RequestTask.state.not_in(list(TERMINAL_STATES))),
+        total_api_keys=_count(db, ApiKey),
+        # “可用模型” = 已启用的管理员系统模型 + 当前用户已启用的私有模型。
+        # 私有模型严格按当前用户过滤，不能把其他用户的“+数量”算进来。
+        active_models=_count(
             db,
-            RequestTask,
-            RequestTask.owner_user_id == user.id,
-            RequestTask.state.not_in(list(TERMINAL_STATES)),
-        )
-        stats.my_total_tasks = _count(db, RequestTask, RequestTask.owner_user_id == user.id)
-        stats.my_api_keys = _count(db, ApiKey, ApiKey.owner_user_id == user.id)
-        stats.my_llm_configs = _count(db, LlmConfig, LlmConfig.owner_user_id == user.id)
-    else:
-        stats.total_users = _count(db, User)
-        stats.active_users = _count(db, User, User.is_active.is_(True))
-        stats.total_tasks = _count(db, RequestTask)
-        stats.global_active_tasks = _count(
-            db, RequestTask, RequestTask.state.not_in(list(TERMINAL_STATES))
-        )
-        stats.total_api_keys = _count(db, ApiKey)
-        stats.total_connections = _count(db, ImConnection)
-
-    scope = [] if is_admin else [RequestTask.owner_user_id == user.id]
+            FakeModel,
+            FakeModel.is_enabled.is_(True),
+            (FakeModel.scope == FakeModelScope.SYSTEM) | (FakeModel.owner_user_id == user.id),
+        ),
+    )
+    # 任务列表保留用户最近任务（控制台其它数据为全站口径）。
     recent_rows = list(
-        db.scalars(select(RequestTask).where(*scope).order_by(RequestTask.id.desc()).limit(8))
+        db.scalars(
+            select(RequestTask)
+            .where(RequestTask.owner_user_id == user.id)
+            .order_by(RequestTask.id.desc())
+            .limit(8)
+        )
     )
     start_day = (utc_now() - timedelta(days=6)).date()
     daily_counts = {
         str(day): int(count)
         for day, count in db.execute(
             select(func.date(RequestTask.created_at), func.count())
-            .where(*scope, RequestTask.created_at >= utc_now() - timedelta(days=7))
+            .where(RequestTask.created_at >= utc_now() - timedelta(days=7))
             .group_by(func.date(RequestTask.created_at))
         )
     }
     protocol_counts = [
         ProtocolCount(protocol=protocol.value, count=int(count))
         for protocol, count in db.execute(
-            select(RequestTask.protocol, func.count()).where(*scope).group_by(RequestTask.protocol)
+            select(RequestTask.protocol, func.count()).group_by(RequestTask.protocol)
         )
     ]
-    urgent_rows = list(
-        db.scalars(
-            select(RequestTask)
-            .where(
-                *scope,
-                RequestTask.state.not_in(list(TERMINAL_STATES)),
-                RequestTask.human_deadline_at.is_not(None),
-            )
-            .order_by(RequestTask.human_deadline_at.asc())
-            .limit(5)
-        )
-    )
-    problem_rows = list(
-        db.scalars(
-            select(RequestTask)
-            .where(
-                *scope,
-                RequestTask.state.in_([TaskState.FAILED, TaskState.TIMED_OUT, TaskState.CANCELLED]),
-            )
-            .order_by(RequestTask.id.desc())
-            .limit(5)
-        )
-    )
 
     def recent_task(row: RequestTask) -> RecentTask:
         return RecentTask(
@@ -394,27 +351,6 @@ def dashboard(
             human_deadline_at=iso_utc(row.human_deadline_at),
         )
 
-    connections: list[ConnectionHealth] = []
-    if is_admin:
-        connection_rows = list(
-            db.scalars(
-                select(ImConnection)
-                .order_by(ImConnection.state.asc(), ImConnection.id.desc())
-                .limit(8)
-            )
-        )
-        connections = [
-            ConnectionHealth(
-                id=str(row.id),
-                name=row.name,
-                platform=row.platform,
-                state=row.state.value,
-                retry_count=row.retry_count,
-                last_error=row.last_error_message or row.last_error_code,
-            )
-            for row in connection_rows
-        ]
-
     return DashboardResponse(
         stats=stats,
         recent_tasks=[recent_task(row) for row in recent_rows],
@@ -426,7 +362,4 @@ def dashboard(
             for offset in range(7)
         ],
         protocol_counts=protocol_counts,
-        urgent_tasks=[recent_task(row) for row in urgent_rows],
-        problem_tasks=[recent_task(row) for row in problem_rows],
-        connection_health=connections,
     )

@@ -24,7 +24,7 @@ import { Icon } from "../../icons";
 import type { LlmConfig } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 
 const PROTOCOL_LABEL: Record<LlmProtocol, string> = {
   openai_chat: "OpenAI Chat Completions",
@@ -90,6 +90,7 @@ export function LlmConfigsPage() {
   const isAdmin = user?.role === "admin";
   const [items, setItems] = useState<LlmConfig[]>([]);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -111,7 +112,7 @@ export function LlmConfigsPage() {
     setLoading(true);
     setError("");
     try {
-      const result = await listLlmConfigs(page, search);
+      const result = await listLlmConfigs(page, search, pageSize);
       setItems(result.items);
       setTotal(result.total);
     } catch (caught) {
@@ -119,7 +120,12 @@ export function LlmConfigsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, pageSize, search]);
+
+  const changePageSize = (value: number) => {
+    setPage(1);
+    setPageSize(value);
+  };
 
   useEffect(() => void load(), [load]);
 
@@ -253,8 +259,19 @@ export function LlmConfigsPage() {
   };
 
   const remove = async (cfg: LlmConfig) => {
-    if (isAdmin) return;
-    if (!(await confirmAction({ message: `确认删除 LLM 配置「${cfg.name}」？` }))) return;
+    if (isAdmin) {
+      if (
+        !(await confirmAction({
+          title: "删除用户的 LLM 配置",
+          message: `确认删除用户「${cfg.owner_username ?? cfg.owner_user_id}」的 LLM 配置「${cfg.name}」？该用户仍引用此配置的 API Key 将立刻在转发阶段报错，删除动作不可恢复。`,
+          confirmLabel: "强制删除",
+          variant: "danger",
+        }))
+      )
+        return;
+    } else if (!(await confirmAction({ message: `确认删除 LLM 配置「${cfg.name}」？` }))) {
+      return;
+    }
     try {
       await deleteLlmConfig(cfg.id);
       notify("LLM 配置已删除");
@@ -291,13 +308,12 @@ export function LlmConfigsPage() {
         title="LLM 管理"
       />
 
-      {isAdmin && (
+            {isAdmin && (
         <div
           role="status"
           className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800"
         >
-          管理员视角 · 只读。管理员可以监管配置状态，但不能创建、编辑、测试或删除用户的
-          LLM 配置。
+          只读监管视角：可删除配置，不能新增、编辑或测试密钥。
         </div>
       )}
 
@@ -391,7 +407,12 @@ export function LlmConfigsPage() {
                   )}
                   <td className="sticky right-0 space-x-3 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
                     {isAdmin ? (
-                      <span className="text-slate-400">只读</span>
+                      <button
+                        onClick={() => void remove(cfg)}
+                        className="text-red-500"
+                      >
+                        删除
+                      </button>
                     ) : (
                       <>
                         <button
@@ -426,7 +447,7 @@ export function LlmConfigsPage() {
           </table>
         </div>
         <div className="flex justify-end border-t border-slate-100 px-4 py-3">
-          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+          <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} onPageSizeChange={changePageSize} />
         </div>
       </Card>
 

@@ -21,7 +21,7 @@ import { copyText } from "../../utils/clipboard";
 import type { Invitation, InvitationCreated } from "../../types/governance";
 import { InvitationFormModal } from "./InvitationFormModal";
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 
 function formatDate(value: string | null): string {
   return value ? new Date(value).toLocaleString() : "永久有效";
@@ -30,6 +30,7 @@ function formatDate(value: string | null): string {
 export function InvitationsPage() {
   const [items, setItems] = useState<Invitation[]>([]);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
@@ -42,7 +43,7 @@ export function InvitationsPage() {
     setLoading(true);
     setError("");
     try {
-      const result = await listInvitations(page, search);
+      const result = await listInvitations(page, search, pageSize);
       setItems(result.items);
       setTotal(result.total);
     } catch (caught) {
@@ -50,7 +51,12 @@ export function InvitationsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, pageSize, search]);
+
+  const changePageSize = (value: number) => {
+    setPage(1);
+    setPageSize(value);
+  };
 
   useEffect(() => void load(), [load]);
 
@@ -72,14 +78,14 @@ export function InvitationsPage() {
   };
 
   const revoke = async (item: Invitation) => {
-    if (!(await confirmAction({ message: `确认撤销邀请码 ${item.code_prefix}…？撤销后立即不可使用。`, confirmLabel: "确认撤销" }))) return;
+    if (!(await confirmAction({ message: `确认撤销邀请码 ${item.note || item.code_prefix}…？撤销后立即不可使用。`, confirmLabel: "确认撤销" }))) return;
     await revokeInvitation(item.id);
     notify("邀请码已撤销");
     await load();
   };
 
   const remove = async (item: Invitation) => {
-    if (!(await confirmAction({ message: `确认删除已撤销的邀请码 ${item.code_prefix}…？` }))) return;
+    if (!(await confirmAction({ message: `确认删除已撤销的邀请码 ${item.note || item.code_prefix}…？` }))) return;
     await deleteInvitation(item.id);
     notify("邀请码已删除");
     await load();
@@ -103,7 +109,7 @@ export function InvitationsPage() {
             value={input}
             onChange={(event) => setInput(event.target.value)}
             className="field-input min-w-0 flex-1 sm:max-w-sm"
-            placeholder="搜索前缀或备注"
+            placeholder="搜索邀请码名称"
           />
           <Button variant="ghost" type="submit">
             <Icon name="search" className="h-3.5 w-3.5" />
@@ -112,11 +118,10 @@ export function InvitationsPage() {
         </form>
         {error && <ErrorBanner message={error} className="m-4" />}
         <div className="overflow-x-auto">
-          <table className="min-w-[760px] w-full text-left text-xs">
+          <table className="min-w-[640px] w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-400">
               <tr>
-                <th className="px-4 py-3 font-medium">前缀</th>
-                <th className="px-4 py-3 font-medium">备注</th>
+                <th className="px-4 py-3 font-medium">邀请码名称</th>
                 <th className="px-4 py-3 font-medium">状态</th>
                 <th className="px-4 py-3 font-medium">使用次数</th>
                 <th className="px-4 py-3 font-medium">过期时间</th>
@@ -128,8 +133,7 @@ export function InvitationsPage() {
             <tbody className="divide-y divide-slate-100">
               {items.map((item) => (
                 <tr key={item.id} className="group hover:bg-slate-50/60">
-                  <td className="px-4 py-3 font-mono text-slate-700">{item.code_prefix}…</td>
-                  <td className="max-w-xs truncate px-4 py-3 text-slate-500">{item.note || "-"}</td>
+                  <td className="max-w-xs truncate px-4 py-3 text-slate-700">{item.note || "-"}</td>
                   <td className="px-4 py-3">
                     <StatusBadge status={item.status} />
                   </td>
@@ -155,7 +159,7 @@ export function InvitationsPage() {
               ))}
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-12 text-center text-slate-400">
+                  <td colSpan={5} className="px-4 py-12 text-center text-slate-400">
                     暂无邀请码
                   </td>
                 </tr>
@@ -164,7 +168,7 @@ export function InvitationsPage() {
           </table>
         </div>
         <div className="flex justify-end border-t border-slate-100 px-4 py-3">
-          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+          <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} onPageSizeChange={changePageSize} />
         </div>
       </Card>
 

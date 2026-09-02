@@ -28,6 +28,7 @@ class ToolRepository:
                         definition.arguments_schema,
                         ensure_ascii=False,
                     ),
+                    stdin_parameter=definition.stdin_parameter,
                     timeout_seconds=definition.timeout_seconds,
                     is_enabled=True,
                 )

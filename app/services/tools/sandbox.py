@@ -118,16 +118,22 @@ def build_oci_command(
     cpus: float,
     pids_limit: int,
     tmpfs_mb: int,
+    stdin_enabled: bool = False,
 ) -> list[str]:
-    """构造 Docker/Podman 共同支持的失败关闭执行命令。"""
+    """构造 Docker/Podman 共同支持的失败关闭执行命令。
+
+    stdin_enabled 时追加 ``-i``，使容器的 stdin 与宿主进程管道连通；
+    关闭方式（EOF）即结束输入。
+    """
     if not argv:
         raise _validation_error("命令为空")
     if not image or image.startswith("-") or any(char.isspace() for char in image):
         raise _validation_error("OCI 镜像引用非法")
-    return [
+    result = [
         runtime,
         "run",
         "--rm",
+        *(["-i"] if stdin_enabled else []),
         "--name",
         container_name,
         "--pull=never",
@@ -178,6 +184,7 @@ def build_oci_command(
         image,
         *argv[1:],
     ]
+    return result
 
 
 def _runtime_environment(config_dir: str) -> dict[str, str]:
@@ -259,8 +266,14 @@ def _cleanup_container(runtime: str, name: str, env: dict[str, str]) -> None:
         pass
 
 
-def run_sandboxed(argv: list[str], *, timeout_seconds: int) -> SandboxResult:
-    """在受限 OCI 容器中执行 argv；任何运行时问题都不会回退宿主执行。"""
+def run_sandboxed(
+    argv: list[str], *, timeout_seconds: int, stdin_data: bytes | None = None
+) -> SandboxResult:
+    """在受限 OCI 容器中执行 argv；任何运行时问题都不会回退宿主执行。
+
+    stdin_data 非 None 时以 ``docker run -i`` 建立 stdin 管道并把数据
+    写入后关闭（EOF）；输入经 stdin 传递，不经 shell 解释。
+    """
     settings = get_settings()
     started = time.monotonic()
     runtime = resolve_oci_runtime(settings.tool_sandbox_runtime)
@@ -277,6 +290,7 @@ def run_sandboxed(argv: list[str], *, timeout_seconds: int) -> SandboxResult:
         cpus=settings.tool_sandbox_cpus,
         pids_limit=settings.tool_sandbox_pids_limit,
         tmpfs_mb=settings.tool_sandbox_tmpfs_mb,
+        stdin_enabled=stdin_data is not None,
     )
     with tempfile.TemporaryDirectory(prefix="hlg-oci-config-") as config_dir:
         env = _runtime_environment(config_dir)
@@ -284,7 +298,7 @@ def run_sandboxed(argv: list[str], *, timeout_seconds: int) -> SandboxResult:
         try:
             process = subprocess.Popen(
                 command,
-                stdin=subprocess.DEVNULL,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 env=env,
@@ -294,6 +308,15 @@ def run_sandboxed(argv: list[str], *, timeout_seconds: int) -> SandboxResult:
         except OSError:
             return SandboxResult(None, "", "", "failed", 0, "sandbox_unavailable")
         assert process.stdout is not None and process.stderr is not None
+        if stdin_data is not None:
+            assert process.stdin is not None
+            try:
+                process.stdin.write(stdin_data)
+                process.stdin.close()
+            except (BrokenPipeError, OSError):
+                # 容器可能未读取 stdin（命令提前退出），不是错误。
+                pass
+            process.stdin = None
         stdout_bytes, stderr_bytes = bytearray(), bytearray()
         exceeded = threading.Event()
         readers = [

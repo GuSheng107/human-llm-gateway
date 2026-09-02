@@ -227,7 +227,10 @@ def test_generate_draft_then_edit_then_submit(client, created_user, created_key)
     edit = client.patch(
         f"/api/tasks/{task_id}/drafts/{draft_id}",
         headers=created_user.headers,
-        json={"final_text": "最终回复（已人工编辑）"},
+        json={
+            "final_text": "最终回复（已人工编辑）",
+            "expected_version": generated["version"],
+        },
     )
     assert edit.status_code == 200
     assert edit.json()["final_text"] == "最终回复（已人工编辑）"

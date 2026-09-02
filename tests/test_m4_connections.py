@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 
 import pytest
@@ -294,7 +295,9 @@ def test_admin_governance_cannot_create_or_change_credentials(client, admin_head
         == 403
     )
 
-    listed = client.get("/api/im-connections", headers=admin_headers).json()
+    # 个人列表接口不再以管理员身份返回他人连接；监管视角走 /api/admin 路由。
+    assert client.get("/api/im-connections", headers=admin_headers).json()["items"] == []
+    listed = client.get("/api/admin/im-connections", headers=admin_headers).json()
     assert {item["id"] for item in listed["items"]} == {connection_id}
     assert listed["items"][0]["owner_username"] == "conn-owner-3"
 
@@ -905,3 +908,119 @@ def test_single_connection_can_be_selected_by_multiple_api_keys(client, admin_he
 
     # 被任一启用 Key 引用时不允许删除连接。
     assert client.delete(f"/api/im-connections/{connection_id}", headers=headers).status_code == 409
+
+
+def test_start_then_check_does_not_disable_still_starting_connection(
+    client, admin_headers, monkeypatch
+) -> None:
+    """集成回归：POST start 后立即 POST check，连接不能被停用。
+
+    原竞态：start 事务未提交前 manager.start 走独立会话写 starting，触发
+    SQLite 写锁；start 看似成功但 state=stopped；看门狗随即判定异常并停用。
+    新流程：service.start 先提交 desired_running+starting，再创建监督任务；
+    看门狗读取 supervisor_alive，避免对 starting 中的连接误判。
+    """
+    from app.connectors import connection_manager
+    from app.domain.enums import ConnectionState
+    from app.repositories.models import ImConnection
+
+    headers = _create_user(client, admin_headers, "start-check-owner")
+    created = _create_connection(client, headers, name="start-check")
+    connection_id = int(created["id"])
+
+    starts: list[int] = []
+
+    async def fake_start(row, _config, _inbound):
+        starts.append(row.id)
+
+        # 模拟 manager.start 实际创建一个长期运行的 supervisor 任务并登记到 _tasks，
+        # 看门狗据此判定 supervisor_alive=True，不再误判 starting 状态。
+        async def _idle() -> None:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                return
+
+        connection_manager._tasks[row.id] = asyncio.create_task(
+            _idle(), name=f"fake-supervisor-{row.id}"
+        )
+
+    monkeypatch.setattr(connection_manager, "start", fake_start)
+
+    response = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert response.status_code == 200, response.text
+    assert starts == [connection_id]
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.desired_running is True
+        assert row.state is ConnectionState.STARTING
+        assert row.last_error_code is None
+
+    checked = client.post("/api/im-connections/check", headers=headers)
+    assert checked.status_code == 200, checked.text
+    report = next(item for item in checked.json() if int(item["id"]) == connection_id)
+    assert report["abnormal"] is False
+    assert report["auto_disabled"] is False
+    assert report["desired_running"] is True
+    assert report["runtime"]["supervisor_alive"] is True
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.desired_running is True
+
+
+def test_start_then_check_disables_when_supervisor_dead_and_state_stuck(
+    client, admin_headers, monkeypatch
+) -> None:
+    """真正的数据不一致：starting 但监督任务已死，依然判为异常。"""
+    from app.connectors import connection_manager
+
+    headers = _create_user(client, admin_headers, "stuck-start-owner")
+    created = _create_connection(client, headers, name="stuck-start")
+    connection_id = int(created["id"])
+
+    async def fake_start(row, _config, _inbound):
+        return None  # 创建监督任务后立即返回，未真正启动
+
+    monkeypatch.setattr(connection_manager, "start", fake_start)
+
+    response = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert response.status_code == 200, response.text
+
+    # 模拟 supervisor 任务已经结束：manager 中已无该连接的任务记录，
+    # 但数据库状态仍停留在 STARTING（不回写 STOPPED），用于覆盖
+    # "state=starting 且 supervisor 已结束" 的漏判分支。
+    connection_manager._tasks.pop(connection_id, None)
+
+    checked = client.post("/api/im-connections/check", headers=headers)
+    assert checked.status_code == 200, checked.text
+    report = next(item for item in checked.json() if int(item["id"]) == connection_id)
+    assert report["abnormal"] is True
+    assert report["auto_disabled"] is True
+    assert report["desired_running"] is False
+
+
+def test_start_failure_does_not_return_success(client, admin_headers, monkeypatch) -> None:
+    """启动失败：补偿事务写 error，接口返回 5xx。"""
+    from app.connectors import connection_manager
+    from app.domain.connections import ERROR_NETWORK, ConnectorError
+    from app.domain.enums import ConnectionState
+    from app.repositories.models import ImConnection
+
+    headers = _create_user(client, admin_headers, "start-fail-owner")
+    created = _create_connection(client, headers, name="start-fail")
+    connection_id = int(created["id"])
+
+    async def fake_start(row, _config, _inbound):
+        raise ConnectorError(ERROR_NETWORK, "模拟网络异常")
+
+    monkeypatch.setattr(connection_manager, "start", fake_start)
+
+    response = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert response.status_code == 500, response.text
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.state is ConnectionState.ERROR
+        assert row.last_error_code == ERROR_NETWORK
+        assert row.last_error_message == "模拟网络异常"

@@ -22,6 +22,7 @@ from ...core.constants import (
     TOOL_MAX_ARGUMENTS,
     TOOL_MAX_COMMAND_LENGTH,
     TOOL_MAX_NAME_LENGTH,
+    TOOL_MAX_STDIN_BYTES,
     TOOL_MAX_TIMEOUT_SECONDS,
     TOOL_MIN_TIMEOUT_SECONDS,
 )
@@ -119,6 +120,27 @@ def _validate_arguments(schema: dict[str, Any], arguments: dict[str, Any]) -> di
     return result
 
 
+def _validate_stdin_parameter(
+    stdin_parameter: str | None, command_template: str, argument_names: list[str]
+) -> None:
+    """stdin 参数约束：必须是已声明的 string 参数，且不得出现在命令模板中
+    （该值经 stdin 传递，不进 argv，不渲染占位符）。"""
+    if stdin_parameter is None:
+        return
+    if stdin_parameter not in argument_names:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            "stdin_parameter 必须是 arguments_schema 中已声明的参数",
+            status_code=400,
+        )
+    if f"{{{stdin_parameter}}}" in command_template:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            f"stdin 参数 {stdin_parameter} 不能同时出现在命令模板中",
+            status_code=400,
+        )
+
+
 class ToolService:
     def __init__(self) -> None:
         self.audit = AuditRepository()
@@ -153,6 +175,7 @@ class ToolService:
         command_template: str,
         arguments_schema: dict[str, Any],
         timeout_seconds: int,
+        stdin_parameter: str | None = None,
     ) -> ToolWhitelist:
         if actor.role is not UserRole.ADMIN:
             raise DomainError(DomainErrorCode.FORBIDDEN, "需要管理员权限", status_code=403)
@@ -178,6 +201,7 @@ class ToolService:
             )
         argument_names = _validate_arguments_schema(arguments_schema)
         validate_command_template(command_template, argument_names)
+        _validate_stdin_parameter(stdin_parameter, command_template, argument_names)
         existing = session.execute(
             select(ToolWhitelist).where(ToolWhitelist.name == cleaned_name)
         ).scalar_one_or_none()
@@ -188,6 +212,7 @@ class ToolService:
             description=(description or "").strip() or None,
             command_template=command_template,
             arguments_schema_json=json.dumps(arguments_schema, ensure_ascii=False),
+            stdin_parameter=stdin_parameter,
             timeout_seconds=timeout_seconds,
             is_enabled=True,
         )
@@ -230,6 +255,9 @@ class ToolService:
                 )
             schema = json.loads(row.arguments_schema_json)
             validate_command_template(template, _validate_arguments_schema(schema))
+            _validate_stdin_parameter(
+                row.stdin_parameter, template, _validate_arguments_schema(schema)
+            )
             if template != row.command_template:
                 row.command_template = template
                 changed.append("command_template")
@@ -237,8 +265,18 @@ class ToolService:
             schema = fields["arguments_schema"]
             names = _validate_arguments_schema(schema)
             validate_command_template(row.command_template, names)
+            _validate_stdin_parameter(row.stdin_parameter, row.command_template, names)
             row.arguments_schema_json = json.dumps(schema, ensure_ascii=False)
             changed.append("arguments_schema")
+        if "stdin_parameter" in fields:
+            new_stdin = fields["stdin_parameter"]
+            schema = json.loads(row.arguments_schema_json)
+            _validate_stdin_parameter(
+                new_stdin, row.command_template, _validate_arguments_schema(schema)
+            )
+            if new_stdin != row.stdin_parameter:
+                row.stdin_parameter = new_stdin
+                changed.append("stdin_parameter")
         if "timeout_seconds" in fields and fields["timeout_seconds"] is not None:
             value = int(fields["timeout_seconds"])
             if not (TOOL_MIN_TIMEOUT_SECONDS <= value <= TOOL_MAX_TIMEOUT_SECONDS):
@@ -353,6 +391,17 @@ class ToolService:
             raise
 
         argv = render_command(tool.command_template, clean_args)
+        stdin_data: bytes | None = None
+        if tool.stdin_parameter:
+            stdin_value = clean_args.get(tool.stdin_parameter, "")
+            stdin_bytes = stdin_value.encode("utf-8")
+            if len(stdin_bytes) > TOOL_MAX_STDIN_BYTES:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    f"stdin 参数 {tool.stdin_parameter} 超过 {TOOL_MAX_STDIN_BYTES} 字节",
+                    status_code=400,
+                )
+            stdin_data = stdin_bytes
         row = ToolExecution(
             tool_id=tool.id,
             user_id=user.id,
@@ -362,7 +411,7 @@ class ToolService:
         session.add(row)
         session.flush()
 
-        result = run_sandboxed(argv, timeout_seconds=tool.timeout_seconds)
+        result = run_sandboxed(argv, timeout_seconds=tool.timeout_seconds, stdin_data=stdin_data)
         state_map = {
             "succeeded": ToolExecutionState.SUCCEEDED,
             "failed": ToolExecutionState.FAILED,

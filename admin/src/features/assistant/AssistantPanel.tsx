@@ -38,16 +38,16 @@ const DEFAULT_LLM_KEY = "hlg_assistant_default_llm";
 
 const WELCOME_CARDS: { title: string; prompt: string }[] = [
   {
-    title: "解释当前页面",
-    prompt: "解释一下当前页面的功能和使用方法",
+    title: "查看当前页面",
+    prompt: "概括当前页面",
   },
   {
-    title: "起草任务回复",
-    prompt: "基于当前任务草稿，帮我起草一份更专业的回复",
+    title: "润色任务回复",
+    prompt: "润色当前任务回复",
   },
   {
     title: "排查连接错误",
-    prompt: "总结最近的连接错误并给出排查建议",
+    prompt: "排查最近的连接错误",
   },
 ];
 
@@ -341,7 +341,7 @@ export function AssistantPanel() {
                 {context.unsaved_edit && <span className="ml-1 text-primary">含未提交草稿</span>}
               </span>
             ) : (
-              <span>当前页面无上下文</span>
+              <span>当前页面无可用上下文</span>
             )}
           </div>
 
@@ -349,9 +349,9 @@ export function AssistantPanel() {
             {showWelcome && (
               <div className="space-y-4">
                 <div className="rounded-xl bg-gradient-to-br from-violet-600/10 via-primary/10 to-blue-600/10 px-4 py-5">
-                  <h3 className="text-sm font-semibold text-slate-800">你好，我是 AI 助手</h3>
+                  <h3 className="text-sm font-semibold text-slate-800">页面助手</h3>
                   <p className="mt-1 text-xs leading-5 text-slate-500">
-                    能工智人网关的智能陪伴，可基于当前页面与任务草稿回答问题
+                    可读取当前页面和任务草稿
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -374,8 +374,8 @@ export function AssistantPanel() {
                 {!activeSession && (
                   <p className="text-center text-[11px] text-slate-300">
                     {llmConfigs.length === 0
-                      ? "暂无可用的 LLM 配置，请先在「LLM 管理」创建"
-                      : "发送第一条消息将按默认 LLM 自动创建会话"}
+                      ? "暂无可用 LLM 配置，请先创建"
+                      : "发送消息后自动创建会话"}
                   </p>
                 )}
               </div>
@@ -453,7 +453,7 @@ export function AssistantPanel() {
                   setOpen(false);
                 }
               }}
-              placeholder="询问当前页面或草稿…（Enter 发送，Shift+Enter 换行）"
+              placeholder="输入问题…（Enter 发送）"
               rows={2}
               className="field-input min-h-[44px] flex-1 resize-none text-xs"
             />
@@ -468,7 +468,7 @@ export function AssistantPanel() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
           <div className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl">
             <h3 className="text-sm font-semibold text-slate-800">插入到回复编辑器</h3>
-            <p className="mt-1 text-xs text-red-500">将覆盖编辑器当前内容（不可撤销）。</p>
+            <p className="mt-1 text-xs text-red-500">将覆盖当前编辑内容，无法撤回。</p>
             <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600">
               {insertPreview}
             </pre>

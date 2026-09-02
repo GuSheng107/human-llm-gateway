@@ -194,6 +194,7 @@ export interface TaskDraft extends ReplyDraft {
   id: string;
   source: "manual" | "llm";
   state: "editing" | "submitted" | "discarded";
+  version: number;
   created_at: string;
   updated_at: string;
 }

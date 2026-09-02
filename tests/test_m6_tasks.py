@@ -265,12 +265,16 @@ def test_draft_update_changes_fields(client, created_user, created_key) -> None:
     resp = client.patch(
         f"/api/tasks/{task_id}/drafts/{draft_id}",
         headers=created_user.headers,
-        json=_draft_body(reasoning="新思考", final_text="新文本"),
+        json={
+            **_draft_body(reasoning="新思考", final_text="新文本"),
+            "expected_version": saved["version"],
+        },
     )
     assert resp.status_code == 200, resp.text
     updated = resp.json()
     assert updated["reasoning"] == "新思考"
     assert updated["final_text"] == "新文本"
+    assert updated["version"] == saved["version"] + 1
 
 
 def test_draft_delete_removes_from_list(client, created_user, created_key) -> None:
@@ -296,7 +300,7 @@ def test_draft_update_nonexistent_returns_404(client, created_user, created_key)
     resp = client.patch(
         f"/api/tasks/{task_id}/drafts/99999",
         headers=created_user.headers,
-        json=_draft_body(final_text="x"),
+        json={**_draft_body(final_text="x"), "expected_version": 1},
     )
     assert resp.status_code == 404
 

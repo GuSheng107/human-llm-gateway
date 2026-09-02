@@ -37,6 +37,9 @@ class ToolWhitelist(TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(String(500), nullable=True)
     command_template: Mapped[str] = mapped_column(Text, nullable=False)
     arguments_schema_json: Mapped[str] = mapped_column(Text, nullable=False)
+    # 指定某个 string 参数经 stdin 喂给容器（不经 argv/shell）；该参数的
+    # 占位符不得出现在 command_template 中。None 表示全部参数走 argv。
+    stdin_parameter: Mapped[str | None] = mapped_column(String(64), nullable=True)
     timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
     is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

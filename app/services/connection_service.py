@@ -12,6 +12,7 @@ import hashlib
 import inspect
 import io
 import json
+import logging
 from datetime import timedelta
 from typing import Any
 
@@ -51,6 +52,7 @@ from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
 
 _IM_CONFIG_PURPOSE = "im-config"
+logger = logging.getLogger(__name__)
 
 
 class ConnectionService:
@@ -315,8 +317,31 @@ class ConnectionService:
         if row.desired_running:
             from ..connectors import connection_manager as manager
 
+            # 与 start 同序：先把 state=starting 落库并提交，再创建监督任务。
+            begin_immediate_if_sqlite(session)
+            row.state = ConnectionState.STARTING
+            row.last_error_code = None
+            row.last_error_message = None
+            row.next_retry_at = None
+            await run_in_threadpool(session.flush)
+            try:
+                await run_in_threadpool(session.commit)
+            except IntegrityError as exc:
+                await run_in_threadpool(session.rollback)
+                raise DomainError(
+                    DomainErrorCode.CONFLICT, "凭据轮换冲突，请稍后重试", status_code=409
+                ) from exc
+
             await manager.stop(row.id)
-            await manager.start(row, config, self.inbound_handler())
+            try:
+                await manager.start(row, config, self.inbound_handler())
+            except Exception as exc:
+                logger.exception("rotate credential start failed", extra={"connection_id": row.id})
+                await self._compensate_start_failure(row, exc)
+                await run_in_threadpool(session.refresh, row)
+                raise DomainError(
+                    DomainErrorCode.CONFLICT, "凭据轮换后启动失败，请稍后重试", status_code=500
+                ) from exc
             await run_in_threadpool(session.refresh, row)
         self.audit.add(
             session,
@@ -397,39 +422,198 @@ class ConnectionService:
                     f"{field.label} 缺失或无效，请先重新生成接入 Token",
                     status_code=400,
                 )
+
+        # 阶段 1：把 desired_running=true / state=starting 与旧错误在同一事务中落库并提交。
+        # 不再 flush 后即调用 manager，避免连接管理器使用独立会话再写一次 starting
+        # 与 SQLite 单写锁冲突并被吞掉，最终造成 desired_running=true + state=stopped
+        # 的数据不一致（看门狗随后会误判为异常并停用）。
+        begin_immediate_if_sqlite(session)
         row.desired_running = True
+        row.state = ConnectionState.STARTING
+        row.last_error_code = None
+        row.last_error_message = None
+        row.next_retry_at = None
         await run_in_threadpool(session.flush)
-        await manager.start(row, config, self.inbound_handler())
+        try:
+            await run_in_threadpool(session.commit)
+        except IntegrityError as exc:
+            await run_in_threadpool(session.rollback)
+            raise DomainError(
+                DomainErrorCode.CONFLICT, "连接启动冲突，请稍后重试", status_code=409
+            ) from exc
+
+        # 阶段 2：提交后再创建监督任务。manager 内部不再写 starting 初始状态，
+        # 之后由 _supervise 走独立短会话（_record）落库 online/error/auth_required。
+        try:
+            await manager.start(row, config, self.inbound_handler())
+        except Exception as exc:
+            logger.exception(
+                "connection start failed", extra={"connection_id": row.id, "actor": actor_user_id}
+            )
+            await self._compensate_start_failure(row, exc)
+            await run_in_threadpool(session.refresh, row)
+            raise DomainError(
+                DomainErrorCode.CONFLICT, "连接启动失败，请稍后重试", status_code=500
+            ) from exc
+
+        # connection.started 审计在初始 starting 状态成功提交后再追加，
+        # 写入独立短事务：监督任务创建成功才视为启用成功。
         await run_in_threadpool(session.refresh, row)
-        self.audit.add(
-            session,
+        await self._record_audit_after_commit(
+            row=row,
             action=AuditAction.CONNECTION_STARTED,
-            resource_type="im_connection",
-            resource_id=str(row.id),
             actor_user_id=actor_user_id,
-            owner_user_id=row.owner_user_id,
             metadata={"fields": ["desired_running"]},
         )
         return row
+
+    async def _compensate_start_failure(self, row: ImConnection, exc: Exception) -> None:
+        """启动失败补偿：用独立短会话把状态切到 error/auth_required。
+
+        必须独立于原请求事务，避免请求层 rollback 把已落库的错误状态一并清空。
+        desired_running 保留为 true —— 这是用户主动启用的开关，留作 ERROR
+        让看门狗或后续人工介入处理（与 connection.started 失败语义保持一致）。
+        """
+        from ..core.db import SessionLocal
+
+        is_auth = bool(getattr(exc, "is_auth", False))
+        is_config = bool(getattr(exc, "is_config", False))
+        code = str(getattr(exc, "code", "start_failed") or "start_failed")
+        message_attr = getattr(exc, "message", None)
+        message = (str(message_attr) if message_attr else str(exc)) or "连接启动失败"
+        next_state = (
+            ConnectionState.AUTH_REQUIRED
+            if is_auth
+            else (ConnectionState.AUTH_REQUIRED if is_config else ConnectionState.ERROR)
+        )
+        patch: dict[str, Any] = {
+            "state": next_state,
+            "last_error_code": code,
+            "last_error_message": message[:500],
+            "next_retry_at": None,
+        }
+        try:
+            with SessionLocal() as session:
+                self.repo.apply_runtime_patch(session, row.id, patch)
+                session.commit()
+        except Exception:
+            logger.exception(
+                "compensate start failure persist failed", extra={"connection_id": row.id}
+            )
+
+    async def _record_audit_after_commit(
+        self,
+        *,
+        row: ImConnection,
+        action: AuditAction,
+        actor_user_id: int,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """审计写入独立短事务：用于生命周期中"主事务已提交"的场景。
+
+        自动继承调用方当前绑定的 traceId；无上下文时分配一个内部 trace，
+        保证每条审计都能按 traceId 排查。
+        """
+        from ..core.db import SessionLocal
+        from ..core.logging import (
+            bind_trace_id,
+            get_request_id,
+            new_trace_id,
+            reset_request_id,
+        )
+
+        bound_token = None
+        if get_request_id() is None:
+            bound_token = bind_trace_id(new_trace_id())
+        try:
+            with SessionLocal() as session:
+                self.audit.add(
+                    session,
+                    action=action,
+                    resource_type="im_connection",
+                    resource_id=str(row.id),
+                    actor_user_id=actor_user_id,
+                    owner_user_id=row.owner_user_id,
+                    metadata=metadata,
+                )
+                session.commit()
+        except Exception:
+            logger.exception(
+                "audit persist after commit failed",
+                extra={"connection_id": row.id, "action": action.value},
+            )
+        finally:
+            if bound_token is not None:
+                reset_request_id(bound_token)
+
+    async def bootstrap_recover(self, rows: list[ImConnection]) -> int:
+        """进程启动恢复：与 start 共享两阶段顺序，按 desired_running 重新拉起。
+
+        1) 当前事务：desired_running 行的 state=starting 并提交；
+        2) 提交后调用 manager.start 创建监督任务；
+        3) 启动失败走补偿事务写 error/auth_required；
+        4) 启动成功的 starting 行不写 started 审计（恢复非用户主动行为）。
+        """
+        from ..connectors import connection_manager as manager
+        from ..core.db import SessionLocal
+
+        started = 0
+        for row in rows:
+            if not row.desired_running:
+                continue
+            with SessionLocal() as session:
+                begin_immediate_if_sqlite(session)
+                loaded = self.repo.get(session, row.id)
+                if loaded is None or not loaded.desired_running:
+                    continue
+                loaded.state = ConnectionState.STARTING
+                loaded.last_error_code = None
+                loaded.last_error_message = None
+                loaded.next_retry_at = None
+                session.flush()
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+                    continue
+                config = self.decrypt_config(loaded)
+            try:
+                await manager.start(row, config, self.inbound_handler())
+                started += 1
+            except Exception as exc:
+                logger.exception(
+                    "connection bootstrap recover start failed",
+                    extra={"connection_id": row.id},
+                )
+                await self._compensate_start_failure(row, exc)
+        return started
 
     async def stop(
         self, session: Session, *, row: ImConnection, actor_user_id: int
     ) -> ImConnection:
         from ..connectors import connection_manager as manager
 
+        # 与 start 对称：先在当前事务落库 desired_running=false / state=stopped，
+        # 提交后再让 manager 停监督任务，避免与运行中连接器写状态争抢 SQLite 写锁。
+        begin_immediate_if_sqlite(session)
         row.desired_running = False
         row.state = ConnectionState.STOPPED
         row.next_retry_at = None
         await run_in_threadpool(session.flush)
+        try:
+            await run_in_threadpool(session.commit)
+        except IntegrityError as exc:
+            await run_in_threadpool(session.rollback)
+            raise DomainError(
+                DomainErrorCode.CONFLICT, "连接停止冲突，请稍后重试", status_code=409
+            ) from exc
+
         await manager.stop(row.id)
         await run_in_threadpool(session.refresh, row)
-        self.audit.add(
-            session,
+        await self._record_audit_after_commit(
+            row=row,
             action=AuditAction.CONNECTION_STOPPED,
-            resource_type="im_connection",
-            resource_id=str(row.id),
             actor_user_id=actor_user_id,
-            owner_user_id=row.owner_user_id,
             metadata={"fields": ["desired_running", "state"]},
         )
         return row
@@ -437,24 +621,60 @@ class ConnectionService:
     async def apply(
         self, session: Session, *, row: ImConnection, actor_user_id: int
     ) -> ImConnection:
-        """应用保存的配置并只重启目标连接。"""
+        """应用保存的配置并只重启目标连接。
+
+        与 start/stop 共享两阶段顺序：
+        1) 当前事务先写 desired_running + state=stopped（无条件 stop 后再判断是否重启）；
+        2) 提交后再让 manager 启停监督任务；
+        3) 监督任务创建失败时用补偿事务写 error，接口不能继续返回成功；
+        4) connection.applied 审计独立短事务追加。
+        """
         from ..connectors import connection_manager as manager
+
+        begin_immediate_if_sqlite(session)
+        # 旧实例与监督任务先按 desired_running=false 落库，避免和 _supervise 写状态争抢。
+        row.state = ConnectionState.STOPPED
+        row.next_retry_at = None
+        await run_in_threadpool(session.flush)
+        try:
+            await run_in_threadpool(session.commit)
+        except IntegrityError as exc:
+            await run_in_threadpool(session.rollback)
+            raise DomainError(
+                DomainErrorCode.CONFLICT, "连接应用冲突，请稍后重试", status_code=409
+            ) from exc
 
         await manager.stop(row.id)
         if row.desired_running:
-            await manager.start(row, self.decrypt_config(row), self.inbound_handler())
+            # 与 start 阶段 1 对称：先把 state=starting 落库并提交。
+            begin_immediate_if_sqlite(session)
+            row.state = ConnectionState.STARTING
+            row.last_error_code = None
+            row.last_error_message = None
+            await run_in_threadpool(session.flush)
+            try:
+                await run_in_threadpool(session.commit)
+            except IntegrityError as exc:
+                await run_in_threadpool(session.rollback)
+                raise DomainError(
+                    DomainErrorCode.CONFLICT, "连接应用冲突，请稍后重试", status_code=409
+                ) from exc
+            try:
+                await manager.start(row, self.decrypt_config(row), self.inbound_handler())
+            except Exception as exc:
+                logger.exception("connection apply start failed", extra={"connection_id": row.id})
+                await self._compensate_start_failure(row, exc)
+                await run_in_threadpool(session.refresh, row)
+                raise DomainError(
+                    DomainErrorCode.CONFLICT, "连接应用失败，请稍后重试", status_code=500
+                ) from exc
             await run_in_threadpool(session.refresh, row)
         else:
-            row.state = ConnectionState.STOPPED
-            await run_in_threadpool(session.flush)
             await run_in_threadpool(session.refresh, row)
-        self.audit.add(
-            session,
+        await self._record_audit_after_commit(
+            row=row,
             action=AuditAction.CONNECTION_APPLIED,
-            resource_type="im_connection",
-            resource_id=str(row.id),
             actor_user_id=actor_user_id,
-            owner_user_id=row.owner_user_id,
             metadata={"fields": ["config"]},
         )
         return row

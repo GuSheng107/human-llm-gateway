@@ -184,7 +184,7 @@ export function TaskDetailDrawer({
                 <Button
                   onClick={() => {
                     onClose();
-                    navigate(`/tasks/${detail.id}/reply`);
+                    navigate(`/replies?focus=${detail.id}`);
                   }}
                 >
                   <Icon name="reply" className="h-4 w-4" />
@@ -345,7 +345,7 @@ export function TaskDetailDrawer({
       {showGenerateModal && detail && (
         <Modal
           title="调用 LLM 生成草稿"
-          description="选择一个同协议的 LLM 配置；生成结果进入可编辑草稿，不会自动提交。"
+          description="选择同协议 LLM，生成可编辑草稿。"
           onClose={() => setShowGenerateModal(false)}
         >
           <div className="space-y-4 p-6">
@@ -381,7 +381,7 @@ export function TaskDetailDrawer({
               </div>
             )}
             <p className="text-xs text-slate-400">
-              跨协议生成按字段矩阵自动转换；不可等价的专有字段将被拒绝。
+              不兼容字段会拒绝生成。
             </p>
           </div>
         </Modal>
@@ -390,7 +390,7 @@ export function TaskDetailDrawer({
       {generatedDraftId && detail && (
         <Modal
           title="草稿已生成"
-          description="上游结果已保存为可编辑草稿，进入回复页调整后提交。"
+          description="草稿已保存，可编辑后提交。"
           onClose={() => setGeneratedDraftId(null)}
         >
           <div className="flex justify-end gap-2 p-6">
@@ -401,7 +401,7 @@ export function TaskDetailDrawer({
               onClick={() => {
                 setGeneratedDraftId(null);
                 onClose();
-                navigate(`/tasks/${detail.id}/reply`);
+                    navigate(`/replies?focus=${detail.id}`);
               }}
             >
               <Icon name="reply" className="h-4 w-4" />

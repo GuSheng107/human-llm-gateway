@@ -10,8 +10,8 @@ export interface PasswordResetResult {
   temporary_password: string | null;
 }
 
-export function listUsers(page: number, search = ""): Promise<Page<UserSummary>> {
-  const query = new URLSearchParams({ page: String(page), page_size: "20" });
+export function listUsers(page: number, search = "", pageSize = 20): Promise<Page<UserSummary>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (search.trim()) query.set("search", search.trim());
   return api<Page<UserSummary>>(`/api/users?${query}`);
 }

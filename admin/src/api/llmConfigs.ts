@@ -47,8 +47,8 @@ export interface LlmConfigUpdatePayload {
   extra_body?: Record<string, unknown>;
 }
 
-export function listLlmConfigs(page: number, search = ""): Promise<Page<LlmConfig>> {
-  const query = new URLSearchParams({ page: String(page), page_size: "20" });
+export function listLlmConfigs(page: number, search = "", pageSize = 20): Promise<Page<LlmConfig>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (search.trim()) query.set("search", search.trim());
   return api<Page<LlmConfig>>(`/api/llm-configs?${query}`);
 }

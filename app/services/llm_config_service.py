@@ -458,20 +458,28 @@ class LlmConfigService:
     # 删除（被引用时拒绝，物理删除并清空 Secret）
     # ------------------------------------------------------------------
 
-    def delete(self, session: Session, *, row: LlmConfig, actor: User) -> None:
+    def delete(
+        self,
+        session: Session,
+        *,
+        row: LlmConfig,
+        actor: User,
+        enforce_refs: bool = True,
+    ) -> None:
         begin_immediate_if_sqlite(session)
-        key_refs = self.repo.count_api_key_references(session, config_id=row.id)
-        task_refs = self.repo.count_active_task_references(session, config_id=row.id)
-        if key_refs or task_refs:
-            raise DomainError(
-                DomainErrorCode.CONFLICT,
-                (
-                    f"LLM 配置仍被 {key_refs} 个 API Key"
-                    + (f" 与 {task_refs} 个活动任务" if task_refs else "")
-                    + " 引用，无法删除"
-                ),
-                status_code=409,
-            )
+        if enforce_refs:
+            key_refs = self.repo.count_api_key_references(session, config_id=row.id)
+            task_refs = self.repo.count_active_task_references(session, config_id=row.id)
+            if key_refs or task_refs:
+                raise DomainError(
+                    DomainErrorCode.CONFLICT,
+                    (
+                        f"LLM 配置仍被 {key_refs} 个 API Key"
+                        + (f" 与 {task_refs} 个活动任务" if task_refs else "")
+                        + " 引用，无法删除"
+                    ),
+                    status_code=409,
+                )
         self.repo.delete(session, row.id)
         self.audit.add(
             session,

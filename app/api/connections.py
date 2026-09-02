@@ -16,9 +16,10 @@ from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.models import ImConnection, User
 from ..services.connection_service import ConnectionService
 from .common import StrictModel
-from .deps import require_current_user
+from .deps import require_admin, require_current_user
 
 router = APIRouter(prefix="/api/im-connections", tags=["im-connections"])
+admin_router = APIRouter(prefix="/api/admin/im-connections", tags=["admin-im-connections"])
 platforms_router = APIRouter(prefix="/api/im-platforms", tags=["im-platforms"])
 
 _service = ConnectionService()
@@ -212,21 +213,45 @@ def list_connections(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> ConnectionPage:
-    owner_filter = None if user.role is UserRole.ADMIN else user.id
+    # /api/im-connections 永远只回当前用户自己的连接；监管全部用户请走 admin 路由。
     rows, total = _service.repo.list_page(
         db,
         page=page,
         page_size=page_size,
-        owner_user_id=owner_filter,
+        owner_user_id=user.id,
         search=search,
         platform=platform,
         state=state,
     )
     return ConnectionPage(
-        items=[
-            _view(db, row, include_owner=user.role is UserRole.ADMIN, viewer_id=user.id)
-            for row in rows
-        ],
+        items=[_view(db, row, include_owner=False, viewer_id=user.id) for row in rows],
+        page=page,
+        page_size=page_size,
+        total=total,
+    )
+
+
+@admin_router.get("", response_model=ConnectionPage)
+def admin_list_connections(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: str | None = Query(default=None, max_length=100),
+    platform: str | None = Query(default=None, max_length=50),
+    state: ConnectionState | None = Query(default=None),
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> ConnectionPage:
+    rows, total = _service.repo.list_page(
+        db,
+        page=page,
+        page_size=page_size,
+        owner_user_id=None,
+        search=search,
+        platform=platform,
+        state=state,
+    )
+    return ConnectionPage(
+        items=[_view(db, row, include_owner=True, viewer_id=admin.id) for row in rows],
         page=page,
         page_size=page_size,
         total=total,
@@ -251,11 +276,13 @@ def create_connection(
 async def check_connections(
     user: User = Depends(require_current_user),
 ) -> list[ConnectionCheckItem]:
-    """立即执行与后台看门狗相同的检查，并停用当前异常连接。"""
+    """立即执行与后台看门狗相同的检查，并停用当前异常连接。
+
+    仅检查当前调用者本人的连接；管理员的批量检查请走 admin 路由。
+    """
     from ..services.connection_watchdog import connection_watchdog
 
-    owner_filter = None if user.role is UserRole.ADMIN else user.id
-    reports = await connection_watchdog.check_once(owner_user_id=owner_filter)
+    reports = await connection_watchdog.check_once(owner_user_id=user.id)
     return [ConnectionCheckItem(**report) for report in reports]
 
 

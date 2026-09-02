@@ -1,8 +1,8 @@
 # Human LLM Gateway 目标架构
 
-> 文档状态：M1 目标架构基线
+> 文档状态：已部署版本架构
 >
-> 当前代码处于过渡期；M2 必须在一个完整提交中一次性切换到本文件定义的领域模型和模块边界，不允许新旧表、新旧运行链路或兼容代理共存。M2 实施期间本地未提交工作区允许处于不可运行状态，但不得把中间状态提交或推送到 `master`；master 历史中只出现切换前和完整切换后两个可运行状态。
+> 当前部署使用本文件描述的模块、数据库和运行链路。
 
 ## 1. 架构原则
 
@@ -14,8 +14,10 @@
 6. **连接器可插拔**：IM 平台通过注册表和统一接口接入，核心服务不按平台写条件分支。
 7. **敏感数据默认不可见**：Secret 加密、凭据只存哈希、日志脱敏、管理员也不能回读用户 Secret。
 8. **数据库承担并发裁决**：邀请码消费、并发名额和首个回复都通过条件更新原子完成。
-9. **无历史兼容层**：目标结构直接创建，不维护旧表、旧字段、旧路由或旧连接器别名。
-10. **M2 原子切换**：M2-A/B/C 只是同一里程碑的进度工作包，不是可独立提交的新旧共存阶段；目标 Schema、服务、API、前端和测试必须一起切换。
+9. **当前 Schema 单一有效**：运行时使用当前数据库结构和当前 API 契约，不维护重复运行链路。
+10. **事务边界明确**：数据库负责邀请码、并发名额、首个回复、草稿版本和连接状态竞争的原子裁决。
+
+当前运行链路还包括：`app/core/logging.py` 统一生成和绑定 trace；`app/services/data_retention.py` 在启动及每七天清理高频数据；`app/services/connection_watchdog.py` 负责 IM 连接健康和 supervisor 竞争收敛；`app/domain/conversation.py` 只把规范化请求投影为工作台展示消息，不改变原始请求。
 
 ## 2. 系统上下文
 
@@ -119,7 +121,7 @@ erDiagram
     ASSISTANT_SESSION ||--o{ ASSISTANT_MESSAGE : contains
 ```
 
-`ModelRoute` 不在目标关系中。API Key 直接保存投递入口、回复策略、LLM 配置、人工超时、可选模型分组和可选模型白名单；Fake Model 只由请求的 `model` 和有效模型集合决定。
+API Key 直接保存投递入口、回复策略、LLM 配置、人工超时、可选模型分组和可选模型白名单；Fake Model 只由请求的 `model` 和有效模型集合决定。
 
 系统 Fake Model 的 `owner_user_id` 为空且由管理员维护；用户私有 Fake Model 归所有者使用。Key 的有效模型集合按以下顺序只收窄、不扩张：
 
@@ -423,7 +425,7 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 
 ### 12.1 敏感数据
 
-- 用户密码：Argon2id（`m=19456 KiB`、`t=2`、`p=1`），以 PHC 编码字符串存储；登录成功且参数低于当前策略时同流程重新哈希。不使用 bcrypt，也不保留 M0 的低参数 scrypt。
+- 用户密码：Argon2id（`m=19456 KiB`、`t=2`、`p=1`），以 PHC 编码字符串存储；登录成功且参数低于当前策略时同流程重新哈希。不使用 bcrypt。
 - 邀请码和 API Key：仅哈希，另存不可用于认证的短前缀。
 - LLM 和 IM Secret：应用级认证加密，密码学契约固定为 HKDF-SHA256 派生 + AES-256-GCM + 96-bit 随机 nonce + 含 key_version 的 envelope（详见 DATABASE §2.4），主密钥来自环境变量 `APP_SECRET`（32 字节 CSPRNG 的 base64url）。
 - 登录二维码：仅短期返回给资源所有者，不持久化到普通日志。
@@ -461,20 +463,14 @@ ROADMAP 的阶段编号是产品交付顺序，不代表所有前端开发严格
 - M9 定义为体验收口期，不重新实现业务领域逻辑。它对 M3-M8 已交付的页面按 `UI_GUIDE` 做完整体验、导航、筛选、分页、响应式、权限和一致性复核，并实现此前阶段未要求的 Dashboard / Logs / Settings 等完整后台能力。
 - M6-B = Minimum Working Task Workbench；M9 = Full Task Workbench UX & Integration。业务闭环不能等 M9。
 
-## 15. 当前实现到目标架构的差异
+## 15. 当前部署边界
 
-| 当前过渡结构 | 目标结构 | 处理阶段 |
-| --- | --- | --- |
-| `HumanOperator` 与用户一对一 | 用户本身是任务所有者和回复者 | M2 删除 |
-| `LLMProvider` + `LLMModel` | 用户私有 `LLMConfig`，真实模型是配置字段 | M2 重建 |
-| `ModelRoute` 决定人工/LLM 路由 | `ApiKey.reply_strategy` 等字段直接决定 | M2 删除，不做兼容 |
-| API Key 关联 route/operator | API Key 关联用户、入口、策略、LLM 配置、模型分组和可选模型集合 | M2 重建 |
-| 部分管理写操作使用 `POST /update`、`POST /delete` | 目标管理 API 使用 `PATCH`、`DELETE` | M2-M9 直接替换 |
-| `app/models.py`、部分 service 仍较集中 | 按领域拆分 domain/service/repository | M2 一次性切换 |
-| 当前连接页已可操作 | 已按新所有权、Secret 和 API Key 投递关系重新接入 | M4 已完成 |
-| Fake Model 目录与并发准入尚未落地 | `effective_models` 单点计算 + `admission` 原子占用名额 | M5 已完成 |
+- 当前已部署实现的补充边界：
 
-这些当前端点和表仅用于保持 M0 基线可运行，不构成兼容承诺。M2 提交必须同时删除旧路径、旧数据模型、旧前端引用和旧测试，不允许以中间提交形式让它们与目标结构共存。
+- 普通 IM 连接接口只返回当前用户资源；管理员通过独立监管接口查看全部连接。
+- 回复工作台使用 `TaskInboxState` 保存未读和最后事件游标，任务对话由规范化请求按需投影。
+- 日志、审计、HTTP 访问和看门狗事件共享 trace；高频运行数据按七日策略清理。
+- 管理台由 FastAPI 直接托管构建后的 `admin/dist`，生产入口为 `app.api:app`。
 
 ## 16. 架构验收清单
 
@@ -493,5 +489,5 @@ ROADMAP 的阶段编号是产品交付顺序，不代表所有前端开发严格
 - 新 IM 平台只需注册定义和实现统一接口。
 - 管理员接口无法回读或代用用户 Secret；受限会话只能访问改密相关接口。
 - 错误和日志不会暴露人工流程、真实模型或凭据。
-- M2 的目标提交中不存在旧表、旧路由、双写或兼容代理。
-- `/readyz` 满足 5 项就绪条件；加密自检 sentinel 能识别主密钥配置漂移。
+- 当前数据库只使用一套 Schema 和 metadata；接口、前端类型和测试保持同步。
+- `/readyz` 与 `/metrics` 暂未开放；当前部署使用 `/healthz` 做存活检查。

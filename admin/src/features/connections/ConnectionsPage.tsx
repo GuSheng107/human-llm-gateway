@@ -21,6 +21,7 @@ import type {
   ImConnection,
   PlatformSpec,
 } from "../../types/gateway";
+import { useAuth } from "../auth/AuthContext";
 import { ConnectionFormModal } from "./ConnectionFormModal";
 import { ConnectionPlatformPanel } from "./ConnectionPlatformPanel";
 import { orderPlatforms } from "./connectionPresentation";
@@ -28,13 +29,54 @@ import { orderPlatforms } from "./connectionPresentation";
 interface ConfigTarget {
   platform: PlatformSpec;
   connection: ImConnection | null;
+  loading: boolean;
 }
 
 function formatTime(value: string | null): string {
   return value ? new Date(value).toLocaleString() : "-";
 }
 
+function ConnectionListSkeleton() {
+  return (
+    <div
+      className="space-y-3"
+      role="status"
+      aria-live="polite"
+      aria-label="正在加载连接"
+    >
+      {[0, 1, 2, 3].map((index) => (
+        <section
+          key={index}
+          className="relative overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm"
+        >
+          <span className="absolute inset-y-0 left-0 w-1 animate-pulse bg-slate-200" />
+          <div className="grid gap-4 bg-gradient-to-r from-slate-50 to-slate-100/70 px-5 py-5 pl-6 lg:grid-cols-[minmax(0,1fr)_minmax(15rem,.8fr)_auto] lg:items-center">
+            <div className="flex min-w-0 items-center gap-3.5">
+              <span className="grid h-12 w-12 shrink-0 animate-pulse place-items-center rounded-xl bg-slate-200" />
+              <div className="min-w-0 flex-1">
+                <span className="block h-3 w-16 animate-pulse rounded bg-slate-200" />
+                <span className="mt-2 block h-4 w-40 animate-pulse rounded bg-slate-200" />
+             </div>
+           </div>
+            <div className="min-w-0 rounded-lg border border-white/80 bg-white/70 px-3 py-2.5 shadow-sm">
+              <span className="block h-3 w-32 animate-pulse rounded bg-slate-200" />
+              <span className="mt-2 block h-3 w-24 animate-pulse rounded bg-slate-200" />
+           </div>
+            <div className="flex items-center justify-end gap-2 border-t border-slate-200/70 pt-3 lg:border-0 lg:pt-0">
+              <span className="h-6 w-11 animate-pulse rounded-full bg-slate-200" />
+              <span className="h-4 w-12 animate-pulse rounded bg-slate-200" />
+              <span className="h-4 w-8 animate-pulse rounded bg-slate-200" />
+           </div>
+         </div>
+       </section>
+      ))}
+   </div>
+  );
+}
+
 export function ConnectionsPage() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [items, setItems] = useState<ImConnection[]>([]);
   const [platforms, setPlatforms] = useState<PlatformSpec[]>([]);
   const [loading, setLoading] = useState(true);
@@ -44,6 +86,7 @@ export function ConnectionsPage() {
   const [checking, setChecking] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
+  // /api/im-connections 后端已限定为当前用户自己，因此管理员与普通用户都只看本人连接。
   const displayPlatforms = useMemo(
     () => orderPlatforms(platforms, items),
     [items, platforms],
@@ -86,10 +129,14 @@ export function ConnectionsPage() {
 
   const openConnection = async (platform: PlatformSpec, current: ImConnection | null) => {
     const key = current?.id ?? platform.code;
+    const needsConnection = !current && platform.supports_login && !isAdmin;
+    // 先展示弹窗，再处理扫码连接的创建请求。网络较慢时用户也能立即看到反馈，
+    // 不会因为等待请求而误以为点击未生效并反复点击。
+    setConfigTarget({ platform, connection: current, loading: needsConnection });
     setBusyKey(key);
     try {
       let connection = current;
-      if (!connection && platform.supports_login) {
+      if (needsConnection) {
         connection = await createConnection({
           name: platform.label,
           platform: platform.code,
@@ -99,9 +146,16 @@ export function ConnectionsPage() {
         setItems((previous) => [...previous, saved]);
         connection = saved;
       }
-      setConfigTarget({ platform, connection });
+      setConfigTarget((target) =>
+        target?.platform.code === platform.code
+          ? { platform, connection, loading: false }
+          : target,
+      );
     } catch (caught) {
       notify(caught instanceof Error ? caught.message : "打开连接配置失败", "error");
+      setConfigTarget((target) =>
+        target?.platform.code === platform.code ? null : target,
+      );
       await load();
     } finally {
       setBusyKey(null);
@@ -135,6 +189,10 @@ export function ConnectionsPage() {
   };
 
   const remove = async (item: ImConnection) => {
+    if (item.desired_running) {
+      notify("请先关闭连接后再删除", "info");
+      return;
+    }
     if (!(await confirmAction({ message: `确认删除「${item.platform_label}」连接？` }))) {
       return;
     }
@@ -176,11 +234,20 @@ export function ConnectionsPage() {
     <div className="flex h-[calc(100dvh-6rem)] min-h-0 flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7rem)] lg:h-[calc(100dvh-7.5rem)]">
       <PageHeader
         title="连接 IM"
+        description={
+          isAdmin
+            ? "当前仅显示本账号连接；全部连接请到「IM 连接监管」。"
+            : undefined
+        }
         actions={
-          <Button variant="ghost" loading={checking} onClick={() => void inspectConnections()}>
-            <Icon name="refresh" className="h-4 w-4" />
-            检查连接
-          </Button>
+          isAdmin
+            ? undefined
+            : (
+              <Button variant="ghost" loading={checking} onClick={() => void inspectConnections()}>
+                <Icon name="refresh" className="h-4 w-4" />
+                检查连接
+              </Button>
+            )
         }
       />
 
@@ -214,39 +281,46 @@ export function ConnectionsPage() {
         {error && <ErrorBanner message={error} className="mx-4 mt-4 sm:mx-5" />}
 
         <div className="min-h-0 flex-1 overflow-y-auto bg-slate-50/55 p-3 sm:p-4">
-          <div className="space-y-3 pb-1">
-            {displayPlatforms.map((platform) => {
-              const connection = connectionMap.get(platform.code) ?? null;
-              const key = connection?.id ?? platform.code;
-              return (
-                <ConnectionPlatformPanel
-                  key={platform.code}
-                  platform={platform}
-                  connection={connection}
-                  busy={busyKey === key}
-                  onToggle={() => void toggle(platform, connection)}
-                  onPrimaryAction={() => void openConnection(platform, connection)}
-                  onDelete={() => connection && void remove(connection)}
-                />
-              );
-            })}
+          <div className="space-y-3 pb-1" aria-busy={loading}>
+            {loading && displayPlatforms.length === 0 ? (
+              <ConnectionListSkeleton />
+            ) : (
+              displayPlatforms.map((platform) => {
+                const connection = connectionMap.get(platform.code) ?? null;
+                const key = connection?.id ?? platform.code;
+                return (
+                  <ConnectionPlatformPanel
+                    key={platform.code}
+                    platform={platform}
+                    connection={connection}
+                    busy={busyKey === key}
+                    readOnly={isAdmin}
+                    onToggle={() => void toggle(platform, connection)}
+                    onPrimaryAction={() => void openConnection(platform, connection)}
+                    onDelete={() => connection && void remove(connection)}
+                  />
+                );
+              })
+            )}
 
             {!loading && displayPlatforms.length === 0 && (
               <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-slate-200 bg-white text-center">
                 <div>
                   <Icon name="link" className="mx-auto h-7 w-7 text-slate-300" />
                   <p className="mt-2 text-xs text-slate-400">暂无可用 IM 平台</p>
-                </div>
-              </div>
+               </div>
+             </div>
             )}
-          </div>
-        </div>
+         </div>
+       </div>
       </section>
 
       {configTarget && (
         <ConnectionFormModal
           platform={configTarget.platform}
           connection={configTarget.connection}
+          loadingConnection={configTarget.loading}
+          readOnly={isAdmin}
           onClose={() => {
             setConfigTarget(null);
             void load();
@@ -258,7 +332,7 @@ export function ConnectionsPage() {
       {healthReport && (
         <Modal
           title="IM 连接检查结果"
-          description={`共检查 ${healthReport.length} 个连接；异常且已启用的连接已自动关闭开关。`}
+          description={`检查 ${healthReport.length} 个连接；异常连接已关闭。`}
           onClose={() => setHealthReport(null)}
           width="max-w-4xl"
         >

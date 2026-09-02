@@ -146,7 +146,13 @@ class TaskService:
         owner: User,
         draft_id: int,
         draft: ReplyDraft,
+        expected_version: int,
     ) -> TaskDraft:
+        """乐观锁更新：expected_version 必填且必须匹配当前 version。
+
+        不匹配返回 409（public_code=draft_version_conflict），由前端弹
+        "刷新 / 强制覆盖"。不再兼容不带 expected_version 的旧语义。
+        """
         self._assert_writable(task, owner)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_draft(session, draft_id)
@@ -155,10 +161,24 @@ class TaskService:
         if row.state is not DraftState.EDITING:
             raise DomainError(DomainErrorCode.CONFLICT, "草稿已提交，不能修改", status_code=409)
         payload = self._draft_payload(draft)
-        row.reasoning_text = payload["reasoning"]
-        row.tool_calls_json = payload["tool_calls_json"]
-        row.final_text = payload["final_text"]
+        ok = self.repo.update_draft_fields(
+            session,
+            draft_id=draft_id,
+            expected_version=expected_version,
+            reasoning_text=payload["reasoning"],
+            tool_calls_json=payload["tool_calls_json"],
+            final_text=payload["final_text"],
+        )
+        if not ok:
+            current = self.repo.get_draft(session, draft_id)
+            raise DomainError(
+                DomainErrorCode.CONFLICT,
+                f"草稿版本不匹配（当前 version={current.version if current else '已删除'}），请刷新后重试",
+                status_code=409,
+                public_code="draft_version_conflict",
+            )
         session.flush()
+        session.refresh(row)
         return row
 
     def delete_draft(

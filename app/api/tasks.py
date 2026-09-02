@@ -16,11 +16,12 @@ from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..core.time import iso_utc
+from ..domain.conversation import load_projected_task_messages
 from ..domain.dsl import is_empty_draft
 from ..domain.enums import TaskState, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft, ReplyToolCall
-from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, User
+from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, TaskInboxState, User
 from ..services.delivery_service import DeliveryService
 from ..services.task_service import TaskService, draft_from_row
 from .common import StrictModel
@@ -46,6 +47,12 @@ class ReplyDraftInput(StrictModel):
     reasoning: str | None = Field(default=None, max_length=20000)
     tool_calls: list[ToolCallInput] = Field(default_factory=list, max_length=20)
     final_text: str | None = Field(default=None, max_length=40000)
+
+
+class DraftUpdateInput(ReplyDraftInput):
+    """草稿部分更新：乐观锁强制要求 expected_version。"""
+
+    expected_version: int = Field(ge=1)
 
 
 class ReplySubmitInput(StrictModel):
@@ -77,6 +84,7 @@ class DraftView(BaseModel):
     reasoning: str | None
     tool_calls: list[ToolCallView]
     final_text: str | None
+    version: int
     created_at: str
     updated_at: str
 
@@ -154,6 +162,60 @@ class ReplyResultView(BaseModel):
     state: str
 
 
+class InboxItem(BaseModel):
+    id: str
+    public_id: str
+    requested_model: str
+    fake_model_name: str
+    protocol: str
+    state: str
+    human_deadline_at: str | None
+    created_at: str
+    prompt_preview: str
+    has_tools: bool
+    unread: bool
+    seen_at: str | None
+    last_seen_event_id: str | None
+    owner_user_id: str | None = None
+    owner_username: str | None = None
+
+
+class InboxPage(BaseModel):
+    items: list[InboxItem]
+    waiting_count: int
+    unread_count: int
+
+
+class InboxSummary(BaseModel):
+    unread_count: int
+    waiting_count: int
+
+
+class ConversationBlock(BaseModel):
+    type: str
+    text: str | None = None
+    language: str | None = None
+    tool_call_id: str | None = None
+    name: str | None = None
+    size: int | None = None
+    media_type: str | None = None
+
+
+class ConversationMessage(BaseModel):
+    index: int
+    role: str
+    blocks: list[ConversationBlock]
+    preview: str
+    length: int
+    has_more: bool
+
+
+class ConversationPage(BaseModel):
+    task_id: str
+    messages: list[ConversationMessage]
+    total: int
+
+
 # ------------------------------------------------------------------
 # 转换
 # ------------------------------------------------------------------
@@ -172,6 +234,7 @@ def _draft_view(row: TaskDraft) -> DraftView:
         reasoning=draft.reasoning,
         tool_calls=[_tool_call_view(c) for c in draft.tool_calls],
         final_text=draft.final_text,
+        version=row.version,
         created_at=iso_utc(row.created_at) or "",
         updated_at=iso_utc(row.updated_at) or "",
     )
@@ -318,7 +381,7 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
     )
 
 
-def _to_draft(payload: ReplyDraftInput | ReplySubmitInput) -> ReplyDraft:
+def _to_draft(payload: ReplyDraftInput | ReplySubmitInput | DraftUpdateInput) -> ReplyDraft:
     return ReplyDraft(
         reasoning=payload.reasoning,
         tool_calls=[
@@ -388,6 +451,50 @@ def list_tasks(
     )
 
 
+@router.get("/inbox", response_model=InboxPage)
+def list_inbox(
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> InboxPage:
+    """工作台收件箱：waiting_human 全量 + 未读位。
+
+    必须在 /{task_id} 之前注册，否则静态路径被路径参数吞掉。
+    上限 10 任务（MAX_ACTIVE_TASKS_PER_USER），无需分页。
+    """
+    rows = _service.repo.list_inbox(db, owner_user_id=user.id)
+    task_ids = [row.id for row in rows]
+    seen_map = _service.repo.list_seen_map(db, task_ids=task_ids)
+    fake_model_names = _batch_fake_model_names(db, rows)
+    include_owner = user.role is UserRole.ADMIN
+    owner_usernames = _batch_owner_usernames(db, rows) if include_owner else {}
+    unread_count = sum(1 for row in rows if row.id not in seen_map)
+    return InboxPage(
+        items=[
+            _inbox_item(
+                db,
+                row,
+                seen_map.get(row.id),
+                include_owner=include_owner,
+                fake_model_names=fake_model_names,
+                owner_usernames=owner_usernames,
+            )
+            for row in rows
+        ],
+        waiting_count=len(rows),
+        unread_count=unread_count,
+    )
+
+
+@router.get("/inbox-summary", response_model=InboxSummary)
+def inbox_summary(
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> InboxSummary:
+    waiting = _service.repo.count_waiting(db, owner_user_id=user.id)
+    unread = _service.repo.count_unread(db, owner_user_id=user.id)
+    return InboxSummary(unread_count=unread, waiting_count=waiting)
+
+
 @router.get("/{task_id}", response_model=TaskDetail)
 def get_task(
     task_id: int,
@@ -451,13 +558,18 @@ def save_draft(
 def update_draft(
     task_id: int,
     draft_id: int,
-    payload: ReplyDraftInput,
+    payload: DraftUpdateInput,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> DraftView:
     task = _get_task(db, task_id, user)
     row = _service.update_draft(
-        db, task=task, owner=user, draft_id=draft_id, draft=_to_draft(payload)
+        db,
+        task=task,
+        owner=user,
+        draft_id=draft_id,
+        draft=_to_draft(payload),
+        expected_version=payload.expected_version,
     )
     db.commit()
     db.refresh(row)
@@ -527,3 +639,138 @@ def submit_reply(
         )
     db.refresh(task)
     return ReplyResultView(accepted=True, task_id=str(task.id), state=task.state.value)
+
+
+# ----------------------------------------------------------------------
+# 工作台收件箱（M14）
+# ----------------------------------------------------------------------
+
+
+class SeenBody(StrictModel):
+    last_seen_event_id: int | None = None
+
+
+def _inbox_item(
+    session: Session,
+    task: RequestTask,
+    seen: TaskInboxState | None,
+    *,
+    include_owner: bool,
+    fake_model_names: dict[int, str],
+    owner_usernames: dict[int, str],
+) -> InboxItem:
+    prompt, tool_names = _summary(task)
+    fake_model_name = fake_model_names.get(task.fake_model_id or -1, task.requested_model)
+    owner_username = owner_usernames.get(task.owner_user_id) if include_owner else None
+    return InboxItem(
+        id=str(task.id),
+        public_id=task.public_id,
+        requested_model=task.requested_model,
+        fake_model_name=fake_model_name,
+        protocol=task.protocol.value,
+        state=task.state.value,
+        human_deadline_at=iso_utc(task.human_deadline_at),
+        created_at=iso_utc(task.created_at) or "",
+        prompt_preview=_preview_text(prompt),
+        has_tools=bool(tool_names),
+        unread=seen is None,
+        seen_at=iso_utc(seen.seen_at) if seen else None,
+        last_seen_event_id=(
+            str(seen.last_seen_event_id) if seen and seen.last_seen_event_id else None
+        ),
+        owner_user_id=str(task.owner_user_id) if include_owner else None,
+        owner_username=owner_username,
+    )
+
+
+@router.post("/{task_id}/seen", status_code=204)
+def mark_task_seen(
+    task_id: int,
+    body: SeenBody | None = None,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """标记收件箱任务已读（独立短事务，失败不阻塞前端）。"""
+    task = _get_task(db, task_id, user)
+    if task.owner_user_id != user.id:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "仅所有者能标记已读", status_code=403)
+    _service.repo.upsert_seen(
+        db,
+        task_id=task.id,
+        owner_user_id=user.id,
+        last_seen_event_id=(body.last_seen_event_id if body else None),
+    )
+    db.commit()
+    return Response(status_code=204)
+
+
+# ----------------------------------------------------------------------
+# 对话投影（M14）
+# ----------------------------------------------------------------------
+
+
+def _conversation_message_view(msg: dict[str, Any]) -> ConversationMessage:
+    blocks = [
+        ConversationBlock(
+            type=str(block.get("type", "text")),
+            text=block.get("text"),
+            name=block.get("name"),
+            media_type=block.get("media_type"),
+            tool_call_id=block.get("tool_call_id"),
+        )
+        for block in msg.get("blocks", [])
+    ]
+    return ConversationMessage(
+        index=int(msg["index"]),
+        role=str(msg["role"]),
+        blocks=blocks,
+        preview=str(msg.get("preview", "")),
+        length=int(msg.get("length", 0)),
+        has_more=bool(msg.get("has_more", False)),
+    )
+
+
+@router.get("/{task_id}/conversation", response_model=ConversationPage)
+def get_conversation(
+    task_id: int,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> ConversationPage:
+    """多轮上下文按需加载（不改变 normalized_request_json）。"""
+    task = _get_task(db, task_id, user)
+    owner_or_admin = task.owner_user_id == user.id or user.role is UserRole.ADMIN
+    if not owner_or_admin:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "无权查看该任务上下文", status_code=403)
+    messages = load_projected_task_messages(task.normalized_request_json)
+    return ConversationPage(
+        task_id=str(task.id),
+        messages=[_conversation_message_view(msg) for msg in messages],
+        total=len(messages),
+    )
+
+
+@router.get("/{task_id}/conversation/messages/{index}")
+def get_conversation_message(
+    task_id: int,
+    index: int,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> dict[str, Any]:
+    """按需返回单条完整消息（preview 800 字，has_more 截断时单独取）。"""
+    task = _get_task(db, task_id, user)
+    if task.owner_user_id != user.id and user.role is not UserRole.ADMIN:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "无权查看该任务上下文", status_code=403)
+    messages = load_projected_task_messages(task.normalized_request_json)
+    if index < 0 or index >= len(messages):
+        raise DomainError(DomainErrorCode.NOT_FOUND, "消息不存在", status_code=404)
+    msg = messages[index]
+    # 完整消息：不再受 preview 截断限制
+    full_text = "\n".join(str(b.get("text") or "") for b in msg.get("blocks", []) if b.get("text"))
+    return {
+        "task_id": str(task.id),
+        "index": index,
+        "role": msg["role"],
+        "blocks": msg["blocks"],
+        "full_text": full_text,
+        "length": msg["length"],
+    }

@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 import { clampModelPage, MODEL_PAGE_SIZES, paginateModels } from "./modelPagination";
 
 describe("模型广场分页", () => {
-  it("只提供约定的每页数量", () => {
-    expect(MODEL_PAGE_SIZES).toEqual([12, 24, 48, 96]);
+  it("只提供约定的每页数量（与全站统一规范一致）", () => {
+    expect(MODEL_PAGE_SIZES).toEqual([10, 20, 50, 100]);
   });
 
   it("切换页码后返回对应数据", () => {

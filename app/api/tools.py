@@ -46,6 +46,7 @@ class ToolCreate(StrictModel):
     command_template: str = Field(min_length=1, max_length=2000)
     arguments_schema: ArgumentsSchema
     timeout_seconds: int = Field(default=30, ge=1, le=120)
+    stdin_parameter: str | None = Field(default=None, max_length=64)
 
 
 class ToolUpdate(StrictModel):
@@ -54,6 +55,7 @@ class ToolUpdate(StrictModel):
     arguments_schema: ArgumentsSchema | None = None
     timeout_seconds: int | None = Field(default=None, ge=1, le=120)
     is_enabled: bool | None = None
+    stdin_parameter: str | None = None
 
 
 class ToolExecute(StrictModel):
@@ -67,6 +69,7 @@ class ToolView(BaseModel):
     description: str | None
     command_template: str | None  # 用户视图不返回（管理员可见）
     arguments_schema: dict[str, Any] | None
+    stdin_parameter: str | None
     timeout_seconds: int
     is_enabled: bool
     created_at: str
@@ -85,6 +88,7 @@ class ToolView(BaseModel):
             description=row.description,
             command_template=row.command_template if admin_view else None,
             arguments_schema=schema,
+            stdin_parameter=row.stdin_parameter,
             timeout_seconds=row.timeout_seconds,
             is_enabled=row.is_enabled,
             created_at=iso_utc(row.created_at) or "",
@@ -169,6 +173,7 @@ def create_tool(
         command_template=payload.command_template,
         arguments_schema=payload.arguments_schema.model_dump(),
         timeout_seconds=payload.timeout_seconds,
+        stdin_parameter=payload.stdin_parameter,
     )
     db.commit()
     db.refresh(row)

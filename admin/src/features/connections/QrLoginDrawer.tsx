@@ -21,9 +21,10 @@ const PHASE_TEXT: Record<QrPhase, string> = {
 interface QrLoginSectionProps {
   connection: ImConnection;
   onBound: () => void;
+  disabled?: boolean;
 }
 
-export function QrLoginSection({ connection, onBound }: QrLoginSectionProps) {
+export function QrLoginSection({ connection, onBound, disabled = false }: QrLoginSectionProps) {
   const [phase, setPhase] = useState<QrPhase>(connection.bound ? "success" : "loading");
   const [qrImage, setQrImage] = useState("");
   const [errorText, setErrorText] = useState("");
@@ -37,6 +38,7 @@ export function QrLoginSection({ connection, onBound }: QrLoginSectionProps) {
 
   const beginLogin = useCallback(
     async (id: string) => {
+      if (disabled) return;
       stopPolling();
       setPhase("loading");
       setErrorText("");
@@ -84,13 +86,15 @@ export function QrLoginSection({ connection, onBound }: QrLoginSectionProps) {
       };
       void poll();
     },
-    [onBound, stopPolling]
+    [onBound, stopPolling, disabled]
   );
 
   useEffect(() => {
     setQrImage("");
     if (connection.bound) {
       setPhase("success");
+    } else if (disabled) {
+      setPhase("wait");
     } else {
       const timer = window.setTimeout(() => void beginLogin(connection.id), 0);
       return () => {
@@ -133,7 +137,7 @@ export function QrLoginSection({ connection, onBound }: QrLoginSectionProps) {
             ) : (
               <span className="text-xs text-slate-300">二维码获取失败</span>
             )}
-            {phase === "expired" && (
+            {phase === "expired" && !disabled && (
               <div className="absolute inset-0 grid place-items-center rounded-lg bg-white/95">
                 <Button onClick={() => void beginLogin(connection.id)}>
                   刷新二维码
@@ -158,15 +162,18 @@ export function QrLoginSection({ connection, onBound }: QrLoginSectionProps) {
             {minutes}:{seconds} 后过期
           </p>
         )}
-        {phase === "error" && (
+        {phase === "error" && !disabled && (
           <Button variant="ghost" onClick={() => void beginLogin(connection.id)}>
             重试
           </Button>
         )}
-        {phase === "success" && (
+        {phase === "success" && !disabled && (
           <Button variant="ghost" onClick={() => void beginLogin(connection.id)}>
             重新扫码绑定
           </Button>
+        )}
+        {disabled && (
+          <p className="text-xs text-amber-600 mt-2">管理员只读视图，不可执行扫码绑定操作</p>
         )}
       </div>
     </section>

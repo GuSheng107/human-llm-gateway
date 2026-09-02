@@ -1,8 +1,8 @@
 # Human LLM Gateway API 契约
 
-> 文档状态：M1 目标契约
+> 文档状态：已部署版本契约
 >
-> 目标业务接口将在 M2-M9 分阶段实现，运维接口在 M10 完成。文末列出的当前接口只是 M0 过渡现状，不提供兼容承诺。
+> 本文描述当前代码和已部署实例的接口边界；接口变更必须同步更新本文件、后端 Schema、前端类型和测试。
 > 支持的推理格式仅限 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
 
 ## 1. 命名空间与职责
@@ -13,12 +13,25 @@
 | `/v1/*` | 外部 LLM 兼容 API | 用户创建的 API Key |
 | `/connectors/*` | IM/Webhook/WebSocket/HTTP 连接器入口 | 每个连接独立凭据 |
 | `/healthz` | 进程存活检查，不访问数据库或连接器 | 无 |
-| `/readyz` | 就绪检查（定义见下） | 无或仅部署网络可达 |
-| `/metrics` | Prometheus 格式基础运行指标 | 仅部署网络或独立监控凭据 |
+| `/readyz` | 预留就绪检查（当前部署使用 `/healthz` 存活检查） | 尚未开放 |
+| `/metrics` | 预留 Prometheus 指标接口 | 尚未开放 |
 
 管理 API 与推理 API 使用不同的鉴权依赖和错误映射。用户登录 Token 不能调用 `/v1/*`，外部 API Key 不能调用 `/api/*`。
 
-### 1.1 `/readyz` 就绪条件
+### 1.3 当前已部署的新增接口
+
+| 接口 | 作用 | 权限 |
+| --- | --- | --- |
+| `GET /api/admin/im-connections` | 管理员查看全部 IM 连接的非敏感监管信息 | 管理员 |
+| `GET /api/tasks/inbox` | 获取当前用户待回复任务和未读状态 | 登录用户 |
+| `GET /api/tasks/inbox-summary` | 获取待处理和未读数量 | 登录用户 |
+| `POST /api/tasks/{task_id}/seen` | 标记任务已读，可同步最后事件 ID | 任务所有者 |
+| `GET /api/tasks/{task_id}/conversation` | 获取任务对话投影和预览 | 所有者/管理员 |
+| `GET /api/tasks/{task_id}/conversation/messages/{index}` | 按需获取单条完整消息 | 所有者/管理员 |
+
+草稿 `PATCH` 必须携带 `expected_version`；版本不匹配返回 `409 draft_version_conflict`。回复统一使用回复工作台。
+
+### 1.1 `/readyz` 就绪条件（预留设计，当前未开放）
 
 固定为 5 项，全部满足才返回 200：
 
@@ -30,7 +43,7 @@
 
 `/readyz` 不检查任何用户 IM 连接是否在线、不检查真实 LLM 连通性、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
 
-### 1.2 `/metrics` 指标契约
+### 1.2 `/metrics` 指标契约（预留设计，当前未开放）
 
 使用 Prometheus exposition format（`Content-Type: text/plain; version=0.0.4`），M10 实现。首版只做低基数指标：
 
@@ -252,7 +265,7 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 
 ## 6. LLM 配置 API
 
-目标资源名统一为 `llm-configs`，不再暴露 Provider、LLMModel 或 ModelRoute。
+真实 LLM 资源使用 `llm-configs`，Fake Model 与真实 LLM 配置分离。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -670,26 +683,9 @@ SDK 升级时必须重新运行该契约测试。Responses 和 Anthropic 因协�
 
 HTTP 轮询响应返回单调 cursor；重复 cursor、ACK 或回复必须幂等。入站消息要求外部消息 ID，数据库以 `connection_id + external_message_id` 全局去重。
 
-## 18. 当前 M0 过渡接口
-
-以下接口描述当前代码，只用于界定 M2 必须一次性删除的范围，不代表需要兼容：
-
-| 当前接口 | 目标处理 |
-| --- | --- |
-| `/api/providers*` | 删除，以 `/api/llm-configs*` 替换。 |
-| `/api/model-routes*` | 删除；策略字段直接进入 API Key。 |
-| `/api/model-catalog*` | 删除，以 `/api/fake-models*` 替换。 |
-| `POST /api/*/{id}/update` | 删除，以 `PATCH` 替换。 |
-| `POST /api/*/{id}/delete` | 删除，以 `DELETE` 替换。 |
-| `POST /api/api-keys/{id}/disable` | 删除，以 `PATCH {"enabled": false}` 替换。 |
-| 当前 `/v1/*` 由 `ModelRoute` 选择行为 | 重建为 API Key 策略、Fake Model 校验和用户级并发准入。 |
-
-M2 的一个完整提交必须同时切换目标 Schema、服务、API、前端和测试，并删除这些接口及其旧模型。不得提交新旧表或运行链路共存的中间状态，也不得为了旧前端或旧数据库保留代理路由、字段别名、双写或自动迁移。
-
-## 19. 契约变更要求
+## 18. 契约变更要求
 
 - 实现或修改接口前，先更新本文件和对应阶段路线图。
 - 推理响应变更必须增加三协议契约测试和流式事件顺序测试。
 - 管理 API 变更必须同步 TypeScript 类型与前端调用层。
 - 新错误必须使用稳定错误码，并测试不泄露 Secret 和内部实现。
-- 不得让当前过渡接口反向改变目标契约。

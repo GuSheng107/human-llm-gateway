@@ -102,10 +102,11 @@ def test_admin_can_view_but_cannot_manage_llm_configs(client, admin_headers, cre
         json={"name": "admin-edited"},
     )
     denied_test = client.post(f"/api/llm-configs/{config_id}/test", headers=admin_headers)
-    denied_delete = client.delete(f"/api/llm-configs/{config_id}", headers=admin_headers)
-    for response in (denied_create, denied_update, denied_test, denied_delete):
+    deleted = client.delete(f"/api/llm-configs/{config_id}", headers=admin_headers)
+    for response in (denied_create, denied_update, denied_test):
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "forbidden"
+    assert deleted.status_code == 204
 
 
 def test_user_can_still_create_llm_config(client, created_user) -> None:

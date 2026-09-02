@@ -9,15 +9,15 @@ import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { notify } from "../../components/feedback/Toast";
 import {
+  adminListConnections,
   deleteConnection,
-  listConnections,
   listPlatforms,
   stopConnection,
   type ConnectionFilter,
 } from "../../api/connections";
 import type { ImConnection, PlatformSpec } from "../../types/gateway";
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 
 const STATE_OPTIONS = [
   ["", "全部状态"],
@@ -32,6 +32,7 @@ export function AdminConnectionsPage() {
   const [platforms, setPlatforms] = useState<PlatformSpec[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
   const [platform, setPlatform] = useState("");
@@ -53,7 +54,7 @@ export function AdminConnectionsPage() {
       if (platform) filters.platform = platform;
       if (state) filters.state = state;
       const [list, platformList] = await Promise.all([
-        listConnections(page, search, filters),
+        adminListConnections(page, search, filters, pageSize),
         listPlatforms(),
       ]);
       setItems(list.items);
@@ -64,7 +65,12 @@ export function AdminConnectionsPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search, platform, state]);
+  }, [page, pageSize, search, platform, state]);
+
+  const changePageSize = (value: number) => {
+    setPage(1);
+    setPageSize(value);
+  };
 
   useEffect(() => void load(), [load]);
 
@@ -106,7 +112,7 @@ export function AdminConnectionsPage() {
     <div className="space-y-5">
       <PageHeader
         title="IM 连接监管"
-        description="管理员可关闭或删除任意用户的 IM 连接，无权查看用户的连接配置信息。"
+        description="可停用或删除连接，不能查看凭据。"
         actions={
           <Button variant="ghost" loading={loading} onClick={() => void load()}>
             <Icon name="refresh" className="h-4 w-4" />
@@ -231,7 +237,7 @@ export function AdminConnectionsPage() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} pageSize={PAGE_SIZE} onChange={setPage} />
+        <Pagination page={page} total={total} pageSize={pageSize} onChange={setPage} onPageSizeChange={changePageSize} />
       </Card>
     </div>
   );

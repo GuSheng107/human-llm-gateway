@@ -17,12 +17,13 @@ import { PasswordResetModal } from "./PasswordResetModal";
 import { UserCreateModal } from "./UserCreateModal";
 import { UserDetailDrawer } from "./UserDetailDrawer";
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 
 export function UsersPage() {
   const { user: currentUser } = useAuth();
   const [items, setItems] = useState<UserSummary[]>([]);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
@@ -37,7 +38,7 @@ export function UsersPage() {
     setLoading(true);
     setError("");
     try {
-      const result = await listUsers(page, search);
+      const result = await listUsers(page, search, pageSize);
       setItems(result.items);
       setTotal(result.total);
     } catch (caught) {
@@ -45,7 +46,12 @@ export function UsersPage() {
     } finally {
       setLoading(false);
     }
-  }, [page, search]);
+  }, [page, pageSize, search]);
+
+  const changePageSize = (value: number) => {
+    setPage(1);
+    setPageSize(value);
+  };
 
   useEffect(() => void load(), [load]);
 
@@ -189,7 +195,7 @@ export function UsersPage() {
           </table>
         </div>
         <div className="flex justify-end border-t border-slate-100 px-4 py-3">
-          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+          <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} onPageSizeChange={changePageSize} />
         </div>
       </Card>
 

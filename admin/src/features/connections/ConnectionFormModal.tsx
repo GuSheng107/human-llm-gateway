@@ -11,6 +11,8 @@ import { QrLoginSection } from "./QrLoginDrawer";
 interface ConnectionFormModalProps {
   platform: PlatformSpec;
   connection: ImConnection | null;
+  loadingConnection?: boolean;
+  readOnly?: boolean;
   onClose: () => void;
   onSaved: (connection: ImConnection) => void;
 }
@@ -22,6 +24,8 @@ function withoutGeneratedTokens(connection: ImConnection): ImConnection {
 export function ConnectionFormModal({
   platform,
   connection,
+  loadingConnection = false,
+  readOnly = false,
   onClose,
   onSaved,
 }: ConnectionFormModalProps) {
@@ -65,6 +69,7 @@ export function ConnectionFormModal({
   );
 
   const submit = async () => {
+    if (readOnly) return;
     setSaving(true);
     setError("");
     try {
@@ -98,18 +103,25 @@ export function ConnectionFormModal({
   return (
     <Modal
       title={`${platform.label}配置与接入`}
-      description="连接配置和接入指引在同一窗口完成。"
       onClose={onClose}
       width="max-w-4xl"
     >
       <div className="max-h-[78vh] space-y-5 overflow-y-auto p-5 sm:p-6">
-        {!platform.supports_login && (
+        {readOnly && (
+          <div
+            role="status"
+            className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700"
+          >
+            管理员只读视图 · 此弹窗仅展示配置与连接信息，不会调用保存接口。
+          </div>
+        )}
+        {!platform.supports_login && !readOnly && (
           <section className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h3 className="text-sm font-semibold text-slate-700">连接配置</h3>
                 <p className="mt-1 text-xs text-slate-500">
-                  {current ? "修改后保存即可更新当前连接。" : "先保存配置，再按下方指引接入。"}
+                  {current ? "修改后保存。" : "保存后按指引接入。"}
                 </p>
               </div>
               {current && <span className="text-xs font-medium text-emerald-600">已保存</span>}
@@ -117,7 +129,7 @@ export function ConnectionFormModal({
 
             {current && editableFields.some((field) => field.secret) && (
               <p className="mt-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2 text-xs text-blue-700">
-                已保存的 Secret 不会显示，留空表示不修改。
+                已保存的 Secret 已隐藏，留空不变。
               </p>
             )}
 
@@ -143,7 +155,7 @@ export function ConnectionFormModal({
 
               {editableFields.length === 0 && (
                 <p className="rounded-lg border border-dashed border-slate-300 bg-white px-3 py-3 text-xs text-slate-500">
-                  无需手动填写配置。{gatewayFields.length > 0 ? "保存后系统会自动生成接入 Token。" : ""}
+                  无需填写配置。{gatewayFields.length > 0 ? "保存后生成接入 Token。" : ""}
                 </p>
               )}
             </div>
@@ -157,11 +169,22 @@ export function ConnectionFormModal({
           </section>
         )}
 
-        {current ? (
+        {loadingConnection ? (
+          <section
+            className="grid min-h-44 place-items-center rounded-xl border border-slate-200 bg-slate-50/60"
+            aria-live="polite"
+          >
+            <div className="text-center">
+              <span className="mx-auto block h-6 w-6 animate-spin rounded-full border-2 border-slate-200 border-t-primary" />
+              <p className="mt-3 text-xs text-slate-500">正在准备连接…</p>
+            </div>
+          </section>
+        ) : current ? (
           platform.supports_login ? (
             <QrLoginSection
               connection={current}
               onBound={() => connectionChanged({ ...current, bound: true, state: "stopped" })}
+              disabled={readOnly}
             />
           ) : (
             <ConnectionSetupSection
@@ -170,13 +193,16 @@ export function ConnectionFormModal({
               generatedTokens={generatedTokens}
               onConnectionChange={connectionChanged}
               onTokenGenerated={tokenGenerated}
+              disabled={readOnly}
             />
           )
         ) : (
-          <section className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center">
-            <Icon name="info-circle" className="mx-auto h-5 w-5 text-slate-300" />
-            <p className="mt-2 text-xs text-slate-500">保存连接后将在此展示完整 URL、Token 和 curl 命令。</p>
-          </section>
+          !readOnly && (
+            <section className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center">
+              <Icon name="info-circle" className="mx-auto h-5 w-5 text-slate-300" />
+              <p className="mt-2 text-xs text-slate-500">保存后显示 URL、Token 和 curl 命令。</p>
+            </section>
+          )
         )}
 
         {error && (

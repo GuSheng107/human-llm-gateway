@@ -205,9 +205,10 @@ def test_dashboard_user_view(client, created_user, created_key) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     stats = body["stats"]
-    assert stats["role"] == "user"
-    assert stats["my_api_keys"] >= 1
-    assert stats["total_users"] == 0  # 用户视角不含全局数据
+    # 控制台对所有用户展示同一组全站指标。
+    assert stats["total_api_keys"] >= 1
+    assert stats["total_users"] >= 1
+    assert stats["active_models"] >= 0
     # 最近任务只含自己的
     with database.SessionLocal() as session:
         my_tasks = session.scalars(
@@ -221,9 +222,10 @@ def test_dashboard_admin_view(client, admin_headers) -> None:
     resp = client.get("/api/dashboard", headers=admin_headers)
     assert resp.status_code == 200
     stats = resp.json()["stats"]
-    assert stats["role"] == "admin"
+    # 管理员与普通用户看到同一组数据。
     assert stats["total_users"] >= 1
     assert stats["active_users"] >= 1
+    assert "active_tasks" in stats
 
 
 def test_dashboard_api_key_count_excludes_physically_deleted_key(

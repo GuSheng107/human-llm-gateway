@@ -64,6 +64,7 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 
 ### 👤 人工回复闭环
 - Web 任务工作台：完整原始请求 + 时间线 + 草稿
+- 统一回复工作台：收件箱、未读状态、对话上下文和草稿版本保护
 - IM 投递：微信 iLink / 企微 / Webhook / WebSocket / HTTP 轮询
 - IM DSL：`::: reasoning` / `::: tool` 围栏，与 Web 编辑器共享结构
 - 首个有效提交获胜，不可撤销
@@ -85,6 +86,7 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 ### 🧰 工具沙箱
 - 管理员白名单，用户显式确认执行
 - 默认拒绝的 OCI 隔离：无网络、无挂载、只读根文件系统，并限制资源与输出
+- 获批工具可通过容器 stdin 接收文本，不把输入拼进 shell 命令
 - 调用方 tool call 永不自动执行
 
 </td></tr>
@@ -142,6 +144,19 @@ uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
 
 打开 **http://127.0.0.1:8000** — 管理台与 API 同端口。首次启动自动建库并写入默认系统模型，用 `.env` 中的管理员登录，改密后即可签发邀请码、创建用户。
 
+### 🚀 部署状态
+
+当前版本已经完成部署，按单个 FastAPI 进程托管构建后的 React 管理台运行。`.env`、数据库、日志和容器运行时配置必须放在版本库之外。启动新实例前构建前端并检查 `GET /healthz`：
+
+```bash
+cd admin && npm ci && npm run build
+cd ..
+uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+curl http://127.0.0.1:8000/healthz
+```
+
+高频数据保留 7 天。服务启动时清理一次，之后每 7 天清理 7 天前的数据；请求任务和正式回复草稿保留。
+
 > 前端开发热更新（可选）：`cd admin && npm run dev` → http://127.0.0.1:5173（`/api`、`/v1` 自动代理到 8000）
 
 ### 五分钟体验
@@ -181,14 +196,20 @@ for chunk in stream:
 | M7 | LLM 配置 · 草稿生成 · 自动转发 · 跨协议矩阵 · 流式 | ✅ |
 | M8 | 全局 Web 小助手（上下文脱敏） | ✅ |
 | M9 | 控制台统计 · 日志审计 · 体验收口 | ✅ |
-| M10 | 部署运维（Docker/CI/readyz/metrics/备份） | ⏳ |
-| M11 | 发布验收 | ⏳ |
+| M10 | 部署运维基础能力 | ✅ |
+| M11 | 发布验收 | 🟡 |
 | M12 | 隔离工具沙箱 | ✅ |
+| M13 | trace 关联日志、IM 归属隔离、数据保留 | ✅ |
+| M14 | 统一回复工作台 | ✅ |
 
 完整计划见 [ROADMAP](docs/ROADMAP.md)。当前测试数量以末尾质量门禁的实际输出为准。
 
 M12 在 Windows、macOS 与 Linux 上统一使用默认拒绝的 Docker/Podman OCI 沙箱。
-默认镜像构建方式与安全边界见 [SANDBOX](docs/SANDBOX.md)。
+默认镜像构建方式与安全边界见 [SANDBOX](docs/SANDBOX.md)。获批 stdin 工具通过
+容器管道接收文本，限制为 64 KiB。
+
+已部署服务的接口边界为：管理台 `/api/*`、三种推理协议 `/v1/*`、连接器入口
+`/connectors/*`、存活检查 `/healthz`。接口和数据库按当前部署契约运行。
 
 ## 🤝 参与贡献
 
@@ -220,5 +241,7 @@ cd admin && npm ci && npm run build && npm test
 **如果这个项目对你有帮助，请点一个 Star ⭐**
 
 [报告问题](https://github.com/GuSheng107/human-llm-gateway/issues) · [功能讨论](https://github.com/GuSheng107/human-llm-gateway/discussions)
+
+特别感谢 [Linux.do 社区](https://linux.do/)，感谢社区的讨论、反馈和支持，帮助本项目完成部署。
 
 </div>

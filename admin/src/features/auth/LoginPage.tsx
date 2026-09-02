@@ -119,7 +119,7 @@ export function LoginPage() {
               真人驱动的模型兼容网关
             </h1>
             <p className="mt-4 max-w-md text-sm leading-6 text-slate-500">
-              把每一次 API 请求交给可信的人类与私有模型处理，同时保持熟悉的协议与调用体验。
+              人工回复与 LLM 转发，兼容 OpenAI 和 Anthropic。
             </p>
 
             <div className="mt-10 space-y-3">
@@ -180,7 +180,7 @@ export function LoginPage() {
                 </span>
                 <span className="h-px flex-1 bg-gradient-to-r from-primary/60 to-primary/20" />
               </div>
-              <div className="mt-2 text-center text-xs leading-5 text-slate-500">请求身份、回复策略与模型权限全程可追踪</div>
+              <div className="mt-2 text-center text-xs leading-5 text-slate-500">身份、策略和模型权限可追踪</div>
             </div>
           </div>
 

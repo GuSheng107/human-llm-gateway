@@ -35,6 +35,17 @@ def require_current_user(
     user = AuthService().get_user_by_token(db, credentials.credentials)
     if user is None:
         raise DomainError(DomainErrorCode.UNAUTHORIZED, "登录已失效", status_code=401)
+    # 绑定日志用户上下文：同线程内的 log_event / 审计调用自动携带。
+    # 同时写入 scope.state，请求中间件统一访问日志（不同线程池 Context）
+    # 依赖该显式取值。
+    from ..core.logging import bind_log_user
+
+    bind_log_user(user.id, user.role.value)
+    request.scope.setdefault("state", {})["log_user"] = (
+        user.id,
+        user.role.value,
+        user.username,
+    )
     # 全局兜底：受限会话除白名单外一律 403，防止后续新增端点漏加 require_full_session。
     if (
         user.must_change_password

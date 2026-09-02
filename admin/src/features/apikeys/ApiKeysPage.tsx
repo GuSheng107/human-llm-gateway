@@ -23,7 +23,7 @@ import type {
   ModelGroup,
 } from "../../types/gateway";
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 
 const STRATEGY_LABEL: Record<string, string> = {
   human: "人工回复",
@@ -45,6 +45,7 @@ export function ApiKeysPage() {
   const [models, setModels] = useState<{ id: string; model_id: string }[]>([]);
   const [llmConfigs, setLlmConfigs] = useState<LlmConfig[]>([]);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -63,6 +64,7 @@ export function ApiKeysPage() {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [created, setCreated] = useState<ApiKeyCreated | null>(null);
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const isAdmin = user?.role === "admin";
 
   // 第一层候选集：选了分组就收窄为该组成员；未选分组则为全部可见模型。
@@ -93,7 +95,7 @@ export function ApiKeysPage() {
     setError("");
     try {
       const [list, allConnections, groupPage, modelPage, platformList, llmPage] = await Promise.all([
-        listApiKeys(page),
+        listApiKeys(page, "", pageSize),
         listAllConnections(),
         listModelGroups(),
         listFakeModels(),
@@ -114,7 +116,12 @@ export function ApiKeysPage() {
     } finally {
       setLoading(false);
     }
-  }, [page]);
+  }, [page, pageSize]);
+
+  const changePageSize = (value: number) => {
+    setPage(1);
+    setPageSize(value);
+  };
 
   useEffect(() => void load(), [load]);
 
@@ -131,6 +138,30 @@ export function ApiKeysPage() {
       model_group_id: "",
       fake_model_ids: [],
     });
+  };
+
+  // groupId → name 方便表格展示分组列。
+  const groupName = (groupId: string | null): string => {
+    if (!groupId) return "-";
+    return groups.find((g) => g.id === groupId)?.name ?? "-";
+  };
+
+  const toggleKeyVisible = (id: string) => {
+    setVisibleKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const maskedKey = (key: ApiKey): string => {
+    if (key.key) {
+      const full = key.key;
+      const head = full.slice(0, Math.max(key.key_prefix.length, 6));
+      return `${head}${"•".repeat(6)}`;
+    }
+    return `${key.key_prefix}…`;
   };
 
   const openEdit = (key: ApiKey) => {
@@ -252,91 +283,105 @@ export function ApiKeysPage() {
       <Card>
         {error && <ErrorBanner message={error} className="m-4" />}
         <div className="overflow-x-auto">
-          <table className="min-w-[980px] w-full text-left text-xs">
+          <table className="min-w-[960px] w-full text-left text-xs">
             <thead className="bg-slate-50 text-slate-400">
               <tr>
                 <th className="px-4 py-3 font-medium">名称</th>
-                <th className="px-4 py-3 font-medium">API Key</th>
+                <th className="px-4 py-3 font-medium">分组</th>
                 <th className="px-4 py-3 font-medium">入口</th>
                 <th className="px-4 py-3 font-medium">回复策略</th>
                 <th className="px-4 py-3 font-medium">模型筛选</th>
                 <th className="px-4 py-3 font-medium">状态</th>
                 {isAdmin && <th className="px-4 py-3 font-medium">所有者</th>}
+                {!isAdmin && <th className="px-4 py-3 font-medium">API Key</th>}
                 <th className="sticky right-0 z-10 bg-slate-50 px-4 py-3 text-right font-medium">
                   操作
                 </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {items.map((key) => (
-                <tr key={key.id} className="group hover:bg-slate-50/60">
-                  <td className="px-4 py-3 font-medium text-slate-700">{key.name}</td>
-                  <td className="px-4 py-3 text-slate-500">
-                    {key.key ? (
-                      <span className="inline-flex items-start gap-1.5 font-mono">
-                        <span className="break-all text-[11px] leading-5">{key.key}</span>
-                        <button
-                          type="button"
-                          aria-label="复制完整 API Key"
-                          title="复制完整 Key"
-                          onClick={() => void copyFullKey(key)}
-                          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
-                        >
-                          <Icon name="copy" className="h-3.5 w-3.5" />
-                        </button>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 font-mono">
-                        {key.key_prefix}…
-                        <button
-                          type="button"
-                          aria-label="复制 API Key 前缀"
-                          title="复制前缀"
-                          onClick={() => void copyText(key.key_prefix, "API Key 前缀")}
-                          className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
-                        >
-                          <Icon name="copy" className="h-3.5 w-3.5" />
-                        </button>
-                      </span>
+              {items.map((key) => {
+                const visible = visibleKeys.has(key.id);
+                return (
+                  <tr key={key.id} className="group hover:bg-slate-50/60">
+                    <td className="px-4 py-3 font-medium text-slate-700">{key.name}</td>
+                    <td className="px-4 py-3 text-slate-500">{groupName(key.model_group_id)}</td>
+                    <td className="px-4 py-3 text-slate-500">
+                      {DELIVERY_LABEL[key.delivery_mode] ?? key.delivery_mode}
+                    </td>
+                    <td className="px-4 py-3 text-slate-500">
+                      {STRATEGY_LABEL[key.reply_strategy] ?? key.reply_strategy}
+                    </td>
+                    <td className="max-w-xs truncate px-4 py-3 text-slate-500">
+                      {key.fake_model_names.length
+                        ? key.fake_model_names.join("、")
+                        : key.model_group_id
+                          ? "按分组"
+                          : "全部可见模型"}
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={key.is_enabled ? "active" : "inactive"} />
+                    </td>
+                    {isAdmin && (
+                      <td className="px-4 py-3 text-slate-500">{key.owner_username ?? "-"}</td>
                     )}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">
-                    {DELIVERY_LABEL[key.delivery_mode] ?? key.delivery_mode}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500">
-                    {STRATEGY_LABEL[key.reply_strategy] ?? key.reply_strategy}
-                  </td>
-                  <td className="max-w-xs truncate px-4 py-3 text-slate-500">
-                    {key.fake_model_names.length
-                      ? key.fake_model_names.join("、")
-                      : key.model_group_id
-                        ? "按分组"
-                        : "全部可见模型"}
-                  </td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={key.is_enabled ? "active" : "inactive"} />
-                  </td>
-                  {isAdmin && (
-                    <td className="px-4 py-3 text-slate-500">{key.owner_username ?? "-"}</td>
-                  )}
-                  <td className="sticky right-0 space-x-3 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
                     {!isAdmin && (
-                      <button onClick={() => openEdit(key)} className="text-primary">
-                        编辑
-                      </button>
+                      <td className="px-4 py-3 text-slate-500">
+                        <span className="inline-flex items-center gap-1.5 font-mono">
+                          <span
+                            className="max-w-[260px] truncate text-[11px] leading-5"
+                            title={key.key ?? key.key_prefix}
+                          >
+                            {visible && key.key ? key.key : maskedKey(key)}
+                          </span>
+                          {key.key && (
+                            <button
+                              type="button"
+                              aria-label={visible ? "隐藏完整 Key" : "显示完整 Key"}
+                              title={visible ? "隐藏完整 Key" : "显示完整 Key"}
+                              onClick={() => toggleKeyVisible(key.id)}
+                              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                            >
+                              <Icon
+                                name={visible ? "eyeOff" : "eye"}
+                                className="h-3.5 w-3.5"
+                              />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            aria-label="复制 API Key"
+                            title="复制"
+                            onClick={() => void copyFullKey(key)}
+                            className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                          >
+                            <Icon name="copy" className="h-3.5 w-3.5" />
+                          </button>
+                        </span>
+                      </td>
                     )}
-                    <button onClick={() => void toggle(key)} className="text-primary">
-                      {key.is_enabled ? "停用" : "启用"}
-                    </button>
-                    <button onClick={() => void remove(key)} className="text-red-500">
-                      删除
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    <td className="sticky right-0 space-x-3 bg-white px-4 py-3 text-right group-hover:bg-slate-50">
+                      {!isAdmin && (
+                        <button onClick={() => openEdit(key)} className="text-primary">
+                          编辑
+                        </button>
+                      )}
+                      <button onClick={() => void toggle(key)} className="text-primary">
+                        {key.is_enabled ? "停用" : "启用"}
+                      </button>
+                      <button onClick={() => void remove(key)} className="text-red-500">
+                        删除
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
               {!loading && items.length === 0 && (
                 <tr>
-                  <td colSpan={isAdmin ? 9 : 8} className="px-4 py-12 text-center text-slate-400">
+                  <td
+                    colSpan={isAdmin ? 8 : 8}
+                    className="px-4 py-12 text-center text-slate-400"
+                  >
                     暂无 API Key
                   </td>
                 </tr>
@@ -345,7 +390,7 @@ export function ApiKeysPage() {
           </table>
         </div>
         <div className="flex justify-end border-t border-slate-100 px-4 py-3">
-          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+          <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} onPageSizeChange={changePageSize} />
         </div>
       </Card>
 

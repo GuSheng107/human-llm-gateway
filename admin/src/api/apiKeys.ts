@@ -13,8 +13,8 @@ export interface ApiKeyPayload {
   fake_model_ids?: number[];
 }
 
-export function listApiKeys(page: number, search = ""): Promise<Page<ApiKey>> {
-  const query = new URLSearchParams({ page: String(page), page_size: "20" });
+export function listApiKeys(page: number, search = "", pageSize = 20): Promise<Page<ApiKey>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (search.trim()) query.set("search", search.trim());
   return api<Page<ApiKey>>(`/api/api-keys?${query}`);
 }

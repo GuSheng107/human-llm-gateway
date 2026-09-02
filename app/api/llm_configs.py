@@ -32,7 +32,7 @@ _service = LlmConfigService()
 
 
 def _assert_not_admin_llm_manager(user: User) -> None:
-    """管理员只能监管 LLM 配置，不能以管理员身份创建、修改或删除。"""
+    """管理员只能监管 LLM 配置（list 视图与删除），不能创建、更新或测试（涉及 Secret 明文使用）。"""
     if user.role is UserRole.ADMIN:
         raise DomainError(
             DomainErrorCode.FORBIDDEN,
@@ -307,9 +307,16 @@ def delete_llm_config(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
-    _assert_not_admin_llm_manager(user)
-    row = _get_config(db, config_id, user)
-    _service.delete(db, row=row, actor=user)
+    # 管理员可删除任意用户的 LLM 配置，不做引用校验：被引用方下次使用时
+    # 会得到"LLM 配置已删除"的明确报错。普通用户仍受引用校验保护。
+    if user.role is UserRole.ADMIN:
+        row = _service.repo.get(db, config_id)
+        if row is None:
+            raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存在", status_code=404)
+        _service.delete(db, row=row, actor=user, enforce_refs=False)
+    else:
+        row = _get_config(db, config_id, user)
+        _service.delete(db, row=row, actor=user)
     db.commit()
     return Response(status_code=204)
 

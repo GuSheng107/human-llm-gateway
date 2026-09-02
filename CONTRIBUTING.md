@@ -1,6 +1,6 @@
 # 参与 Human LLM Gateway 开发
 
-本项目当前处于全栈重构阶段。开始修改前，请先阅读根目录 `AGENTS.md`；它是开发和编码代理必须遵守的最高优先级仓库规范。
+当前版本已经完成部署，但项目仍按可验证的里程碑维护。开始修改前，请先阅读根目录 `AGENTS.md`；它是开发和编码代理必须遵守的最高优先级仓库规范。
 
 ## 0. 许可证
 
@@ -58,7 +58,7 @@ npm ci
 启动后端：
 
 ```powershell
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+uv run uvicorn app.api:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 另一个终端启动前端：
@@ -74,7 +74,7 @@ npm run dev
 Set-Location admin
 npm run build
 Set-Location ..
-uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
+uv run uvicorn app.api:app --host 127.0.0.1 --port 8000
 ```
 
 FastAPI 会托管已生成的 `admin/dist`。健康检查为 `GET /healthz`。
@@ -115,7 +115,7 @@ test: 增加三协议流式契约测试
 7. 运行完整质量门禁。
 8. 实现、测试、文档和远端推送都完成后再勾选路线图。
 
-不得为了让旧前端、旧数据库或旧测试继续工作而增加路由别名、字段别名、自动补列或双写。M2 必须在一个完整提交中同时切换 Schema、服务、API、前端和测试；其 A/B/C 工作包只跟踪进度，不能把新旧表或运行链路共存状态提交到 `master`。
+接口、Schema、服务、前端和测试必须保持同一契约；不要增加重复路由、重复字段、双写或职责不明的兼容层。
 
 ## 6. 后端边界
 

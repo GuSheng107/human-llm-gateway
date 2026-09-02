@@ -134,3 +134,25 @@ class TaskDraft(TimestampMixin, VersionMixin, Base):
     reasoning_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     tool_calls_json: Mapped[str] = mapped_column(Text, default="[]", nullable=False)
     final_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class TaskInboxState(TimestampMixin, Base):
+    """工作台收件箱未读状态（M14）：task_id + owner 唯一，首次 seen 创建。
+
+    last_seen_event_id 记录用户在该任务上确认到的最新事件 ID，
+    用于"有更新"徽标。seen 写入走独立短事务，不与主任务事务并发。
+    """
+
+    __tablename__ = "task_inbox_states"
+    __table_args__ = (Index("ix_task_inbox_states_owner", "owner_user_id", "seen_at"),)
+
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("request_tasks.id", ondelete="CASCADE"), primary_key=True
+    )
+    owner_user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_event_id: Mapped[int | None] = mapped_column(
+        ForeignKey("task_events.id", ondelete="SET NULL"), nullable=True
+    )

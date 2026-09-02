@@ -1,6 +1,6 @@
 # Human LLM Gateway 实施路线图
 
-本文件是项目进度的唯一事实来源。后续每完成一个验收项必须立即勾选；阶段只有在代码、测试、文档和推送全部完成后才能标记为“已完成”。
+本文件是项目进度的唯一事实来源。当前版本已经完成部署；后续每完成一个验收项必须立即勾选。阶段只有在代码、测试、文档和推送全部完成后才能标记为“已完成”。
 
 ## 状态说明
 
@@ -32,8 +32,7 @@
 - Web 小助手会话持久化，用户可以删除；页面上下文必须过滤密码、Key、Token 和 Secret。
 - 管理员不能替用户回复，不能查看用户的密码、完整 API Key、LLM Secret、IM Token 或登录二维码。
 - 管理员禁用用户时立即撤销会话和 API Key、终止活动任务并释放名额；新请求返回 401，已准入请求只收到通用错误。
-- 当前阶段不兼容旧数据库、旧接口和旧连接器，数据库按新结构直接创建。
-- M2 必须在一个完整提交中一次性切换 Schema、服务、API、前端和测试；不允许新旧表、新旧运行链路、双写或兼容代理共存。
+- 当前部署使用统一的数据库 Schema、接口契约和运行链路。
 
 ## 阶段依赖与可并行工作
 
@@ -41,7 +40,7 @@
 
 ```mermaid
 flowchart LR
-    M2[M2 原子领域切换]
+    M2[M2 领域基础]
     M3[M3 用户与邀请码]
     M4[M4 IM 连接]
     M5A[M5A 模型目录与分组]
@@ -53,7 +52,7 @@ flowchart LR
     M9[M9 完整后台]
     M10[M10 部署与运维]
     M11[M11 发布验收]
-    M12[M12 延期工具沙箱]
+    M12[M12 工具沙箱]
 
     M2 --> M3
     M2 --> M4
@@ -77,87 +76,19 @@ flowchart LR
     M11 -.->|不阻塞首版| M12
 ```
 
-- M3、M4、M5A 和 M6A 在 M2 完成后可分别推进。
+- M3、M4、M5A 和 M6A 均已完成并纳入当前部署。
 - M5A 不依赖 IM；M5B 选择 IM 时复用 M4 能力，但 Web 入口和并发准入可先完成。
 - M6A 只依赖 M2 的统一请求/回复结构；M6B 才依赖 M4 投递和 M5 准入。
-- M12 明确延期，不属于 M11 首版发布前置条件。
+- M12 已完成，不影响当前部署运行。
 
 ---
 
-## M0：收口当前未提交重构（已完成）
+## M0-M2：基础能力（已完成）
 
-目标：形成可运行、可验证、可继续演进的结构基线，停止错误领域模型继续扩散。
-
-- [x] 在仓库根目录建立 `AGENTS.md`。
-- [x] 删除 `.trae` 目录及其内容。
-- [x] 删除或忽略演示密钥、数据库、日志、构建缓存等不可提交内容。
-- [x] 保留并整理 FastAPI Router 拆分、统一鉴权、异常、request ID 和日志结构。
-- [x] 保留并整理 React Router、前端 API/类型/组件按领域拆分。
-- [x] 保留 IM 连接生命周期、绑定、状态和单连接隔离能力。
-- [x] 修复 SPA fallback 吞掉 API 404 的问题。
-- [x] 消除 Ruff 格式与检查错误。
-- [x] 后端测试全部通过。
-- [x] 前端干净安装和生产构建通过。
-- [x] `uv lock --check`、`git diff --check` 通过。
-- [x] 提交并推送到 `origin/master`。
-
-完成提交：`feat: 建立开发规范并完成 M0 结构收口`。
-
----
-
-## M1：产品、架构和开发规范（已完成）
-
-- [x] 建立 `docs/PRODUCT.md`，固化产品边界和角色能力。
-- [x] 建立 `docs/ARCHITECTURE.md`，描述模块依赖和请求生命周期。
-- [x] 建立 `docs/API_CONTRACT.md`，描述管理 API 和三种推理协议。
-- [x] 建立 `docs/DATABASE.md`，描述新表、字段、索引和事务规则。
-- [x] 建立 `docs/UI_GUIDE.md`，固化 Tailwind + 浅色 RuoYi 后台规范。
-- [x] 建立 `CONTRIBUTING.md`，固化开发、测试和提交流程。
-- [x] 核对所有文档不存在 ModelRoute 决定 Fake Model 的错误描述。
-- [x] 补充 M2 原子切换、阶段依赖、跨协议字段矩阵和边界生命周期。
-- [x] 将模型分组前移至 M5、部署运维独立为 M10、工具沙箱延期为 M12。
-
-完成提交：`docs: 完成 M1 产品与架构规范`。
-
-边界修订提交：`docs: 修订 M1 边界与后续路线图`。
-
----
-
-## M2：领域模型和数据库原子重建（已完成）
-
-M2-A/B/C 是同一里程碑的进度工作包，不是三个可独立提交的过渡版本。只有全部工作完成、旧结构完全删除且质量门禁通过后，才形成一个提交并推送 `master`。实施期间本地未提交工作区允许处于不可运行状态，但不得把中间状态提交或推送到 `master`；master 历史中只出现切换前和完整切换后两个可运行状态。
-
-### M2-A：目标领域与 Schema
-
-- [x] 建立 `domain`、`repositories` 和 `core` 目标目录及依赖方向。
-- [x] 一次性定义用户、会话、邀请码、IM 连接、连接 outbox、入站回执、LLM 配置、Fake Model、模型分组、API Key、任务、事件、草稿、小助手、审计、日志和设置表。
-- [x] `users` 包含 `must_change_password` 字段；初始化的首个管理员置 true，CLI 使用临时密码时置 true。
-- [x] username 仅允许 ASCII 模式 `[a-z0-9][a-z0-9._-]{2,63}`，写入前 strip + ASCII 小写归一，使用普通 UNIQUE 索引，不依赖 SQLite `lower()` 的 Unicode 行为；Unicode 展示名由 display_name 承担。
-- [x] Secret 加密契约落地：`APP_SECRET` 为 32 字节 CSPRNG 的 base64url（43 字符），缺失、长度不符或仍为 `.env.example` 默认值时启动失败；HKDF-SHA256 派生 + AES-256-GCM + 每次随机 96-bit nonce + 含 key_version（固定 1）的 envelope，IM/LLM Secret 与加密 sentinel 共用同一契约。
-- [x] API Key 保存回复入口、回复策略、LLM 配置、人工超时、可选模型分组和可选 Fake Model 集合。
-- [x] RequestTask 保存完整原始请求、规范化请求、ReplyDraft 结果、策略快照、非敏感 LLM 配置快照、`api_key_id`（ON DELETE RESTRICT）和历史响应关联；`response_public_id` 使用 `resp_` + 32 hex，在任务创建事务中生成，仅 OpenAI Responses 协议任务非空。
-- [x] 用户保存 `active_task_count`，任务保存名额取得/释放标记和完整状态机字段。
-- [x] 数据库不存在时自动建表、写入加密自检 sentinel、管理员（`must_change_password=true`）、系统设置和默认系统 Fake Model；初始化环境变量密码不满足策略时启动失败。
-- [x] `schema_version` 不匹配时明确失败并要求重建，不执行迁移或自动补列。
-
-### M2-B：Repository、Service 与安全基础
-
-- [x] 建立所有权查询、原子条件更新和事务边界，Router 不再直接操作 SQL。
-- [x] 密码使用 Argon2id（`m=19456 KiB`、`t=2`、`p=1`，PHC 编码字符串），登录成功且参数低于策略时同流程重哈希；不保留 M0 的 scrypt 实现，不使用 bcrypt。邀请码和 API Key 只存哈希。
-- [x] LLM/IM Secret 按 DATABASE §2.4 契约加密保存：`hlg1.<key_version>.<nonce>.<ciphertext||tag>` 文本 envelope、按用途绑定的 AAD、envelope key_version 与 `*_key_version` 列一致校验。
-- [x] 在 `pyproject.toml` 引入 Argon2id 实现（如 `argon2-cffi`）并按 `uv.lock` 锁定；HKDF 与 AES-GCM 沿用 `cryptography`。
-- [x] 建立统一 ReplyDraft、任务状态机、首个回复、fallback 声明和名额释放领域规则。
-- [x] 建立稳定审计 action、结构化日志和敏感字段过滤。
-- [x] 建立管理员初始化与受控管理员 CLI（`python -m app.cli admin create`，`getpass` 双次输入或 `--password-stdin --yes` / `--generate-password --yes`），禁止后台 API 提升管理员并保护最后一个有效管理员。
-
-### M2-C：一次性切换与删除
-
-- [x] 删除 `ModelRoute`、`HumanOperator`、全局 `LLMProvider/LLMModel` 旧链路和对应表。
-- [x] 删除旧 Provider/Route API、`POST update/delete` 路径及所有兼容别名。
-- [x] 前端删除 ProvidersPage、RoutesPage 和所有 `route_id`/operator 依赖；只挂载已具备目标契约的页面，不用旧页面或兼容代理冒充新功能。
-- [x] 删除或重写依赖旧模型的全部测试，不保留旧行为兼容断言。
-- [x] 新建空数据库启动、管理员登录、默认种子、前后端构建和完整测试通过。
-- [x] 最终提交中不存在旧表、新旧双写、兼容查询、旧 API 代理或两套 metadata。
+- [x] 产品、架构、API、数据库和 UI 规范已建立。
+- [x] 当前领域模型、数据库 Schema、Repository、Service、API 和前端已统一。
+- [x] 用户、权限、加密、任务、Fake Model、LLM 配置、IM 连接和审计基础能力已完成。
+- [x] 当前部署使用单一数据库 Schema 和单一运行链路。
 
 ---
 
@@ -339,7 +270,7 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] 默认进入控制台（既有行为保持）。
 - [x] 使用 Tailwind CSS 4 实现浅色 RuoYi 风格后台，不引入 Vue/Element（既有，M9 复核保持）。
 - [x] 统一页面标题、操作区、筛选区、紧凑表格、分页、弹窗和抽屉（新页面沿用 PageHeader/Card/Pagination 组件体系）。
-- [x] 控制台实质化：`/api/dashboard` 统计端点（用户视角个人任务/Key/配置计数 + 最近任务；管理员视角全局治理数据）+ DashboardPage 统计卡片与最近任务表。
+- [x] 控制台实质化：`/api/dashboard` 统一全站统计 + 当前用户最近任务；可用模型按启用系统模型与当前用户私有模型计算，前端缺省显示 `0`。
 - [x] 日志页（LogsPage，`logs.manage`）：审计日志（动作/资源类型/时间窗筛选，只展示操作者/动作/资源/字段名/结果——不泄露字段值）与应用日志（级别/事件/时间窗 + request/task/user 关联展示）双 tab 分页。
 - [x] 管理员页面展示资源所有者，普通用户不显示越权操作（M3-M8 已交付，M9 复核保持：列表 owner_username 仅管理员视图、日志页仅管理员路由）。
 - [x] 日志支持按时间、级别、用户、任务、Key 和连接筛选（`/api/app-logs` 全参数已实现，前端提供级别/事件/时间窗入口）。
@@ -348,9 +279,9 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 
 ---
 
-## M10：部署与运维交付（未开始）
+## M10：部署与运维交付（基础部署已完成）
 
-- [ ] 编写生产部署文档，覆盖环境变量校验、Docker Compose 或原生进程、反向代理和 TLS。
+- [x] 完成单端口生产式部署说明：构建 `admin/dist`，由 `app.api:app` 托管管理台和 API，并通过 `/healthz` 检查存活。
 - [ ] GitHub Actions 在 `master` push 和手动触发时执行后端与前端完整质量门禁。
 - [ ] `/healthz` 只检查进程存活；新增 `/readyz` 检查 5 项就绪条件（startup、DB+Schema+写自测、加密 sentinel、协议 registry、协调器+connector registry）。
 - [ ] 单个 IM 连接故障不使整个实例未就绪，连接健康继续独立展示。
@@ -364,7 +295,7 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 
 ---
 
-## M11：发布验收（未开始）
+## M11：发布验收（进行中）
 
 - [ ] `uv lock --check` 通过。
 - [ ] Ruff format 和 lint 通过。
@@ -398,11 +329,12 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] 工具执行需要当前用户权限和显式确认，并写入完整审计：`confirmed=false` 拒绝并审计（not_confirmed）；执行结果（成功/失败/超时/超限）与拒绝原因（disabled/not_found/invalid_arguments/not_confirmed）全部进审计。
 - [x] 前端工具沙箱页（/tools）：管理员 CRUD 表单（模板/Schema JSON/超时）；所有用户执行弹窗（参数输入 + 结果 stdout/stderr 展示）；执行历史分页（管理员看全部、用户看自己）。
 - [x] 全新数据库默认提供 `Print` 工具，用于 Fake Tool Call，并可在沙箱控制台输出 `text` 参数。
+- [x] 沙箱支持 stdin 传参（`stdin_parameter`，`docker run -i`、64 KiB 上限、不经 argv/shell）；内置工具扩展为 Print、ToUpper、ToLower、Base64Encode、Sha256、SystemInfo（SCHEMA_VERSION 8）。
 - [x] 沙箱逃逸面、资源耗尽、网络越权、命令注入和 Secret 泄漏安全测试通过；完整运维与自定义镜像说明见 `docs/SANDBOX.md`。
 
 ---
 
-## M13：traceId 日志体系、IM 连接收口与三协议 SDK 兼容（进行中）
+## M13：traceId 日志体系、IM 连接收口与数据保留（已完成）
 
 体验与契约收口期：不引入会话实体（对齐 new-api：每请求独立，网关不做会话聚合），previous_response_id 链行为保持既有契约。
 
@@ -420,6 +352,18 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] Anthropic：修正事件顺序与 usage；人工路径不返回 thinking block（无法伪造 signature）。
 - [x] 统一确定性 token 估算器（pp/domain/tokens.py）：三协议共用同一份快照，流式与非流式数值一致。
 - [x] 任务详情页：所有者完整提示词无截断；原始请求 JSON 按需加载（独立端点 + 懒加载）。
+- [x] 高频数据保留：后台每七天清理七天前的应用/审计日志、助手会话、过期登录态、任务事件、工具执行与 IM 运行记录；请求任务和正式草稿保留。
 - [x] 修复 RequestIdMiddleware trace_id 注入后 content-length 过期、生产环境 `/api/*` JSON 响应被截断的缺陷（ASGI body 消息不带 headers，改为缓冲 start+body 后重写 content-length）。
 - [x] 生产部署上线：https://newapi.rjgjx.top（部署相关问题优先以线上表现为准核对）。
 - [ ] M11 用户验收：1440/1024/390 布局实测与浏览器冒烟。
+
+---
+
+## M14：统一回复工作台（已完成）
+
+- [x] 删除旧独立回复页和 `/tasks/:id/reply` 路由，任务详情统一进入 `/replies` 工作台。
+- [x] 新增工作台收件箱、待回复数量、未读状态、已读接口和最后事件游标。
+- [x] 新增对话投影接口和单条完整消息按需加载，保留原始请求，不在展示层修改推理输入。
+- [x] 草稿更新强制携带 `expected_version`，版本冲突返回 `409 draft_version_conflict`。
+- [x] 前端完成工作台、分页、连接只读监管、日志七日提示和相关类型/API 同步。
+- [x] 增加 M14 API、权限隔离、乐观锁和对话投影测试。

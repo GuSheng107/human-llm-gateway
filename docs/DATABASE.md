@@ -1,8 +1,8 @@
 # Human LLM Gateway 数据库设计
 
-> 文档状态：M1 目标 Schema 设计
+> 文档状态：已部署版本 Schema
 >
-> M2 将在一个完整提交中按本文件直接重建 SQLAlchemy 模型。项目不做历史数据库迁移，不为旧表或旧字段补兼容逻辑，也不允许新旧表或两套 metadata 共存。
+> 当前代码按部署 Schema 创建数据库，数据库结构、索引和事务规则以本文为准。
 
 ## 1. 存储原则
 
@@ -52,9 +52,11 @@
 
 业务代码引用枚举成员，不散落裸字符串。
 
+当前部署使用 `SCHEMA_VERSION 8`。任务草稿的 `version` 用于乐观锁；工作台收件箱使用独立的 `task_inbox_states` 表保存已读游标，不把展示状态写回请求任务。
+
 ### 2.4 Secret 加密契约
 
-所有 `*_ciphertext` 字段（IM 连接配置、LLM Secret）和加密自检 sentinel 使用同一套密码学契约，M2 不允许实现者自由发挥：
+所有 `*_ciphertext` 字段（IM 连接配置、LLM Secret）和加密自检 sentinel 使用同一套密码学契约：
 
 1. **主密钥格式**：`APP_SECRET` 是 32 字节 CSPRNG 随机值的 base64url 表示（无填充，43 个字符）。启动时校验：缺失、解码后不是 32 字节，或仍为 `.env.example` 默认值（`replace-with-a-long-random-secret`）时直接启动失败，不降级为警告。
 2. **密钥派生**：使用 HKDF-SHA256 从 APP_SECRET 的 32 字节原始值派生当前版本加密密钥；HKDF info 固定为 `human-llm-gateway/secret-encryption/v1`，salt 为空。
@@ -123,7 +125,7 @@
 - 拒绝常见弱密码、与用户名相同或近似、以及明显部署默认词的 blocklist。
 - 初始化环境变量 `ADMIN_PASSWORD` 不满足策略时启动失败，不得降级为警告后继续。
 
-密码哈希规则（M2 必须按此实现，不允许保留当前 M0 的 scrypt 参数）：
+密码哈希规则：
 
 - **算法固定为 Argon2id**。不使用 bcrypt（常见实现存在 72 字节输入截断，与“最长至少 128 个 code points”的密码策略冲突）；M0 代码使用的 scrypt `n=2**14, r=8, p=1` 低于 OWASP 推荐基线（scrypt 基线为 `N=2**17, r=8, p=1`），M2 直接切换到 Argon2id，不保留旧格式读取。
 - **基线参数**：`m = 19456 KiB`（19 MiB）、`t = 2`、`p = 1`。
@@ -736,23 +738,19 @@ WHERE id = :task_id
 
 同一新 Schema 的重复启动必须幂等：已有管理员不被环境变量覆盖密码，管理员后来停用或删除的默认 Fake Model 不因普通重启被补回。种子只在全新数据库或显式受控初始化时执行。后续管理员只能通过受控 CLI 创建：`uv run python -m app.cli admin create --username <name> --display-name <name>`。CLI 交互式创建使用 `getpass` 隐藏输入并要求二次确认，禁止 `--password` 明文参数；自动化场景使用 `--password-stdin --yes` 从 stdin 读取，或使用 `--generate-password --yes` 由系统生成临时密码。`--generate-password` 与 `--password-stdin` 互斥；生成密码使用 CSPRNG 且满足密码策略，明文只在 stdout 显示一次，不写入日志或审计。CLI 复用同一 UserService、密码策略、审计机制和应用配置（数据库路径、主密钥），不允许另搞一套；使用系统生成临时密码时 `must_change_password=true`。操作系统级数据库与部署访问权即该 CLI 的授权边界。CLI 记录审计并拒绝产生“零个有效管理员”。
 
-## 13. 明确删除的旧结构
+## 13. 当前数据约束
 
-M2 的单个目标提交直接删除并不再创建：
-
-- `human_operators` 及用户一对一操作员关系。
-- `model_routes` 及 API Key 的 `route_id`。
-- 将真实供应商拆成全局 `llm_providers`、`llm_models` 的核心路由结构。
-- 任何为旧字段补列、旧枚举映射或旧接口双写的启动逻辑。
-
-旧开发数据库应备份后删除，由当前模型重新创建；不提供迁移脚本。M2 不允许把旧表与目标表一起提交，不允许临时双写、兼容查询、旧 API 代理或包含两套 metadata 的启动模式。
+- 当前部署只使用本文件描述的 Schema、索引和 metadata。
+- 数据库启动时校验 Schema 版本、加密自检和管理员初始化条件。
+- 业务写入由 Repository/Service 统一处理，网络调用不进入数据库事务。
+- 任务、草稿、连接状态和邀请码的竞争由条件更新、唯一约束和明确事务边界裁决。
 
 ## 14. 备份与恢复约束
 
 - SQLite 运行中备份使用在线 backup API 或经过验证的 `VACUUM INTO`；启用 WAL 时禁止只复制主数据库文件。
 - 备份包必须同时包含数据库、加密主密钥的独立安全备份和 Schema 版本说明，但三者不能以明文放在同一不受控位置。
-- 恢复流程先在隔离目录校验完整性和 Schema 版本，再停止写流量、替换数据库并执行 `/readyz` 检查。
-- M10 必须提供自动备份、保留期、恢复演练和失败告警说明；没有完成恢复演练不能进入 M11 发布验收。
+- 恢复流程先在隔离目录校验完整性和 Schema 版本，再停止写流量、替换数据库并执行 `/healthz` 检查。
+- 备份、恢复演练和失败告警属于后续运维增强项，不是当前 `/healthz` 存活检查的一部分。
 
 ## 15. Schema 验收
 
@@ -771,4 +769,14 @@ M2 的单个目标提交直接删除并不再创建：
 - IM DSL 与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
 - Secret、Token、完整 Key 和密码不以明文落库或进入日志。
 - 初始化环境变量密码不符合策略时启动失败；首个管理员 `must_change_password=true` 且登录后处于受限会话。
-- M2 目标 Schema 中不存在旧表或新旧共存元数据。
+- 当前数据库只使用一套 Schema 和 metadata。
+
+## 16. M14 工作台数据
+
+`task_inbox_states` 以任务 ID 为主键保存任务所有者的已读时间和最后已读事件 ID。它只服务于工作台展示，不改变 `request_tasks` 的业务状态；重复标记已读必须幂等。任务上下文继续从 `normalized_request_json` 投影，原始请求和推理路径不受展示接口影响。
+
+`task_drafts.version` 每次编辑成功递增。更新必须使用条件版本更新，版本不匹配返回冲突，避免多个页面覆盖草稿。
+
+## 17. 高频数据保留
+
+后台数据保留任务在启动时执行一次，之后每七天执行一次，删除七天前的应用日志、审计日志、助手会话/消息、已过期登录会话、任务事件、收件箱状态、工具执行记录、IM 回执和已完成/失败的投递记录。请求任务、任务原始请求和正式回复草稿不因该任务清理。

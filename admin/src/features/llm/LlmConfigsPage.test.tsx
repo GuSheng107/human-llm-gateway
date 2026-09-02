@@ -57,7 +57,7 @@ describe("管理员 LLM 配置只读视角", () => {
       </AuthProvider>,
     );
 
-    expect(await screen.findByText(/管理员视角 · 只读/)).toBeTruthy();
+    expect(await screen.findByText(/只读监管视角/)).toBeTruthy();
     const create = screen.getByRole("button", { name: "新建配置" });
     expect((create as HTMLButtonElement).disabled).toBe(true);
     await user.click(create);

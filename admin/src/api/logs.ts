@@ -22,6 +22,7 @@ export interface AppLogItem {
   request_id: string | null;
   logger?: string | null;
   user_id: string | null;
+  username: string | null;
   task_id: string | null;
   api_key_id: string | null;
   connection_id: string | null;
@@ -30,17 +31,12 @@ export interface AppLogItem {
 }
 
 export interface DashboardStats {
-  role: string;
-  my_active_tasks: number;
-  my_total_tasks: number;
-  my_api_keys: number;
-  my_llm_configs: number;
   total_users: number;
   active_users: number;
   total_tasks: number;
-  global_active_tasks: number;
+  active_tasks: number;
   total_api_keys: number;
-  total_connections: number;
+  active_models: number;
 }
 
 export interface DashboardRecentTask {
@@ -63,27 +59,16 @@ export interface DashboardProtocolCount {
   count: number;
 }
 
-export interface DashboardConnectionHealth {
-  id: string;
-  name: string;
-  platform: string;
-  state: string;
-  retry_count: number;
-  last_error: string | null;
-}
-
 export interface DashboardData {
   stats: DashboardStats;
   recent_tasks: DashboardRecentTask[];
   daily_tasks: DashboardDailyTask[];
   protocol_counts: DashboardProtocolCount[];
-  urgent_tasks: DashboardRecentTask[];
-  problem_tasks: DashboardRecentTask[];
-  connection_health: DashboardConnectionHealth[];
 }
 
 export interface AuditLogQuery {
   page: number;
+  page_size?: number;
   actor_user_id?: number;
   resource_type?: string;
   action?: string;
@@ -93,6 +78,7 @@ export interface AuditLogQuery {
 
 export interface AppLogQuery {
   page: number;
+  page_size?: number;
   level?: string;
   event?: string;
   user_id?: number;
@@ -110,7 +96,10 @@ export function listAuditLogs(query: AuditLogQuery): Promise<{
   page_size: number;
   total: number;
 }> {
-  const params = new URLSearchParams({ page: String(query.page), page_size: "20" });
+  const params = new URLSearchParams({
+    page: String(query.page),
+    page_size: String(query.page_size ?? 20),
+  });
   if (query.actor_user_id) params.set("actor_user_id", String(query.actor_user_id));
   if (query.resource_type) params.set("resource_type", query.resource_type);
   if (query.action) params.set("action", query.action);
@@ -125,7 +114,10 @@ export function listAppLogs(query: AppLogQuery): Promise<{
   page_size: number;
   total: number;
 }> {
-  const params = new URLSearchParams({ page: String(query.page), page_size: "20" });
+  const params = new URLSearchParams({
+    page: String(query.page),
+    page_size: String(query.page_size ?? 20),
+  });
   if (query.level) params.set("level", query.level);
   if (query.event) params.set("event", query.event);
   if (query.user_id) params.set("user_id", String(query.user_id));

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from ..core.time import utc_now
 from ..domain.enums import DraftSource, DraftState, TaskState
 from ..domain.tasks import TERMINAL_STATES
-from .models import RequestTask, TaskDraft, TaskEvent
+from .models import RequestTask, TaskDraft, TaskEvent, TaskInboxState
 
 
 def _now() -> datetime:
@@ -278,6 +278,99 @@ class TaskRepository:
         )
         return rows, total
 
+    # ------------------------------------------------------------------
+    # 工作台收件箱（M14：未读 + 游标分页）
+    # ------------------------------------------------------------------
+
+    def upsert_seen(
+        self,
+        session: Session,
+        *,
+        task_id: int,
+        owner_user_id: int,
+        last_seen_event_id: int | None = None,
+    ) -> TaskInboxState:
+        """标记任务已读（独立短事务）。重复调用幂等，seen_at 与
+        last_seen_event_id 均取最新值。"""
+
+        row = session.get(TaskInboxState, task_id)
+        if row is None:
+            row = TaskInboxState(
+                task_id=task_id,
+                owner_user_id=owner_user_id,
+                seen_at=_now(),
+                last_seen_event_id=last_seen_event_id,
+            )
+            session.add(row)
+            session.flush()
+            return row
+        row.seen_at = _now()
+        if last_seen_event_id is not None:
+            row.last_seen_event_id = last_seen_event_id
+        session.flush()
+        return row
+
+    def get_inbox_state(self, session: Session, *, task_id: int) -> TaskInboxState | None:
+        return session.get(TaskInboxState, task_id)
+
+    def list_seen_map(self, session: Session, *, task_ids: list[int]) -> dict[int, TaskInboxState]:
+        if not task_ids:
+            return {}
+        rows = session.execute(
+            select(TaskInboxState).where(TaskInboxState.task_id.in_(task_ids))
+        ).all()
+        return {row[0].task_id: row[0] for row in rows}
+
+    def count_waiting(self, session: Session, *, owner_user_id: int | None = None) -> int:
+        filters = [RequestTask.state == TaskState.WAITING_HUMAN]
+        if owner_user_id is not None:
+            filters.append(RequestTask.owner_user_id == owner_user_id)
+        return session.scalar(select(func.count()).select_from(RequestTask).where(*filters)) or 0
+
+    def count_unread(self, session: Session, *, owner_user_id: int) -> int:
+        """owner 维度 waiting_human 且从未 seen 的任务数。"""
+        subq = (
+            select(TaskInboxState.task_id)
+            .where(TaskInboxState.owner_user_id == owner_user_id)
+            .scalar_subquery()
+        )
+        return (
+            session.scalar(
+                select(func.count())
+                .select_from(RequestTask)
+                .where(
+                    RequestTask.owner_user_id == owner_user_id,
+                    RequestTask.state == TaskState.WAITING_HUMAN,
+                    RequestTask.id.not_in(subq),
+                )
+            )
+            or 0
+        )
+
+    def list_inbox(
+        self, session: Session, *, owner_user_id: int | None = None
+    ) -> list[RequestTask]:
+        """工作台收件箱：state=waiting_human 全量返回。
+
+        格式上限 10：每个用户同时只有 10 个活动任务，所以无需游标分页。
+        管理员不传 owner_user_id 看全部；排序与未读在前端基于
+        TaskInboxState + user_deadline_at 在 in-memory 完成。
+        """
+        filters = [RequestTask.state == TaskState.WAITING_HUMAN]
+        if owner_user_id is not None:
+            filters.append(RequestTask.owner_user_id == owner_user_id)
+        return list(
+            session.scalars(
+                select(RequestTask)
+                .where(*filters)
+                .order_by(
+                    RequestTask.human_deadline_at.asc().nullslast(),
+                    RequestTask.id.desc(),
+                )
+                .limit(200)
+            )
+        )
+
     def get_by_public_id(
         self, session: Session, *, owner_user_id: int, public_id: str
     ) -> RequestTask | None:
@@ -335,6 +428,34 @@ class TaskRepository:
         )
         session.add(row)
         return row
+
+    def update_draft_fields(
+        self,
+        session: Session,
+        *,
+        draft_id: int,
+        expected_version: int,
+        reasoning_text: str | None,
+        tool_calls_json: str,
+        final_text: str | None,
+    ) -> bool:
+        """草稿乐观锁：只有版本匹配才覆盖；命中 0 行表示被其他端修改。"""
+        result = session.execute(
+            update(TaskDraft)
+            .where(
+                TaskDraft.id == draft_id,
+                TaskDraft.state == DraftState.EDITING,
+                TaskDraft.version == expected_version,
+            )
+            .values(
+                reasoning_text=reasoning_text,
+                tool_calls_json=tool_calls_json,
+                final_text=final_text,
+                version=TaskDraft.version + 1,
+                updated_at=_now(),
+            )
+        )
+        return result.rowcount == 1
 
     def mark_draft_state(self, session: Session, *, draft_id: int, state: DraftState) -> bool:
         result = session.execute(

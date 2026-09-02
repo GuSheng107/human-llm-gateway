@@ -47,6 +47,34 @@ def new_trace_id() -> str:
     return f"req_{uuid.uuid4().hex[:24]}"
 
 
+# ----------------------------------------------------------------------
+# 当前操作用户上下文：鉴权成功后绑定，log_event / 落库自动携带
+# ----------------------------------------------------------------------
+
+_log_user_id: ContextVar[int | None] = ContextVar("log_user_id", default=None)
+_log_user_role: ContextVar[str | None] = ContextVar("log_user_role", default=None)
+
+
+def bind_log_user(user_id: int, role: str | None) -> None:
+    """绑定当前操作者（尽力而为）。
+
+    FastAPI 同步依赖经 run_in_threadpool 执行，ContextVar 设置在每次调用的
+    Context 副本中完成、请求结束随副本销毁，无需也不能跨 Context 用 Token
+    复位。用户身份同时由鉴权依赖写入 request.scope.state["log_user"]，
+    由请求中间件在结束时显式携带进访问日志（见 api/errors.py）。
+    """
+    _log_user_id.set(user_id)
+    _log_user_role.set(role)
+
+
+def get_log_user_id() -> int | None:
+    return _log_user_id.get()
+
+
+def get_log_user_role() -> str | None:
+    return _log_user_role.get()
+
+
 _STRUCTURED = logging.getLogger("human_llm_gateway")
 
 _SENSITIVE_EXACT_KEYS = frozenset(
@@ -145,6 +173,14 @@ def log_event(level: str, event: str, message: str, **fields: object) -> None:
     request_id = get_request_id()
     if request_id is not None:
         record["request_id"] = request_id
+    if "user_id" not in fields:
+        user_id = get_log_user_id()
+        if user_id is not None:
+            record["user_id"] = user_id
+    if "role" not in fields:
+        role = get_log_user_role()
+        if role is not None:
+            record["role"] = role
     record.update(sanitize_log_fields(fields))
     _STRUCTURED.log(
         getattr(logging, level.upper(), logging.INFO),
@@ -379,16 +415,21 @@ class _PersistHandler(logging.Handler):
                 )
             request_id = get_request_id()
             level = record.levelname.lower()
+            context_fields = {
+                key: _clip(value, _MAX_CONTEXT_LENGTH) for key, value in fields.items()
+            }
+            role = get_log_user_role()
+            if role is not None:
+                context_fields["role"] = role
             _queue.enqueue(
                 {
                     "level": level,
                     "event": "logging.record",
                     "message": _clip(message, _MAX_MESSAGE_LENGTH),
                     "request_id": request_id,
+                    "user_id": get_log_user_id(),
                     "logger": record.name,
-                    "context": {
-                        key: _clip(value, _MAX_CONTEXT_LENGTH) for key, value in fields.items()
-                    },
+                    "context": context_fields,
                     "created_at": time.time(),
                 }
             )

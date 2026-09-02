@@ -463,4 +463,94 @@ describe("ConnectionsPage 平台分区与启用校验", () => {
     expect(screen.queryByText(token)).toBeNull();
     expect(screen.getByRole("button", { name: "重新生成" })).toBeTruthy();
   });
+
+  it("初次加载未结束前显示骨架屏，渲染完成才展示平台面板", async () => {
+    let resolveConnections!: (value: unknown) => void;
+    let resolvePlatforms!: (value: unknown) => void;
+    vi.mocked(fetch).mockImplementation((input, init) => {
+      const url = String(input);
+      const method = init?.method ?? "GET";
+      if (url === "/api/auth/me") {
+        return Promise.resolve(jsonResponse({
+          id: "1",
+          username: "user",
+          display_name: "普通用户",
+          role: "user",
+          must_change_password: false,
+          capabilities: [],
+          email: null,
+          avatar_base64: null,
+        }));
+      }
+      if (url === "/api/im-platforms") {
+        return new Promise((resolve) => {
+          resolvePlatforms = (value) => resolve(jsonResponse(value));
+        });
+      }
+      if (url === "/api/im-connections?page=1&page_size=100") {
+        return new Promise((resolve) => {
+          resolveConnections = (value) => resolve(jsonResponse(value));
+        });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${method} ${url}`));
+    });
+
+    render(
+      <AuthProvider>
+        <ConnectionsPage />
+     </AuthProvider>,
+    );
+
+    expect(screen.getByRole("status", { name: "正在加载连接" })).toBeTruthy();
+    expect(screen.queryByText("微信 iLink")).toBeNull();
+    expect(screen.queryByText("企业微信智能机器人")).toBeNull();
+
+    resolvePlatforms(platforms);
+    resolveConnections({ items: connections, page: 1, page_size: 100, total: connections.length });
+
+    expect(await screen.findByText("微信 iLink")).toBeTruthy();
+    expect(screen.getByText("企业微信智能机器人")).toBeTruthy();
+    expect(screen.queryByRole("status", { name: "正在加载连接" })).toBeNull();
+  });
+
+  it("启用中的连接不允许删除：删除按钮被禁用", async () => {
+    connections = connections.map((item) =>
+      item.id === "2" ? { ...item, bound: true, desired_running: true, state: "running" } : item,
+    );
+    const user = userEvent.setup();
+    render(
+      <AuthProvider>
+        <ConnectionsPage />
+    </AuthProvider>,
+    );
+
+    const title = await screen.findByRole("heading", { name: "企业微信智能机器人" });
+    const panel = title.closest("section") as HTMLElement;
+    const deleteButton = within(panel).getByRole("button", { name: "删除" }) as HTMLButtonElement;
+    expect(deleteButton.disabled).toBe(true);
+    expect(deleteButton.title).toBe("请先关闭连接后再删除");
+
+    await user.click(deleteButton);
+    const fetchMock = vi.mocked(fetch);
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, init]) => String(url).startsWith("/api/im-connections/") && init?.method === "DELETE",
+      ),
+    ).toBe(false);
+  });
+
+  it("未启用的连接可以正常触发删除流程", async () => {
+    const user = userEvent.setup();
+    render(
+      <AuthProvider>
+        <ConnectionsPage />
+    </AuthProvider>,
+    );
+
+    const title = await screen.findByRole("heading", { name: "企业微信智能机器人" });
+    const panel = title.closest("section") as HTMLElement;
+    const deleteButton = within(panel).getByRole("button", { name: "删除" }) as HTMLButtonElement;
+    expect(deleteButton.disabled).toBe(false);
+    expect(deleteButton.title).toBe("");
+  });
 });

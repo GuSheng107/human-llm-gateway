@@ -54,6 +54,16 @@ class ConnectionManager:
         connector = self._instances.get(connection_id)
         return connector is not None
 
+    def is_supervisor_alive(self, connection_id: int) -> bool:
+        """监督任务是否仍在运行（未结束）。
+
+        用于看门狗判定 starting 中连接是否真在启动：
+        supervisor 存在且未 done 才算"正在拉起"，避免 desired_running=true
+        + state=starting 被当成异常停用。
+        """
+        task = self._tasks.get(connection_id)
+        return task is not None and not task.done()
+
     # ------------------------------------------------------------------
     # 状态持久化
     # ------------------------------------------------------------------
@@ -90,17 +100,11 @@ class ConnectionManager:
         )
         # 先登记监督任务再执行任何 await，避免并发 start 在幂等检查与
         # 任务登记之间交错而产生孤儿任务（重复启动）。
+        # 初始 starting 状态由 service 层在事务中预先落库，manager 不再独立会话
+        # 重复写入，避免与请求事务争抢 SQLite 单写锁。
         self._tasks[connection_id] = asyncio.create_task(
             self._supervise(row, spec, ctx, inbound_handler),
             name=f"connection-{connection_id}",
-        )
-        await self._record(
-            connection_id,
-            {
-                "state": ConnectionState.STARTING,
-                "last_error_code": None,
-                "last_error_message": None,
-            },
         )
 
     async def stop(self, connection_id: int) -> None:
@@ -136,7 +140,13 @@ class ConnectionManager:
         decrypt_config: Callable[[RowLike], dict[str, Any]],
         inbound_handler: InboundHandler,
     ) -> int:
-        """进程启动恢复：desired_running 的连接重新拉起（docs/ARCHITECTURE §5.5）。"""
+        """进程启动恢复：desired_running 的连接重新拉起（docs/ARCHITECTURE §5.5）。
+
+        与 service.start 共享两阶段顺序：
+        1) 写入 starting 状态由 service 层在事务中预先落库；
+        2) manager.start 只创建监督任务，不再写 starting；
+        3) 启动失败时由 _supervise 走独立短会话写 error/auth_required。
+        """
         started = 0
         for row in rows:
             if not row.desired_running:
@@ -145,15 +155,8 @@ class ConnectionManager:
                 config = decrypt_config(row)
                 await self.start(row, config, inbound_handler)
                 started += 1
-            except ConnectorError as exc:
-                await self._record(
-                    row.id,
-                    {
-                        "state": ConnectionState.ERROR,
-                        "last_error_code": exc.code,
-                        "last_error_message": exc.message[:500],
-                    },
-                )
+            except ConnectorError:
+                logger.exception("connection recover failed", extra={"connection_id": row.id})
         return started
 
     # ------------------------------------------------------------------

@@ -22,7 +22,7 @@ import { useAuth } from "../auth/AuthContext";
 import type { FakeModel, ModelGroup } from "../../types/gateway";
 import { ModelEditModal } from "./ModelEditModal";
 import { ModelsGroupsDrawer } from "./ModelsGroupsDrawer";
-import { MODEL_PAGE_SIZES, type ModelPageSize } from "./modelPagination";
+import { type ModelPageSize } from "./modelPagination";
 
 const VIEW_STORAGE_KEY = "hlg_models_view";
 
@@ -94,7 +94,7 @@ export function ModelsPage() {
   const [creating, setCreating] = useState(false);
   const [groupsOpen, setGroupsOpen] = useState(false);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState<ModelPageSize>(12);
+  const [pageSize, setPageSize] = useState<ModelPageSize>(10);
 
   const loadCatalog = useCallback(async () => {
     setCatalogLoading(true);
@@ -163,6 +163,12 @@ export function ModelsPage() {
   const copyModelId = async (model: FakeModel) => {
     await copyText(model.model_id, "模型 ID");
   };
+
+  // 管理权限与后端一致：仅在满足条件时展示管理操作；系统模型拒绝普通用户，
+  // 私有模型必须归属当前用户（管理员同样可按归属管理自己的私有模型）。
+  const canManage = (model: FakeModel) =>
+    (model.scope === "system" && isAdmin) ||
+    (model.scope === "private" && model.owner_user_id === user?.id);
 
   const toggleModel = async (model: FakeModel) => {
     try {
@@ -430,23 +436,27 @@ export function ModelsPage() {
                       )}
                     </div>
                     <div className="flex items-center gap-2 text-xs">
-                      <button
-                        type="button"
-                        onClick={() => void toggleModel(model)}
-                        className="text-primary"
-                      >
-                        {model.is_enabled ? "停用" : "启用"}
-                      </button>
-                      <button type="button" onClick={() => setEditing(model)} className="text-primary">
-                        编辑
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void removeModel(model)}
-                        className="text-red-500"
-                      >
-                        删除
-                      </button>
+                      {canManage(model) && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => void toggleModel(model)}
+                            className="text-primary"
+                          >
+                            {model.is_enabled ? "停用" : "启用"}
+                          </button>
+                          <button type="button" onClick={() => setEditing(model)} className="text-primary">
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void removeModel(model)}
+                            className="text-red-500"
+                          >
+                            删除
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </Card>
@@ -505,27 +515,33 @@ export function ModelsPage() {
                           <StatusBadge status={model.is_enabled ? "active" : "inactive"} />
                         </td>
                         <td className="space-x-3 px-4 py-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => void toggleModel(model)}
-                            className="text-primary"
-                          >
-                            {model.is_enabled ? "停用" : "启用"}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => setEditing(model)}
-                            className="text-primary"
-                          >
-                            编辑
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => void removeModel(model)}
-                            className="text-red-500"
-                          >
-                            删除
-                          </button>
+                          {canManage(model) ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => void toggleModel(model)}
+                                className="text-primary"
+                              >
+                                {model.is_enabled ? "停用" : "启用"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEditing(model)}
+                                className="text-primary"
+                              >
+                                编辑
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void removeModel(model)}
+                                className="text-red-500"
+                              >
+                                删除
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-slate-300">只读</span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -535,27 +551,18 @@ export function ModelsPage() {
             </Card>
           )}
           </div>
-          {!loading && total > 0 && (
-            <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-              <label className="flex items-center gap-2 text-xs text-slate-500">
-                每页
-                <select
-                  value={pageSize}
-                  onChange={(event) => {
-                    setPage(1);
-                    setPageSize(Number(event.target.value) as ModelPageSize);
-                  }}
-                  className="field-input h-8 w-20 py-1"
-                  aria-label="每页模型数"
-                >
-                  {MODEL_PAGE_SIZES.map((size) => (
-                    <option key={size} value={size}>{size}</option>
-                  ))}
-                </select>
-              </label>
-              <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} />
-            </Card>
-          )}
+          <Card className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+            <Pagination
+              page={page}
+              pageSize={pageSize}
+              total={total}
+              onChange={setPage}
+              onPageSizeChange={(size) => {
+                setPage(1);
+                setPageSize(size as ModelPageSize);
+              }}
+            />
+          </Card>
         </div>
       </div>
 

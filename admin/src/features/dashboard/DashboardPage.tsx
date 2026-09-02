@@ -221,20 +221,17 @@ export function DashboardPage() {
 
   const values = useMemo(() => data?.daily_tasks.map((item) => item.count) ?? [], [data]);
   const stats = data?.stats;
+  // 旧服务尚未重启或响应缺字段时，统计卡也要稳定显示 0，而不是 undefined。
+  const activeTasks = stats?.active_tasks ?? 0;
+  const availableModels = stats?.active_models ?? 0;
+  const totalApiKeys = stats?.total_api_keys ?? 0;
   const cards: Array<{ label: string; value: number | string; icon: string; tone: string }> = stats
-    ? isAdmin
-      ? [
-          { label: "用户（启用/总计）", value: `${stats.active_users}/${stats.total_users}`, icon: "users", tone: "blue" },
-          { label: "全局活动任务", value: stats.global_active_tasks, icon: "reply", tone: "cyan" },
-          { label: "累计任务", value: stats.total_tasks, icon: "dashboard", tone: "emerald" },
-          { label: "API Key / IM 连接", value: `${stats.total_api_keys}/${stats.total_connections}`, icon: "link", tone: "amber" },
-        ]
-      : [
-          { label: "进行中的任务", value: stats.my_active_tasks, icon: "reply", tone: "blue" },
-          { label: "累计任务", value: stats.my_total_tasks, icon: "dashboard", tone: "cyan" },
-          { label: "API Key", value: stats.my_api_keys, icon: "key", tone: "emerald" },
-          { label: "LLM 配置", value: stats.my_llm_configs, icon: "gateway", tone: "amber" },
-        ]
+    ? [
+        { label: "用户（启用/总计）", value: `${stats.active_users}/${stats.total_users}`, icon: "users", tone: "blue" },
+        { label: "全站活动任务", value: activeTasks, icon: "reply", tone: "cyan" },
+        { label: "累计任务", value: stats.total_tasks, icon: "dashboard", tone: "emerald" },
+        { label: "可用模型 / API Key", value: `${availableModels} / ${totalApiKeys}`, icon: "link", tone: "amber" },
+      ]
     : [];
 
   // 接入命令统一为 PowerShell 版本：curl.exe 规避 Windows PowerShell 5.1
@@ -278,8 +275,8 @@ export function DashboardPage() {
         </div>
       )}
       <PageHeader
-        title={isAdmin ? "监管控制台" : "控制台"}
-        description={`数据每 30 秒自动刷新${user?.username ? ` · ${user.username}` : ""}`}
+        title="控制台"
+        description="30 秒自动刷新"
         actions={<Button variant="ghost" loading={refreshing} onClick={() => void load()}><Icon name="refresh" className="h-4 w-4" />立即刷新</Button>}
       />
       {error && <ErrorBanner message={error} />}
@@ -291,41 +288,29 @@ export function DashboardPage() {
       </div>
 
       {data && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
-          <div className="space-y-5">
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.8fr)]">
+        <div className="grid items-stretch gap-5 xl:grid-cols-[minmax(0,2fr)_minmax(300px,1fr)]">
+          <div className="flex h-full min-h-0 flex-col gap-5">
+            <div className="grid shrink-0 gap-5 lg:grid-cols-[minmax(0,1.4fr)_minmax(280px,0.8fr)]">
               <TaskTimeline data={data} />
               <ProtocolDistribution data={data} />
             </div>
-            <Card>
-              <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
-                <h2 className="text-sm font-medium text-slate-700">失败与超时</h2>
+            <Card className="flex min-h-[16rem] flex-1 flex-col">
+              <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-5 py-3">
+                <h2 className="text-sm font-medium text-slate-700">任务列表</h2>
                 <button onClick={() => navigate("/tasks")} className="text-xs text-primary">
                   查看全部
                 </button>
               </div>
-              <div className="divide-y divide-slate-100 p-2">
-                {data.problem_tasks.map((task) => <TaskLink key={task.id} task={task} />)}
-                {data.problem_tasks.length === 0 && (
-                  <p className="px-3 py-8 text-center text-xs text-slate-400">暂无异常任务</p>
+              <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto p-2">
+                {data.recent_tasks.map((task) => <TaskLink key={task.id} task={task} />)}
+                {data.recent_tasks.length === 0 && (
+                  <p className="grid h-full place-items-center px-3 text-center text-xs text-slate-400">暂无任务</p>
                 )}
               </div>
             </Card>
           </div>
 
-          <aside className="space-y-5">
-            <Card>
-              <div className="border-b border-slate-100 px-5 py-3 text-sm font-medium text-slate-700">
-                临近截止
-              </div>
-              <div className="divide-y divide-slate-100 p-2">
-                {data.urgent_tasks.map((task) => <TaskLink key={task.id} task={task} />)}
-                {data.urgent_tasks.length === 0 && (
-                  <p className="px-3 py-8 text-center text-xs text-slate-400">没有待处理任务</p>
-                )}
-              </div>
-            </Card>
-
+          <aside className="flex h-full min-h-0 flex-col gap-5">
             <Card>
               <div className="border-b border-slate-100 px-5 py-3 text-sm font-medium text-slate-700">
                 快速入口
@@ -351,7 +336,7 @@ export function DashboardPage() {
               </div>
             </Card>
 
-            <Card>
+            <Card className="flex min-h-[16rem] flex-1 flex-col">
               <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
                 <span className="text-sm font-medium text-slate-700">接入指引</span>
                 <span className="flex items-center gap-1.5">
@@ -363,7 +348,7 @@ export function DashboardPage() {
                   </span>
                 </span>
               </div>
-              <div className="space-y-2 p-4 text-xs">
+              <div className="min-h-0 flex-1 space-y-2 overflow-y-auto p-4 text-xs">
                 {[
                   {
                     label: "获取模型列表",
@@ -409,33 +394,6 @@ export function DashboardPage() {
               </div>
             </Card>
 
-            {isAdmin && (
-              <Card>
-                <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
-                  <span className="text-sm font-medium text-slate-700">IM 连接健康</span>
-                  <button onClick={() => navigate("/connections")} className="text-xs text-primary">
-                    管理
-                  </button>
-                </div>
-                <div className="divide-y divide-slate-100 px-4">
-                  {data.connection_health.map((connection) => (
-                    <div key={connection.id} className="flex items-center gap-3 py-3 text-xs">
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate font-medium text-slate-700">{connection.name}</span>
-                        <span className="block truncate text-[11px] text-slate-400">
-                          {connection.platform}
-                          {connection.last_error ? ` · ${connection.last_error}` : ""}
-                        </span>
-                      </span>
-                      <StatusBadge status={connection.state} />
-                    </div>
-                  ))}
-                  {data.connection_health.length === 0 && (
-                    <p className="py-8 text-center text-xs text-slate-400">暂无连接</p>
-                  )}
-                </div>
-              </Card>
-            )}
           </aside>
         </div>
       )}

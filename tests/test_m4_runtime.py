@@ -139,10 +139,9 @@ async def test_network_failure_is_retried_with_scheduled_backoff() -> None:
 
     await manager.start(row, {}, _inbound)
     await asyncio.sleep(0.05)
-    assert recorder.states(2) == [
-        ConnectionState.STARTING.value,
-        ConnectionState.ONLINE.value,
-    ]
+    # 两阶段事务后，manager.start 不再写 starting 初始状态（service 层预写）。
+    # 仅断言后续 _supervise 落库了 online。
+    assert recorder.states(2) == [ConnectionState.ONLINE.value]
     connector = manager.get_instance(2)
     assert connector is not None
 
@@ -168,8 +167,9 @@ async def test_start_failure_uses_backoff_and_restarts(monkeypatch) -> None:
 
     await manager.start(row, {}, _inbound)
     await asyncio.sleep(0.2)
+    # 两阶段事务后，manager.start 不再写 starting 初始状态（service 层预写）。
+    # 这里仅断言 error 与最终 online 都被 _supervise 正确落库。
     states = recorder.states(3)
-    assert states[0] == ConnectionState.STARTING.value
     assert ConnectionState.ERROR.value in states
     assert states[-1] == ConnectionState.ONLINE.value
     error_patch = next(patch for patch in recorder.patches[3] if "retry_count" in patch)

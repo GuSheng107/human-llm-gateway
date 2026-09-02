@@ -20,6 +20,7 @@ interface ConnectionSetupSectionProps {
   generatedTokens: Record<string, string>;
   onConnectionChange: (connection: ImConnection) => void;
   onTokenGenerated: (field: string, token: string) => void;
+  disabled?: boolean;
 }
 
 export function ConnectionSetupSection({
@@ -28,6 +29,7 @@ export function ConnectionSetupSection({
   generatedTokens,
   onConnectionChange,
   onTokenGenerated,
+  disabled = false,
 }: ConnectionSetupSectionProps) {
   const [binding, setBinding] = useState<BindingStatus | null>(null);
   const [command, setCommand] = useState(platform.binding_command ?? "");
@@ -46,7 +48,7 @@ export function ConnectionSetupSection({
   const bindingExpired = Boolean(binding && !binding.bound && !binding.binding_pending);
 
   const beginBinding = useCallback(async () => {
-    if (!platform.binding_command || connection.bound) return;
+    if (!platform.binding_command || connection.bound || disabled) return;
     setBindingBusy(true);
     setError("");
     try {
@@ -58,10 +60,18 @@ export function ConnectionSetupSection({
     } finally {
       setBindingBusy(false);
     }
-  }, [connection.bound, connection.id, platform.binding_command]);
+  }, [connection.bound, connection.id, platform.binding_command, disabled]);
 
   useEffect(() => {
     if (!platform.binding_command) return;
+    if (disabled) {
+      setBinding({
+        bound: connection.bound,
+        binding_pending: false,
+        binding_expires_at: null,
+      });
+      return;
+    }
     if (connection.bound) {
       setBinding({ bound: true, binding_pending: false, binding_expires_at: null });
       return;
@@ -69,7 +79,7 @@ export function ConnectionSetupSection({
     if (bindingStartedRef.current === connection.id) return;
     bindingStartedRef.current = connection.id;
     void beginBinding();
-  }, [beginBinding, connection.bound, connection.id, platform.binding_command]);
+  }, [beginBinding, connection.bound, connection.id, platform.binding_command, disabled]);
 
   useEffect(() => {
     if (!binding?.binding_pending || binding.bound) return;
@@ -155,6 +165,7 @@ export function ConnectionSetupSection({
               <Button
                 variant="ghost"
                 loading={rotatingField === field.name}
+                disabled={disabled}
                 onClick={() => void rotateToken(field.name, field.label)}
               >
                 重新生成
@@ -240,17 +251,17 @@ export function ConnectionSetupSection({
             <p className="mt-3 text-caption leading-5 text-blue-600/80">{guide.commandHelp}</p>
           )}
           <div className="mt-3 flex justify-end gap-2">
-            {error && binding === null && (
+            {error && binding === null && !disabled && (
               <Button variant="ghost" loading={bindingBusy} onClick={() => void beginBinding()}>
                 重新发起绑定
               </Button>
             )}
-            {bindingExpired && (
+            {bindingExpired && !disabled && (
               <Button variant="ghost" loading={bindingBusy} onClick={() => void beginBinding()}>
                 重新发起绑定
               </Button>
             )}
-            {binding?.binding_pending && (
+            {binding?.binding_pending && !disabled && (
               <Button variant="ghost" loading={bindingBusy} onClick={() => void stopBinding()}>
                 {platform.kind === "client" ? "取消本次绑定监听" : "取消本次绑定"}
               </Button>

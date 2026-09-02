@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from enum import StrEnum
 from typing import Any
@@ -130,7 +131,10 @@ class RequestIdMiddleware:
         token = set_request_id(request_id)
         header_value = request_id.encode("latin-1")
         path: str = scope.get("path", "")
+        method: str = scope.get("method", "")
         is_admin_api = path.startswith("/api/")
+        started_at = time.monotonic()
+        response_status: int | None = None
 
         # /api/* JSON 响应需要改写 body 注入 trace_id。ASGI 的
         # http.response.body 消息不带 headers，无法事后删除 start 阶段已发送的
@@ -167,8 +171,9 @@ class RequestIdMiddleware:
             await send({"type": "http.response.body", "body": full_body, "more_body": False})
 
         async def send_with_request_id(message: dict[str, Any]) -> None:
-            nonlocal held_start, buffering_failed, body_chunks
+            nonlocal held_start, buffering_failed, body_chunks, response_status
             if message["type"] == "http.response.start":
+                response_status = int(message.get("status") or 0)
                 headers = [*(message.get("headers") or [])]
                 # 移除可能已存在的同名头，避免重复。
                 headers = [h for h in headers if h[0] not in (b"x-request-id", b"x-trace-id")]
@@ -212,6 +217,33 @@ class RequestIdMiddleware:
         try:
             await self.app(scope, receive, send_with_request_id)
         finally:
+            # 统一访问事件：除日志查询接口与 /healthz 外，任何请求都能按
+            # traceId 在日志中回溯到这条记录；用户身份由鉴权依赖写入
+            # scope.state（跨线程池 Context 不可靠，必须显式传递）。
+            if not path.startswith("/healthz") and not path.startswith(
+                ("/api/app-logs", "/api/audit-logs")
+            ):
+                from ..core.logging import log_event
+
+                state = scope.get("state") or {}
+                log_user = state.get("log_user")
+                log_user_id, log_user_role, log_username = (
+                    log_user if log_user else (None, None, None)
+                )
+                status = response_status or 0
+                level = "error" if status >= 500 else "warning" if status >= 400 else "info"
+                log_event(
+                    level,
+                    "http.access",
+                    f"{method} {path} -> {status}",
+                    method=method,
+                    path=path,
+                    status=status,
+                    duration_ms=round((time.monotonic() - started_at) * 1000, 1),
+                    user_id=log_user_id,
+                    username=log_username,
+                    role=log_user_role,
+                )
             reset_request_id(token)
 
 

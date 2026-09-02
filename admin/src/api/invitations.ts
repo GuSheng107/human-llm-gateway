@@ -7,8 +7,8 @@ export interface InvitationPayload {
   max_uses?: number;
 }
 
-export function listInvitations(page: number, search = ""): Promise<Page<Invitation>> {
-  const query = new URLSearchParams({ page: String(page), page_size: "20" });
+export function listInvitations(page: number, search = "", pageSize = 20): Promise<Page<Invitation>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (search.trim()) query.set("search", search.trim());
   return api<Page<Invitation>>(`/api/invitations?${query}`);
 }

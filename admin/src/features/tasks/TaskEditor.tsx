@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { generateDraft, getTask, getTaskRawRequest, saveDraft, submitReply, updateDraft } from "../../api/tasks";
 import { listTools, type ToolItem } from "../../api/tools";
 import { listLlmConfigs } from "../../api/llmConfigs";
@@ -147,9 +147,15 @@ function EventRow({ event }: { event: TaskEvent }) {
   );
 }
 
-export function ReplyPage() {
-  const { id } = useParams<{ id: string }>();
-  const taskId = id ?? "";
+export interface TaskEditorProps {
+  taskId: string;
+  /** 提交成功后回调（工作台用于从列表移除并选中下一条）。 */
+  onSubmitted?: (taskId: string) => void;
+  /** 是否渲染 PageHeader/返回（独立页 true，工作台内嵌 false）。 */
+  standalone?: boolean;
+}
+
+export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEditorProps) {
   const navigate = useNavigate();
   const { user: currentUser } = useAuth();
   const isAdmin = currentUser?.role === "admin";
@@ -174,6 +180,8 @@ export function ReplyPage() {
   const [dslInput, setDslInput] = useState("");
   const [dslError, setDslError] = useState("");
   const [promptExpanded, setPromptExpanded] = useState(false);
+  // 草稿乐观锁版本（服务端 DraftView.version）。
+  const [draftVersion, setDraftVersion] = useState<number | null>(null);
   // 截止时间每秒重渲染（formatDeadline 是"剩余时间"语义）。
   const [, setTick] = useState(0);
 
@@ -221,6 +229,9 @@ export function ReplyPage() {
       : null;
     const initial = activeDraft ?? task.result_draft;
     if (initial) applyDraft(initial);
+    // 同步草稿版本（乐观锁）与 activeDraftId
+    setActiveDraftId(activeDraft ? activeDraft.id : null);
+    setDraftVersion(activeDraft ? activeDraft.version : null);
   }, [task, applyDraft]);
 
   const liveDraft = useMemo(() => {
@@ -293,20 +304,31 @@ export function ReplyPage() {
     setSaving(true);
     try {
       if (activeDraftId) {
-        const updated = await updateDraft(task.id, activeDraftId, result.draft);
+        const updated = await updateDraft(
+          task.id,
+          activeDraftId,
+          result.draft,
+          draftVersion ?? 1,
+        );
         setActiveDraftId(updated.id);
+        setDraftVersion(updated.version);
       } else {
         const created = await saveDraft(task.id, result.draft);
         setActiveDraftId(created.id);
+        setDraftVersion(created.version);
       }
       notify("草稿已保存");
       void load();
-    } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "保存失败");
+  } catch (caught) {
+      const message = caught instanceof Error ? caught.message : "保存失败";
+      notify(message);
+      if (message.includes("草稿已被其他端修改")) {
+        void load();
+      }
     } finally {
       setSaving(false);
     }
-  }, [task, saving, reasoning, toolCalls, finalText, activeDraftId, load]);
+  }, [task, saving, reasoning, toolCalls, finalText, activeDraftId, draftVersion, load]);
 
   const doSubmit = useCallback(() => {
     if (!task || !task.can_edit) return;
@@ -328,10 +350,19 @@ export function ReplyPage() {
     try {
       await submitReply(task.id, preview, activeDraftId ?? undefined);
       notify("回复已提交");
-      navigate("/tasks", { replace: true });
+      if (onSubmitted) {
+        onSubmitted(task.id);
+      } else {
+        navigate("/tasks", { replace: true });
+      }
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "提交失败");
-      setPreview(null);
+      const message = caught instanceof Error ? caught.message : "提交失败";
+      notify(message);
+      // 任务被其他来源（IM/超时/fallback）抢先：清空预览并刷新任务详情
+      if (message.includes("该任务已被其他提交接管") || message.includes("任务已结束")) {
+        setPreview(null);
+        void load();
+      }
     } finally {
       setSubmitting(false);
     }
@@ -344,6 +375,7 @@ export function ReplyPage() {
     try {
       const draft = await generateDraft(task.id, llmConfigId);
       setActiveDraftId(draft.id);
+      setDraftVersion(draft.version);
       applyDraft(draft);
       setShowGenerate(false);
       notify("已生成草稿，请继续编辑");
@@ -421,12 +453,14 @@ export function ReplyPage() {
   if (error && !task) {
     return (
       <div className="space-y-4">
-        <PageHeader title="回复任务" />
+        {standalone && <PageHeader title="回复任务" />}
         <ErrorBanner message={error} />
-        <Button variant="ghost" onClick={() => navigate("/tasks")}>
-          <Icon name="chevronLeft" className="h-4 w-4" />
-          返回任务记录
-        </Button>
+        {standalone && (
+          <Button variant="ghost" onClick={() => navigate("/tasks")}>
+            <Icon name="chevronLeft" className="h-4 w-4" />
+            返回任务记录
+          </Button>
+        )}
       </div>
     );
   }
@@ -443,37 +477,73 @@ export function ReplyPage() {
   const declaredToolNames = new Set(task.tool_names);
 
   return (
-    <div className="space-y-5">
-      <PageHeader
-        title={`回复任务 #${task.public_id}`}
-        actions={
-          <>
-            <Button variant="ghost" onClick={() => navigate("/tasks")}>
-              <Icon name="chevronLeft" className="h-4 w-4" />
-              返回
-            </Button>
+    <div className={standalone ? "space-y-5" : "flex min-h-0 flex-1 flex-col gap-4"}>
+      {standalone ? (
+        <PageHeader
+          title={`回复任务 #${task.public_id}`}
+          actions={
+            <>
+              <Button variant="ghost" onClick={() => navigate("/tasks")}>
+                <Icon name="chevronLeft" className="h-4 w-4" />
+                返回
+              </Button>
+              {llmConfigs.length > 0 && canEdit && (
+                <Button variant="ghost" onClick={() => setShowGenerate(true)}>
+                  <Icon name="gateway" className="h-4 w-4" />
+                  生成草稿
+                </Button>
+              )}
+              <Button
+                variant="ghost"
+                onClick={() => void doSave()}
+                loading={saving}
+                disabled={!canEdit}
+                title="Ctrl/Cmd + S"
+              >
+                保存草稿
+              </Button>
+              <Button onClick={doSubmit} disabled={!canEdit} title="Ctrl/Cmd + Enter">
+                <Icon name="check" className="h-4 w-4" />
+                提交回复
+              </Button>
+            </>
+          }
+        />
+      ) : (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 shadow-card">
+          <div className="flex items-center gap-2 text-xs text-slate-500">
+            <span className="font-mono font-medium text-slate-700">#{task.public_id}</span>
+            <StatusBadge status={task.state} />
+            <span className="text-slate-400">{PROTOCOL_LABELS[task.protocol] ?? task.protocol}</span>
+            {task.human_deadline_at && !isTerminalTaskState(task.state) && (
+              <span className={`font-medium ${deadlineTone(task.human_deadline_at)}`}>
+                {formatDeadline(task.human_deadline_at)}
+              </span>
+            )}
+            {task.has_tools && (
+              <span className="inline-flex items-center gap-1 text-primary">
+                <Icon name="code" className="h-3.5 w-3.5" />
+                含工具
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
             {llmConfigs.length > 0 && canEdit && (
               <Button variant="ghost" onClick={() => setShowGenerate(true)}>
                 <Icon name="gateway" className="h-4 w-4" />
                 生成草稿
               </Button>
             )}
-            <Button
-              variant="ghost"
-              onClick={() => void doSave()}
-              loading={saving}
-              disabled={!canEdit}
-              title="Ctrl/Cmd + S"
-            >
+            <Button variant="ghost" onClick={() => void doSave()} loading={saving} disabled={!canEdit}>
               保存草稿
             </Button>
-            <Button onClick={doSubmit} disabled={!canEdit} title="Ctrl/Cmd + Enter">
+            <Button onClick={doSubmit} disabled={!canEdit}>
               <Icon name="check" className="h-4 w-4" />
               提交回复
             </Button>
-          </>
-        }
-      />
+          </div>
+        </div>
+      )}
 
       <section className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-200 bg-white px-5 py-3 text-xs shadow-card">
         <StatusBadge status={task.state} />
@@ -503,9 +573,15 @@ export function ReplyPage() {
         <ErrorBanner message="当前任务状态或归属不允许编辑回复，可切换任务记录查看详情。" />
       )}
 
-      <div className="grid gap-5 xl:grid-cols-[minmax(240px,0.9fr)_minmax(0,2.3fr)_minmax(230px,1fr)]">
-        {/* 左栏：任务上下文（sticky） */}
-        <aside className="space-y-5 xl:sticky xl:top-24 xl:self-start">
+      <div
+        className={
+          standalone
+            ? "grid gap-5 xl:grid-cols-[minmax(240px,0.9fr)_minmax(0,2.3fr)_minmax(230px,1fr)]"
+            : "grid min-h-0 flex-1 gap-4 md:grid-cols-[minmax(0,1.6fr)_minmax(220px,0.8fr)]"
+        }
+      >
+        {standalone && (
+          <aside className="space-y-5 xl:sticky xl:top-24 xl:self-start">
           <Card>
             <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
               <span className="text-sm font-medium text-slate-700">提示词</span>
@@ -594,6 +670,7 @@ export function ReplyPage() {
             )}
           </Card>
         </aside>
+        )}
 
         {/* 中栏：编辑器（tab 切换，内容互不丢失） */}
         <section className="space-y-4">
@@ -640,7 +717,7 @@ export function ReplyPage() {
               {tab === "final" && (
                 <div>
                   <p className="mb-2 text-xs text-slate-400">
-                    将作为 Fake Model 的最终输出返回给调用方
+                    提交后作为最终回复返回
                   </p>
                   <textarea
                     value={finalText}
@@ -840,7 +917,7 @@ export function ReplyPage() {
       {showGenerate && (
         <Modal
           title="调用 LLM 生成草稿"
-          description="选择一个同协议的 LLM 配置；生成结果进入可编辑草稿，不会自动提交。"
+          description="选择同协议 LLM，生成可编辑草稿。"
           onClose={() => setShowGenerate(false)}
         >
           <div className="space-y-4 p-6">
@@ -870,7 +947,7 @@ export function ReplyPage() {
               </div>
             )}
             <p className="text-xs text-slate-400">
-              跨协议生成按字段矩阵自动转换；不可等价的专有字段将被拒绝。
+              不兼容字段会拒绝生成。
             </p>
           </div>
         </Modal>
@@ -879,7 +956,7 @@ export function ReplyPage() {
       {preview && (
         <Modal
           title="确认提交回复"
-          description="提交前请确认内容无误"
+          description="提交后不可修改"
           onClose={() => setPreview(null)}
         >
           <div className="space-y-4 p-6 text-xs">

@@ -15,7 +15,8 @@ import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
+const LOG_RETENTION_DAYS = 7;
 
 type Tab = "audit" | "app";
 
@@ -28,6 +29,7 @@ export function LogsPage() {
   const isAdmin = currentUser?.role === "admin";
   const [tab, setTab] = useState<Tab>(isAdmin ? "audit" : "app");
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [auditItems, setAuditItems] = useState<AuditLogItem[]>([]);
   const [appItems, setAppItems] = useState<AppLogItem[]>([]);
@@ -52,6 +54,7 @@ export function LogsPage() {
       if (tab === "audit") {
         const result = await listAuditLogs({
           page,
+          page_size: pageSize,
           action: auditAction.trim() || undefined,
           resource_type: auditResource.trim() || undefined,
           hours: auditHours ? Number(auditHours) : undefined,
@@ -61,6 +64,7 @@ export function LogsPage() {
       } else {
         const result = await listAppLogs({
           page,
+          page_size: pageSize,
           level: appLevel || undefined,
           event: appEvent.trim() || undefined,
           request_id: appTraceId.trim() || undefined,
@@ -75,7 +79,18 @@ export function LogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [tab, page, auditAction, auditResource, auditHours, appLevel, appEvent, appHours, appTraceId]);
+  }, [
+    tab,
+    page,
+    pageSize,
+    auditAction,
+    auditResource,
+    auditHours,
+    appLevel,
+    appEvent,
+    appHours,
+    appTraceId,
+  ]);
 
   useEffect(() => {
     void load();
@@ -91,7 +106,7 @@ export function LogsPage() {
     <div className="space-y-5">
       <PageHeader
         title="日志审计"
-        description="按 traceId（request_id）可还原一次请求的完整处理链路"
+        description={`日志保留 ${LOG_RETENTION_DAYS} 天 · 按 traceId 查询关联日志`}
       />
 
       <Card>
@@ -233,9 +248,10 @@ export function LogsPage() {
                 <tr>
                   <th className="px-4 py-3 font-medium">时间</th>
                   <th className="px-4 py-3 font-medium">级别</th>
+                  <th className="px-4 py-3 font-medium">用户</th>
                   <th className="px-4 py-3 font-medium">事件</th>
                   <th className="px-4 py-3 font-medium">消息</th>
-                  <th className="px-4 py-3 font-medium">关联</th>
+                  <th className="px-4 py-3 font-medium">traceId</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -247,6 +263,7 @@ export function LogsPage() {
                     <td className="px-4 py-3">
                       <StatusBadge status={item.level} fallback={item.level} />
                     </td>
+                    <td className="px-4 py-3 text-slate-600">{item.username ?? "-"}</td>
                     <td className="px-4 py-3 font-mono text-slate-600">{item.event || "-"}</td>
                     <td className="max-w-[320px] truncate px-4 py-3 text-slate-500">
                       <button
@@ -258,29 +275,14 @@ export function LogsPage() {
                         {item.message}
                       </button>
                     </td>
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-[11px] text-slate-400">
-                      {item.request_id ? (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setAppTraceId(item.request_id ?? "");
-                            setPage(1);
-                          }}
-                          title="点击检索该 traceId 的全部日志"
-                          className="text-primary hover:underline"
-                        >
-                          {item.request_id.slice(0, 12)}
-                        </button>
-                      ) : null}
-                      {item.task_id ? ` task:${item.task_id}` : ""}
-                      {item.user_id ? ` user:${item.user_id}` : ""}
-                      {!item.request_id && !item.task_id && !item.user_id ? "-" : ""}
+                    <td className="max-w-[220px] break-all px-4 py-3 font-mono text-[11px] text-slate-500">
+                      {item.request_id ?? "-"}
                     </td>
                   </tr>
                 ))}
                 {!loading && appItems.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-12 text-center text-slate-400">
+                    <td colSpan={6} className="px-4 py-12 text-center text-slate-400">
                       暂无应用日志
                     </td>
                   </tr>
@@ -290,7 +292,16 @@ export function LogsPage() {
           )}
         </div>
         <div className="flex justify-end border-t border-slate-100 px-4 py-3">
-          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+          <Pagination
+            page={page}
+            pageSize={pageSize}
+            total={total}
+            onChange={setPage}
+            onPageSizeChange={(size) => {
+              setPage(1);
+              setPageSize(size);
+            }}
+          />
         </div>
       </Card>
 

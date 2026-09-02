@@ -22,7 +22,7 @@ import {
   isTerminalTaskState,
 } from "./labels";
 
-const PAGE_SIZE = 20;
+const DEFAULT_PAGE_SIZE = 20;
 // 自动刷新间隔（毫秒）：页面隐藏时暂停。
 const REFRESH_INTERVAL_MS = 5000;
 
@@ -49,6 +49,7 @@ export function TasksPage() {
   const deepLinkTask = searchParams.get("task");
   const [items, setItems] = useState<TaskItem[]>([]);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
@@ -74,6 +75,7 @@ export function TasksPage() {
           search,
           state: stateFilter || undefined,
           bucket: bucket === "all" ? undefined : bucket,
+          pageSize,
         });
         setItems(result.items);
         setTotal(result.total);
@@ -84,8 +86,13 @@ export function TasksPage() {
         if (!silent) setLoading(false);
       }
     },
-    [page, search, stateFilter, bucket],
+    [page, pageSize, search, stateFilter, bucket],
   );
+
+  const changePageSize = (value: number) => {
+    setPage(1);
+    setPageSize(value);
+  };
 
   useEffect(() => void load(), [load]);
 
@@ -255,7 +262,7 @@ export function TasksPage() {
           </table>
         </div>
         <div className="flex justify-end border-t border-slate-100 px-4 py-3">
-          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onChange={setPage} />
+          <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} onPageSizeChange={changePageSize} />
         </div>
       </Card>
 

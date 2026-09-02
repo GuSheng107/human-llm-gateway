@@ -28,12 +28,26 @@ export function listConnections(
   page = 1,
   search = "",
   filters: ConnectionFilter = {},
+  pageSize = 100,
 ): Promise<Page<ImConnection>> {
-  const query = new URLSearchParams({ page: String(page), page_size: "100" });
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (search) query.set("search", search);
   if (filters.platform) query.set("platform", filters.platform);
   if (filters.state) query.set("state", filters.state);
   return api<Page<ImConnection>>(`/api/im-connections?${query}`);
+}
+
+export function adminListConnections(
+  page = 1,
+  search = "",
+  filters: ConnectionFilter = {},
+  pageSize = 20,
+): Promise<Page<ImConnection>> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
+  if (search) query.set("search", search);
+  if (filters.platform) query.set("platform", filters.platform);
+  if (filters.state) query.set("state", filters.state);
+  return api<Page<ImConnection>>(`/api/admin/im-connections?${query}`);
 }
 
 export async function listAllConnections(): Promise<ImConnection[]> {
@@ -41,6 +55,17 @@ export async function listAllConnections(): Promise<ImConnection[]> {
   let page = 1;
   for (;;) {
     const result = await listConnections(page);
+    items.push(...result.items);
+    if (items.length >= result.total || result.items.length === 0) return items;
+    page += 1;
+  }
+}
+
+export async function adminListAllConnections(): Promise<ImConnection[]> {
+  const items: ImConnection[] = [];
+  let page = 1;
+  for (;;) {
+    const result = await adminListConnections(page, "", {}, 100);
     items.push(...result.items);
     if (items.length >= result.total || result.items.length === 0) return items;
     page += 1;

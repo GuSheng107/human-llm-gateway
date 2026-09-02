@@ -1,4 +1,4 @@
-export const MODEL_PAGE_SIZES = [12, 24, 48, 96] as const;
+export const MODEL_PAGE_SIZES = [10, 20, 50, 100] as const;
 export type ModelPageSize = (typeof MODEL_PAGE_SIZES)[number];
 
 export function modelPageCount(total: number, pageSize: number): number {

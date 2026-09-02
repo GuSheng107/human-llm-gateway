@@ -17,6 +17,7 @@ export interface ToolItem {
   description: string | null;
   command_template: string | null;
   arguments_schema: ToolArgumentsSchema | null;
+  stdin_parameter: string | null;
   timeout_seconds: number;
   is_enabled: boolean;
   created_at: string;
@@ -49,8 +50,8 @@ export interface ToolExecutionPage {
   total: number;
 }
 
-export function listTools(page = 1, enabledOnly = false): Promise<ToolPage> {
-  const query = new URLSearchParams({ page: String(page), page_size: "50" });
+export function listTools(page = 1, enabledOnly = false, pageSize = 50): Promise<ToolPage> {
+  const query = new URLSearchParams({ page: String(page), page_size: String(pageSize) });
   if (enabledOnly) query.set("enabled_only", "true");
   return api<ToolPage>(`/api/tools?${query}`);
 }
@@ -61,6 +62,7 @@ export function createTool(payload: {
   command_template: string;
   arguments_schema: ToolArgumentsSchema;
   timeout_seconds: number;
+  stdin_parameter?: string | null;
 }): Promise<ToolItem> {
   return api<ToolItem>("/api/tools", {
     method: "POST",

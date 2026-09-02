@@ -60,10 +60,14 @@ def _create_tool(client, admin_headers, body: dict[str, Any]) -> dict[str, Any]:
 def _stub_oci_execution(monkeypatch):
     """API 契约测试不依赖开发机安装容器运行时；隔离参数由下方专项测试验证。"""
 
-    def fake_run(argv: list[str], *, timeout_seconds: int) -> SandboxResult:
+    def fake_run(
+        argv: list[str], *, timeout_seconds: int, stdin_data: bytes | None = None
+    ) -> SandboxResult:
         joined = " ".join(argv)
         if argv and argv[0] == "ping":
             return SandboxResult(None, "", "", "timed_out", timeout_seconds * 1000, "timeout")
+        if argv and argv[0] == "tr":
+            return SandboxResult(0, (stdin_data or b"").decode().upper(), "", "succeeded", 1)
         if "sandbox-ok" in joined:
             stdout = "sandbox-ok\n"
         elif "os.environ" in joined:
@@ -121,6 +125,55 @@ def test_create_tool_rejects_non_string_schema(client, admin_headers) -> None:
     resp = client.post("/api/tools", headers=admin_headers, json=body)
     # Pydantic 模式（type 仅 string）422 或服务层校验 400 均合法。
     assert resp.status_code in (400, 422)
+
+
+def _stdin_tool_body(name: str = "upper-tool") -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": "stdin 文本转大写",
+        "command_template": "tr a-z A-Z",
+        "arguments_schema": {
+            "type": "object",
+            "properties": {"text": {"type": "string", "description": "文本"}},
+            "required": ["text"],
+        },
+        "timeout_seconds": 10,
+        "stdin_parameter": "text",
+    }
+
+
+def test_create_stdin_tool_rejects_undeclared_parameter(client, admin_headers) -> None:
+    body = _stdin_tool_body(name="stdin-undeclared")
+    body["stdin_parameter"] = "ghost"
+    resp = client.post("/api/tools", headers=admin_headers, json=body)
+    assert resp.status_code == 400
+    assert "stdin_parameter" in resp.json()["error"]["message"]
+
+
+def test_create_stdin_tool_rejects_parameter_in_template(client, admin_headers) -> None:
+    body = _stdin_tool_body(name="stdin-in-template")
+    body["command_template"] = "tr a-z A-Z {text}"
+    resp = client.post("/api/tools", headers=admin_headers, json=body)
+    assert resp.status_code == 400
+    assert "stdin" in resp.json()["error"]["message"]
+
+
+def test_execute_stdin_tool_delivers_argument_via_stdin(
+    client, admin_headers, created_user
+) -> None:
+    tool = _create_tool(client, admin_headers, _stdin_tool_body())
+    resp = client.post(
+        f"/api/tools/{tool['id']}/execute",
+        headers=created_user.headers,
+        json={"arguments": {"text": "hello world"}, "confirmed": True},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["stdout"] == "HELLO WORLD"
+
+
+def test_stdin_parameter_visible_in_tool_view(client, admin_headers) -> None:
+    tool = _create_tool(client, admin_headers, _stdin_tool_body(name="stdin-view"))
+    assert tool["stdin_parameter"] == "text"
 
 
 def test_create_tool_duplicate_name_conflict(client, admin_headers) -> None:
@@ -376,6 +429,32 @@ def test_user_argument_cannot_trigger_second_placeholder_substitution() -> None:
 def test_executable_cannot_be_user_controlled() -> None:
     with pytest.raises(DomainError):
         validate_command_template("{executable} --version", ["executable"])
+
+
+def test_oci_command_stdin_interactive_flag() -> None:
+    with_stdin = build_oci_command(
+        "docker",
+        "human-llm-gateway-tool-sandbox:latest",
+        "hlg-tool-test",
+        ["tr", "a-z", "A-Z"],
+        memory_mb=256,
+        cpus=1.0,
+        pids_limit=64,
+        tmpfs_mb=64,
+        stdin_enabled=True,
+    )
+    assert "-i" in with_stdin
+    without_stdin = build_oci_command(
+        "docker",
+        "human-llm-gateway-tool-sandbox:latest",
+        "hlg-tool-test",
+        ["echo", "x"],
+        memory_mb=256,
+        cpus=1.0,
+        pids_limit=64,
+        tmpfs_mb=64,
+    )
+    assert "-i" not in without_stdin
 
 
 def test_runtime_environment_drops_gateway_secrets(monkeypatch, tmp_path) -> None:

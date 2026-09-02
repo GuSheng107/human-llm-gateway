@@ -63,6 +63,7 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
 ### 👤 Human-in-the-Loop
 - Web task console: full raw request, timeline, drafts
+- Unified reply workbench with inbox, unread state, conversation context, and draft version protection
 - IM delivery: WeCom, webhook, WebSocket, HTTP polling
 - IM DSL: `::: reasoning` / `::: tool` fences, shared structure with the web editor
 - First valid submission wins — irrevocable
@@ -84,6 +85,7 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 ### 🧰 Tool Sandbox
 - Admin-maintained whitelist with explicit user confirmation
 - Fail-closed OCI isolation: no network or mounts, read-only root, resource and output caps
+- Optional text input over container stdin for approved tools; never rendered into a shell command
 - Caller-declared tool calls are never auto-executed
 
 </td></tr>
@@ -142,6 +144,19 @@ uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
 
 Open **http://127.0.0.1:8000** — the console and the API share one port. The first run auto-creates the database and seeds default system models. Log in with your admin account, change the password, and start issuing invitations.
 
+### 🚀 Deployment status
+
+The current release has been deployed and is intended to run as a single FastAPI process serving the built React console. Keep `.env`, the database, logs, and the container runtime configuration outside version control. Before starting a new instance, build the frontend and verify `GET /healthz`:
+
+```bash
+cd admin && npm ci && npm run build
+cd ..
+uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+curl http://127.0.0.1:8000/healthz
+```
+
+High-frequency records are retained for seven days. The service cleans records older than seven days at startup and every seven days; request tasks and formal reply drafts are retained.
+
 > Frontend hot-reload for development (optional):
 > `cd admin && npm run dev` → http://127.0.0.1:5173 (`/api` and `/v1` are proxied to port 8000)
 
@@ -182,14 +197,22 @@ for chunk in stream:
 | M7 | LLM configs · draft generation · auto-forwarding · cross-protocol matrix · streaming | ✅ |
 | M8 | Global web assistant (context redaction) | ✅ |
 | M9 | Dashboard stats · log auditing · UX polish | ✅ |
-| M10 | Deployment & ops (Docker/CI/readyz/metrics/backup) | ⏳ |
-| M11 | Release acceptance | ⏳ |
+| M10 | Deployment & ops baseline | ✅ |
+| M11 | Release acceptance | 🟡 |
 | M12 | Isolated tool sandbox | ✅ |
+| M13 | Trace-linked logs, IM ownership isolation, retention | ✅ |
+| M14 | Unified reply workbench | ✅ |
 
 Full plan in [ROADMAP](docs/ROADMAP.md) (Chinese). Current test totals are reported by the quality gates below.
 
 M12 uses a fail-closed Docker/Podman OCI sandbox on Windows, macOS and Linux. Build the
-default image and review the security boundary in [SANDBOX](docs/SANDBOX.md).
+default image and review the security boundary in [SANDBOX](docs/SANDBOX.md). Approved
+stdin tools pass text through the container pipe with a 64 KiB limit.
+
+The deployed service exposes `/api/*` for the console, `/v1/*` for the three supported
+inference protocols, `/connectors/*` for connector entry points, and `/healthz` for
+liveness. There is no compatibility route for the retired reply page or legacy database
+schema.
 
 ## 🤝 Contributing
 
@@ -221,5 +244,8 @@ See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for convention
 **If this project helps you, please consider giving it a star ⭐**
 
 [Report Issues](https://github.com/GuSheng107/human-llm-gateway/issues) · [Discussions](https://github.com/GuSheng107/human-llm-gateway/discussions)
+
+Special thanks to the [Linux.do community](https://linux.do/) for the discussion,
+feedback, and encouragement that helped this project reach deployment.
 
 </div>

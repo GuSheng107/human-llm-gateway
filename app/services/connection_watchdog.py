@@ -5,11 +5,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from contextvars import Token
 from typing import Any
 
 from ..connectors import connection_manager as manager
 from ..core.config import get_settings
-from ..core.logging import log_event
+from ..core.logging import bind_trace_id, get_request_id, log_event, new_trace_id, reset_request_id
 from ..core.time import iso_utc, utc_now
 from ..domain.enums import AuditAction, ConnectionState
 from ..repositories.models import User
@@ -29,6 +30,16 @@ class ConnectionWatchdog:
 
     async def check_once(self, *, owner_user_id: int | None = None) -> list[dict[str, Any]]:
         """检查可见连接；已启用且异常的连接会被自动停用。"""
+        bound_token: Token[str | None] | None = None
+        if get_request_id() is None:
+            bound_token = bind_trace_id(new_trace_id())
+        try:
+            return await self._check_once_locked(owner_user_id=owner_user_id)
+        finally:
+            if bound_token is not None:
+                reset_request_id(bound_token)
+
+    async def _check_once_locked(self, *, owner_user_id: int | None) -> list[dict[str, Any]]:
         async with self._lock:
             from ..core.db import SessionLocal
 
@@ -84,12 +95,18 @@ class ConnectionWatchdog:
                             )
                             runtime["running"] = False
 
+                    # 任务活跃度：supervise 任务存在且未结束视为"启动中正常"，
+                    # 避免 starting 与 desired_running=true 被判为异常停用。
+                    supervisor_alive = manager.is_supervisor_alive(row.id)
+                    runtime["supervisor_alive"] = supervisor_alive
                     abnormal = bool(
                         row.desired_running
                         and (
-                            row.state in _ABNORMAL_STATES
+                            (row.state in {ConnectionState.AUTH_REQUIRED, ConnectionState.ERROR})
                             or check_error
                             or (row.state is ConnectionState.ONLINE and not runtime["running"])
+                            or (row.state is ConnectionState.STOPPED and not supervisor_alive)
+                            or (row.state is ConnectionState.STARTING and not supervisor_alive)
                         )
                     )
                     disabled = False

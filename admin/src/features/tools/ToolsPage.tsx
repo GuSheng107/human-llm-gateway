@@ -9,6 +9,7 @@ import {
   type ToolItem,
 } from "../../api/tools";
 import { Card } from "../../components/data-display/Card";
+import { Pagination } from "../../components/data-display/Pagination";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { confirmAction } from "../../components/feedback/ConfirmDialog";
@@ -18,6 +19,8 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
+
+const DEFAULT_PAGE_SIZE = 50;
 
 const EXECUTION_BADGE: Record<string, string> = {
   succeeded: "active",
@@ -31,6 +34,9 @@ export function ToolsPage() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const [tools, setTools] = useState<ToolItem[]>([]);
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+  const [total, setTotal] = useState(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   // 管理员表单
@@ -41,6 +47,7 @@ export function ToolsPage() {
     command_template: string;
     args_text: string;
     timeout_seconds: number;
+    stdin_parameter: string;
   } | null>(null);
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -54,14 +61,22 @@ export function ToolsPage() {
     setLoading(true);
     setError("");
     try {
-      const toolPage = await listTools(1);
+      const toolPage = await listTools(page, false, pageSize);
       setTools(toolPage.items);
+      setTotal(toolPage.total);
+      const lastPage = Math.max(1, Math.ceil(toolPage.total / pageSize));
+      if (page > lastPage) setPage(lastPage);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "加载失败");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [page, pageSize]);
+
+  const changePageSize = (value: number) => {
+    setPage(1);
+    setPageSize(value);
+  };
 
   useEffect(() => {
     void load();
@@ -85,6 +100,7 @@ export function ToolsPage() {
         command_template: form.command_template.trim(),
         arguments_schema: schema,
         timeout_seconds: form.timeout_seconds,
+        stdin_parameter: form.stdin_parameter.trim() || null,
       };
       if (form.id) {
         await updateTool(form.id, payload);
@@ -162,6 +178,7 @@ export function ToolsPage() {
                   command_template: "",
                   args_text: '{"type":"object","properties":{}}',
                   timeout_seconds: 30,
+                  stdin_parameter: "",
                 })
               }
             >
@@ -230,6 +247,7 @@ export function ToolsPage() {
                                 2,
                               ),
                               timeout_seconds: tool.timeout_seconds,
+                              stdin_parameter: tool.stdin_parameter ?? "",
                             })
                           }
                           className="text-primary"
@@ -257,12 +275,15 @@ export function ToolsPage() {
             </tbody>
           </table>
         </div>
+        <div className="flex justify-end border-t border-slate-100 px-4 py-3">
+          <Pagination page={page} pageSize={pageSize} total={total} onChange={setPage} onPageSizeChange={changePageSize} />
+        </div>
       </Card>
 
       {form && (
         <Modal
           title={form.id ? "编辑工具" : "新建工具"}
-          description="命令模板占位符 {name} 必须与参数 Schema 声明一致；执行不经 shell。"
+          description="模板占位符须匹配参数 Schema；执行不经过 shell。"
           onClose={() => setForm(null)}
         >
           <div className="space-y-4 p-6">
@@ -311,6 +332,19 @@ export function ToolsPage() {
             </label>
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-slate-600">
+                stdin 参数名（可选；该参数经 stdin 传入，不出现在模板中）
+              </span>
+              <input
+                value={form.stdin_parameter}
+                onChange={(event) =>
+                  setForm({ ...form, stdin_parameter: event.target.value })
+                }
+                className="field-input font-mono"
+                placeholder="如 text"
+              />
+            </label>
+            <label className="block">
+              <span className="mb-1.5 block text-xs font-medium text-slate-600">
                 超时（秒，1-120）<span className="ml-0.5 text-danger">*</span>
               </span>
               <input
@@ -340,7 +374,7 @@ export function ToolsPage() {
       {execTarget && (
         <Modal
           title={`执行工具 · ${execTarget.name}`}
-          description="工具在隔离进程中运行（临时目录、清零环境、限时）；本次执行将写入审计。"
+          description="隔离进程执行，结果写入审计。"
           onClose={() => setExecTarget(null)}
         >
           <form

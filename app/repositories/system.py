@@ -8,7 +8,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ..core.logging import sanitize_log_value
+from ..core.logging import get_request_id, sanitize_log_value
 from ..core.time import utc_now
 from ..domain.enums import AuditAction, AuditResult
 from .models import AppLog, AuditLog, SystemSetting
@@ -68,7 +68,7 @@ class AuditRepository:
             resource_id=resource_id,
             owner_user_id=owner_user_id,
             result=result,
-            request_id=request_id,
+            request_id=request_id or get_request_id(),
             metadata_json=json.dumps(metadata, ensure_ascii=False) if metadata else None,
         )
         session.add(row)
@@ -134,7 +134,7 @@ class AppLogRepository:
             level=level,
             event=event,
             message=message,
-            request_id=request_id,
+            request_id=request_id or get_request_id(),
             user_id=user_id,
             task_id=task_id,
             api_key_id=api_key_id,

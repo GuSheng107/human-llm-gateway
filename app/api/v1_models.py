@@ -43,6 +43,15 @@ def require_api_key(
     _keys.touch_last_used(db, matched.id)
     # get_db 仅负责关闭连接；last_used_at 需要显式提交才能真正落库。
     db.commit()
+    # 绑定日志用户（Key 所有者）与 Key 上下文，供访问/审计事件自动携带。
+    from ..core.logging import bind_log_user
+
+    bind_log_user(owner.id, owner.role.value)
+    request.scope.setdefault("state", {})["log_user"] = (
+        owner.id,
+        owner.role.value,
+        owner.username,
+    )
     return matched, owner
 
 

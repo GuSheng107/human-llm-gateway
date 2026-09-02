@@ -41,7 +41,7 @@ const FEATURES: Record<string, FeatureSpec> = {
     },
   },
   task_detail: {
-    // 详情由 drawer 打开（route 仍为 /tasks）；独立回复页有真实路由 /tasks/:id/reply。
+    // 详情由 drawer 打开，回复统一进入工作台。
     match: (p) => p === "/tasks" || /^\/tasks\/[^/]+\/reply$/.test(p),
     resource: (p): Record<string, string> => {
       const out: Record<string, string> = {};
