@@ -241,3 +241,4 @@ class AuditAction(StrEnum):
     TOOL_WHITELIST_DELETED = "tool_whitelist.deleted"
     TOOL_EXECUTED = "tool.executed"
     TOOL_EXECUTION_DENIED = "tool.execution_denied"
+    MCP_TOOL_CALLED = "mcp_tool.called"
