@@ -272,11 +272,9 @@ class AssistantService:
                     timeout_seconds=timeout_seconds,
                 )
             collected: dict[str, Any] = {}
-            has_text = False
             async for chunk in chunk_iter:
                 llm_upstream.collect_chunk(collected, chunk)
                 if chunk.text:
-                    has_text = True
                     yield {"type": "delta", "text": chunk.text}
 
             summary = llm_upstream.finalize_collected(collected)
@@ -307,9 +305,7 @@ class AssistantService:
                             "name": tc.get("name", ""),
                             "arguments": tc.get("arguments", "{}")
                             if isinstance(tc.get("arguments"), str)
-                            else json.dumps(
-                                tc.get("arguments", {}), ensure_ascii=False
-                            ),
+                            else json.dumps(tc.get("arguments", {}), ensure_ascii=False),
                         },
                     }
                     for tc in tool_calls
@@ -325,11 +321,13 @@ class AssistantService:
                     except (ValueError, TypeError):
                         tc_args = {}
                 result = self._execute_mcp_tool(session, user, tc_name, tc_args)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc.get("id", ""),
-                    "content": result,
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc.get("id", ""),
+                        "content": result,
+                    }
+                )
             request_body["messages"] = messages
             # 不向客户端发送 tool_call 轮次的 delta，继续下一轮
 
@@ -628,10 +626,7 @@ class AssistantService:
             # 追加 assistant 的 tool_calls 消息
             assistant_msg: dict[str, Any] = {
                 "role": "assistant",
-                "content": upstream.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content")
-                or "",
+                "content": upstream.get("choices", [{}])[0].get("message", {}).get("content") or "",
                 "tool_calls": [
                     {
                         "id": tc["id"],
@@ -651,11 +646,13 @@ class AssistantService:
             # 执行每个 tool_call 并追加 tool 结果消息
             for tc in tool_calls:
                 result = self._execute_mcp_tool(session, user, tc["name"], tc["arguments"])
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": result,
-                })
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    }
+                )
 
             request_body["messages"] = messages
             # 累加 usage
@@ -717,17 +714,17 @@ class AssistantService:
             arguments_raw = fn.get("arguments", "{}")
             try:
                 arguments = (
-                    json.loads(arguments_raw)
-                    if isinstance(arguments_raw, str)
-                    else arguments_raw
+                    json.loads(arguments_raw) if isinstance(arguments_raw, str) else arguments_raw
                 )
             except (ValueError, TypeError):
                 arguments = {}
-            result.append({
-                "id": tc.get("id", ""),
-                "name": name,
-                "arguments": arguments,
-            })
+            result.append(
+                {
+                    "id": tc.get("id", ""),
+                    "name": name,
+                    "arguments": arguments,
+                }
+            )
         return result
 
     @staticmethod

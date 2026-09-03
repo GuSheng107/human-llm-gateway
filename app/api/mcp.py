@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -67,11 +66,13 @@ async def mcp_post(
         results = []
         for item in body:
             if not isinstance(item, dict):
-                results.append({
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {"code": -32600, "message": "Invalid request"},
-                })
+                results.append(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {"code": -32600, "message": "Invalid request"},
+                    }
+                )
                 continue
             results.append(handle_jsonrpc(db, user, item))
         return JSONResponse(content=results)
@@ -99,6 +100,7 @@ async def mcp_get(
     当前实现返回空 SSE 流。未来可用于服务端主动推送
     （如任务状态变更通知、工具列表更新等）。
     """
+
     async def empty_stream():
         # 发送一个初始注释行表示连接建立
         yield b": mcp stream connected\n\n"

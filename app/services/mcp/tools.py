@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -20,7 +21,6 @@ from ...repositories.llm_configs import LlmConfigRepository
 from ...repositories.models import User
 from ...repositories.tasks import TaskRepository
 
-
 # ---------------------------------------------------------------------------
 # Tool 定义类型
 # ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ McpToolHandler = Callable[[Session, User, dict[str, Any]], dict[str, Any]]
 class McpToolDef:
     """MCP 工具定义。"""
 
-    __slots__ = ("name", "description", "input_schema", "handler")
+    __slots__ = ("description", "handler", "input_schema", "name")
 
     def __init__(
         self,
@@ -59,9 +59,8 @@ class McpToolDef:
 # Tool Handlers
 # ---------------------------------------------------------------------------
 
-def _handle_list_tasks(
-    session: Session, user: User, args: dict[str, Any]
-) -> dict[str, Any]:
+
+def _handle_list_tasks(session: Session, user: User, args: dict[str, Any]) -> dict[str, Any]:
     """查询当前用户的任务列表。"""
     page = int(args.get("page", 1))
     page_size = min(int(args.get("page_size", 20)), 100)
@@ -90,15 +89,17 @@ def _handle_list_tasks(
 
     items = []
     for t in tasks:
-        items.append({
-            "id": t.id,
-            "public_id": t.public_id,
-            "state": t.state.value if t.state else None,
-            "requested_model": t.requested_model,
-            "owner_user_id": t.owner_user_id,
-            "created_at": t.created_at.isoformat() if t.created_at else None,
-            "updated_at": t.updated_at.isoformat() if t.updated_at else None,
-        })
+        items.append(
+            {
+                "id": t.id,
+                "public_id": t.public_id,
+                "state": t.state.value if t.state else None,
+                "requested_model": t.requested_model,
+                "owner_user_id": t.owner_user_id,
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+                "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+            }
+        )
 
     return {
         "content": [
@@ -114,9 +115,7 @@ def _handle_list_tasks(
     }
 
 
-def _handle_get_task_detail(
-    session: Session, user: User, args: dict[str, Any]
-) -> dict[str, Any]:
+def _handle_get_task_detail(session: Session, user: User, args: dict[str, Any]) -> dict[str, Any]:
     """查看任务详情（含对话历史摘要）。"""
     task_id = int(args["task_id"])
     repo = TaskRepository()
@@ -131,11 +130,13 @@ def _handle_get_task_detail(
     events, _ = repo.list_events(session, task_id=task.id, page=1, page_size=10)
     event_summaries = []
     for e in events:
-        event_summaries.append({
-            "type": e.event_type.value if e.event_type else None,
-            "actor": e.actor_type.value if e.actor_type else None,
-            "created_at": e.created_at.isoformat() if e.created_at else None,
-        })
+        event_summaries.append(
+            {
+                "type": e.event_type.value if e.event_type else None,
+                "actor": e.actor_type.value if e.actor_type else None,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+        )
 
     detail = {
         "id": task.id,
@@ -155,9 +156,7 @@ def _handle_get_task_detail(
     }
 
 
-def _handle_list_connections(
-    session: Session, user: User, args: dict[str, Any]
-) -> dict[str, Any]:
+def _handle_list_connections(session: Session, user: User, args: dict[str, Any]) -> dict[str, Any]:
     """查看当前用户的 IM 连接状态。"""
     page = int(args.get("page", 1))
     page_size = min(int(args.get("page_size", 20)), 100)
@@ -169,13 +168,15 @@ def _handle_list_connections(
 
     items = []
     for c in connections:
-        items.append({
-            "id": c.id,
-            "platform": c.platform,
-            "state": c.state.value if c.state else None,
-            "owner_user_id": c.owner_user_id,
-            "created_at": c.created_at.isoformat() if c.created_at else None,
-        })
+        items.append(
+            {
+                "id": c.id,
+                "platform": c.platform,
+                "state": c.state.value if c.state else None,
+                "owner_user_id": c.owner_user_id,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+        )
 
     return {
         "content": [
@@ -191,9 +192,7 @@ def _handle_list_connections(
     }
 
 
-def _handle_list_api_keys(
-    session: Session, user: User, args: dict[str, Any]
-) -> dict[str, Any]:
+def _handle_list_api_keys(session: Session, user: User, args: dict[str, Any]) -> dict[str, Any]:
     """查看当前用户的 API Key 列表（不含密钥明文）。"""
     page = int(args.get("page", 1))
     page_size = min(int(args.get("page_size", 20)), 100)
@@ -205,14 +204,16 @@ def _handle_list_api_keys(
 
     items = []
     for k in keys:
-        items.append({
-            "id": k.id,
-            "name": k.name,
-            "key_prefix": k.key_prefix,
-            "is_enabled": k.is_enabled,
-            "owner_user_id": k.owner_user_id,
-            "created_at": k.created_at.isoformat() if k.created_at else None,
-        })
+        items.append(
+            {
+                "id": k.id,
+                "name": k.name,
+                "key_prefix": k.key_prefix,
+                "is_enabled": k.is_enabled,
+                "owner_user_id": k.owner_user_id,
+                "created_at": k.created_at.isoformat() if k.created_at else None,
+            }
+        )
 
     return {
         "content": [
@@ -228,9 +229,7 @@ def _handle_list_api_keys(
     }
 
 
-def _handle_list_llm_configs(
-    session: Session, user: User, args: dict[str, Any]
-) -> dict[str, Any]:
+def _handle_list_llm_configs(session: Session, user: User, args: dict[str, Any]) -> dict[str, Any]:
     """查看当前用户的 LLM 配置列表（不含密钥明文）。"""
     page = int(args.get("page", 1))
     page_size = min(int(args.get("page_size", 20)), 100)
@@ -242,17 +241,19 @@ def _handle_list_llm_configs(
 
     items = []
     for c in configs:
-        items.append({
-            "id": c.id,
-            "name": c.name,
-            "protocol": c.protocol.value if c.protocol else None,
-            "base_url": c.base_url,
-            "real_model": c.real_model,
-            "is_enabled": c.is_enabled,
-            "has_secret": bool(c.secret_encrypted),
-            "owner_user_id": c.owner_user_id,
-            "created_at": c.created_at.isoformat() if c.created_at else None,
-        })
+        items.append(
+            {
+                "id": c.id,
+                "name": c.name,
+                "protocol": c.protocol.value if c.protocol else None,
+                "base_url": c.base_url,
+                "real_model": c.real_model,
+                "is_enabled": c.is_enabled,
+                "has_secret": bool(c.secret_encrypted),
+                "owner_user_id": c.owner_user_id,
+                "created_at": c.created_at.isoformat() if c.created_at else None,
+            }
+        )
 
     return {
         "content": [
@@ -268,9 +269,7 @@ def _handle_list_llm_configs(
     }
 
 
-def _handle_list_models(
-    session: Session, user: User, args: dict[str, Any]
-) -> dict[str, Any]:
+def _handle_list_models(session: Session, user: User, args: dict[str, Any]) -> dict[str, Any]:
     """查看可用模型列表。"""
     repo = FakeModelRepository()
     # 使用可见集合查询（系统模型 + 用户私有模型）
@@ -278,13 +277,15 @@ def _handle_list_models(
 
     items = []
     for m in models:
-        items.append({
-            "id": m.id,
-            "model_id": m.model_id,
-            "display_name": m.display_name,
-            "scope": m.scope.value if m.scope else None,
-            "is_enabled": m.is_enabled,
-        })
+        items.append(
+            {
+                "id": m.id,
+                "model_id": m.model_id,
+                "display_name": m.display_name,
+                "scope": m.scope.value if m.scope else None,
+                "is_enabled": m.is_enabled,
+            }
+        )
 
     return {
         "content": [
@@ -300,54 +301,72 @@ def _handle_list_models(
     }
 
 
-def _handle_get_system_status(
-    session: Session, user: User, args: dict[str, Any]
-) -> dict[str, Any]:
+def _handle_get_system_status(session: Session, user: User, args: dict[str, Any]) -> dict[str, Any]:
     """获取系统运行状态摘要。"""
     from sqlalchemy import func, select
 
-    from ...repositories.models import RequestTask, ImConnection, ApiKey, LlmConfig
-    from ...domain.enums import TaskState, ConnectionState
+    from ...domain.enums import ConnectionState, TaskState
+    from ...repositories.models import ApiKey, ImConnection, LlmConfig, RequestTask
 
     # 待回复任务数
-    pending_tasks = session.scalar(
-        select(func.count())
-        .select_from(RequestTask)
-        .where(
-            RequestTask.state == TaskState.WAITING_HUMAN,
-            *([RequestTask.owner_user_id == user.id] if user.role is not UserRole.ADMIN else []),
+    pending_tasks = (
+        session.scalar(
+            select(func.count())
+            .select_from(RequestTask)
+            .where(
+                RequestTask.state == TaskState.WAITING_HUMAN,
+                *(
+                    [RequestTask.owner_user_id == user.id]
+                    if user.role is not UserRole.ADMIN
+                    else []
+                ),
+            )
         )
-    ) or 0
+        or 0
+    )
 
     # 活跃连接数
-    active_connections = session.scalar(
-        select(func.count())
-        .select_from(ImConnection)
-        .where(
-            ImConnection.state == ConnectionState.RUNNING,
-            *([ImConnection.owner_user_id == user.id] if user.role is not UserRole.ADMIN else []),
+    active_connections = (
+        session.scalar(
+            select(func.count())
+            .select_from(ImConnection)
+            .where(
+                ImConnection.state == ConnectionState.RUNNING,
+                *(
+                    [ImConnection.owner_user_id == user.id]
+                    if user.role is not UserRole.ADMIN
+                    else []
+                ),
+            )
         )
-    ) or 0
+        or 0
+    )
 
     # API Key 数
-    api_key_count = session.scalar(
-        select(func.count())
-        .select_from(ApiKey)
-        .where(
-            ApiKey.is_enabled.is_(True),
-            *([ApiKey.owner_user_id == user.id] if user.role is not UserRole.ADMIN else []),
+    api_key_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(ApiKey)
+            .where(
+                ApiKey.is_enabled.is_(True),
+                *([ApiKey.owner_user_id == user.id] if user.role is not UserRole.ADMIN else []),
+            )
         )
-    ) or 0
+        or 0
+    )
 
     # LLM 配置数
-    llm_config_count = session.scalar(
-        select(func.count())
-        .select_from(LlmConfig)
-        .where(
-            LlmConfig.is_enabled.is_(True),
-            *([LlmConfig.owner_user_id == user.id] if user.role is not UserRole.ADMIN else []),
+    llm_config_count = (
+        session.scalar(
+            select(func.count())
+            .select_from(LlmConfig)
+            .where(
+                LlmConfig.is_enabled.is_(True),
+                *([LlmConfig.owner_user_id == user.id] if user.role is not UserRole.ADMIN else []),
+            )
         )
-    ) or 0
+        or 0
+    )
 
     status = {
         "pending_tasks": pending_tasks,
@@ -375,13 +394,22 @@ _TOOLS: list[McpToolDef] = [
             "properties": {
                 "page": {"type": "integer", "description": "页码，默认1"},
                 "page_size": {"type": "integer", "description": "每页条数，默认20，最大100"},
-                "search": {"type": "string", "description": "搜索关键词（匹配模型名、public_id等）"},
+                "search": {
+                    "type": "string",
+                    "description": "搜索关键词（匹配模型名、public_id等）",
+                },
                 "state": {
                     "type": "string",
                     "description": "任务状态筛选",
                     "enum": [
-                        "waiting_human", "response_ready", "forwarding_llm",
-                        "forwarding_im", "delivered", "failed", "cancelled", "expired",
+                        "waiting_human",
+                        "response_ready",
+                        "forwarding_llm",
+                        "forwarding_im",
+                        "delivered",
+                        "failed",
+                        "cancelled",
+                        "expired",
                     ],
                 },
             },
@@ -474,12 +502,14 @@ def list_openai_tools() -> list[dict[str, Any]]:
     """返回 OpenAI function calling 格式的 tools 列表（供注入上游请求）。"""
     tools = []
     for t in _TOOLS:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": t.name,
-                "description": t.description,
-                "parameters": t.input_schema,
-            },
-        })
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                },
+            }
+        )
     return tools

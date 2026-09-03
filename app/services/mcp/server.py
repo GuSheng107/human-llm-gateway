@@ -63,9 +63,7 @@ def handle_jsonrpc(
         elif method == "ping":
             result = {}
         else:
-            return _make_error_response(
-                rpc_id, -32601, f"Method not found: {method}"
-            )
+            return _make_error_response(rpc_id, -32601, f"Method not found: {method}")
     except DomainError as exc:
         logger.warning("MCP tool call domain error: %s", exc.message)
         return _make_error_response(rpc_id, -32000, exc.message)
@@ -92,9 +90,7 @@ def _handle_tools_list() -> dict[str, Any]:
     return {"tools": list_mcp_tools()}
 
 
-def _handle_tools_call(
-    session: Session, user: User, params: dict[str, Any]
-) -> dict[str, Any]:
+def _handle_tools_call(session: Session, user: User, params: dict[str, Any]) -> dict[str, Any]:
     """执行指定工具并返回结果。"""
     tool_name = params.get("name", "")
     arguments = params.get("arguments") or {}
@@ -127,6 +123,7 @@ def _handle_tools_call(
 # ---------------------------------------------------------------------------
 # JSON-RPC 响应构造
 # ---------------------------------------------------------------------------
+
 
 def _make_response(rpc_id: Any, result: Any) -> dict[str, Any]:
     return {
