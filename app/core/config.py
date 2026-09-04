@@ -101,9 +101,13 @@ class Settings(BaseSettings):
             entry = item.strip().lower()
             if not entry:
                 continue
-            if ":" in entry and not entry.startswith("["):
+            if entry.startswith("["):
+                # [v6] 或 [v6]:port：只取括号内的地址
+                closing = entry.find("]")
+                entry = entry[1:closing] if closing > 0 else entry.strip("[]")
+            elif entry.count(":") == 1:
+                # host:port 形式剥离端口；裸 IPv6（多冒号）原样保留
                 entry = entry.split(":", 1)[0]
-            entry = entry.strip("[]")
             if entry:
                 hosts.add(entry)
         return frozenset(hosts)

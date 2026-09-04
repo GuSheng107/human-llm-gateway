@@ -68,6 +68,23 @@ def _latest_task_id_for_key(api_key_id: int) -> int:
         return row.id
 
 
+async def _wait_for_task_id(api_key_id: int, timeout: float = 10.0) -> int:
+    """轮询等待任务落库后再操作。
+
+    原先固定 sleep(0.4) 在负载抖动下会晚于网关等待窗口，导致端点提前超时、
+    用例偶发失败；改为 50ms 轮询，快则早返回，慢则有 10 秒余量。
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            return _latest_task_id_for_key(api_key_id)
+        except AssertionError:
+            if loop.time() >= deadline:
+                raise
+            await asyncio.sleep(0.05)
+
+
 def _submit_reply(task_id: int, owner_user_id: int, *, text: str = "done") -> None:
     draft = ReplyDraft(final_text=text)
     payload = draft.model_dump_json(exclude_none=True)
@@ -284,8 +301,7 @@ def test_chat_active_task_limit_returns_429(client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_chat_timeout_returns_504(async_client, created_key) -> None:
     async def timeout_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _finalize_state(task_id, TaskState.TIMED_OUT)
 
     runner = asyncio.create_task(timeout_later())
@@ -304,8 +320,7 @@ async def test_chat_timeout_returns_504(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_anthropic_timeout_returns_504(async_client, created_key) -> None:
     async def timeout_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _finalize_state(task_id, TaskState.TIMED_OUT)
 
     runner = asyncio.create_task(timeout_later())
@@ -327,8 +342,7 @@ async def test_anthropic_timeout_returns_504(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_chat_happy_nonstream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="你好")
 
     runner = asyncio.create_task(reply_later())
@@ -349,8 +363,7 @@ async def test_chat_happy_nonstream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_responses_happy_nonstream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="hello")
 
     runner = asyncio.create_task(reply_later())
@@ -372,8 +385,7 @@ async def test_responses_happy_nonstream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_anthropic_happy_nonstream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="hi there")
 
     runner = asyncio.create_task(reply_later())
@@ -400,8 +412,7 @@ async def test_anthropic_happy_nonstream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_chat_happy_stream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="流式")
 
     runner = asyncio.create_task(reply_later())
@@ -422,8 +433,7 @@ async def test_chat_happy_stream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_responses_happy_stream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="r-stream")
 
     runner = asyncio.create_task(reply_later())
@@ -443,8 +453,7 @@ async def test_responses_happy_stream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_anthropic_happy_stream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="a-stream")
 
     runner = asyncio.create_task(reply_later())
@@ -484,8 +493,7 @@ async def test_endpoint_mismatch_returns_model_not_found(
 
     # 命中的协议允许调用：走完整 happy 路径（人工回复后 200）。
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="ok")
 
     runner = asyncio.create_task(reply_later())
@@ -616,8 +624,7 @@ async def test_capability_gate_allows_declared_capabilities(
     )
 
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="看到了")
 
     runner = asyncio.create_task(reply_later())

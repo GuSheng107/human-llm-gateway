@@ -447,6 +447,9 @@ def install_persistence() -> None:
     """启动日志落库线程并把普通 logging（INFO+）接入 app_logs。
 
     在应用 lifespan 启动时调用；测试环境（内存库）调用 ``set_direct_store``。
+    root logger 默认 level 为 WARNING：NOTSET 子 logger 的 INFO 记录会
+    在源头被 isEnabledFor 丢弃、根本到不了 handler，故此处同步放开
+    root level，handler level 才能实际生效。
     """
     _install_persist_handler()
     _queue.start()
@@ -458,7 +461,9 @@ def _install_persist_handler() -> None:
         _configure_logging()
         handler = _PersistHandler()
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-        logging.getLogger().addHandler(handler)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
         _persist_handler = handler
 
 

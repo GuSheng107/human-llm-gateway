@@ -124,6 +124,37 @@ def test_gateway_hosts_empty_keeps_public_allowed() -> None:
     validate_base_url("https://some-other-public.example.com/v1")
 
 
+def test_gateway_self_host_bare_ipv6_rejected(monkeypatch) -> None:
+    """裸 IPv6 不能被按端口截断：2001:db8::5 必须整串作为主机匹配。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_public_hosts", "2001:db8::5", raising=False)
+    with pytest.raises(SsrfViolation, match="本网关"):
+        validate_base_url("http://[2001:db8::5]/v1")
+
+
+def test_gateway_self_host_bracketed_ipv6_with_port_rejected(monkeypatch) -> None:
+    """[v6]:port 形式只取括号内的地址。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_public_hosts", "[2001:db8::5]:8443", raising=False)
+    with pytest.raises(SsrfViolation, match="本网关"):
+        validate_base_url("http://[2001:db8::5]:8443/v1")
+
+
+def test_gateway_host_set_ipv6_parsing(monkeypatch) -> None:
+    """集合解析：裸 v6 整串保留，host:port 剥端口，[v6]:port 取括号内。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(),
+        "gateway_public_hosts",
+        "2001:db8::5, gw.example.com:8443, [2001:db8::7]:9443",
+        raising=False,
+    )
+    assert get_settings().gateway_host_set() == {"2001:db8::5", "gw.example.com", "2001:db8::7"}
+
+
 # ----------------------------------------------------------------------
 # 域名解析路径（rebinding / fail-closed）
 # ----------------------------------------------------------------------
