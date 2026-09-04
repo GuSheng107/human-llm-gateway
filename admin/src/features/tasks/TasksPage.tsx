@@ -268,11 +268,7 @@ export function TasksPage() {
       </Card>
 
       {detailId && (
-        <TaskDetailDrawer
-          taskId={detailId}
-          onClose={closeDetail}
-          onChanged={() => void load()}
-        />
+        <TaskDetailDrawer taskId={detailId} onClose={closeDetail} />
       )}
     </div>
   );
