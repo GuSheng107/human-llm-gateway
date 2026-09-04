@@ -14,6 +14,7 @@ import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
 import { useAuth } from "../auth/AuthContext";
 import { formatDeadline } from "../tasks/labels";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const PROTOCOL_LABELS: Record<string, string> = {
   openai_chat: "OpenAI Chat",
@@ -207,7 +208,7 @@ export function DashboardPage() {
       setData(await getDashboard());
       setError("");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setRefreshing(false);
     }

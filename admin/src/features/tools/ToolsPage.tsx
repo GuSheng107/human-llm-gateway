@@ -15,6 +15,7 @@ import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
@@ -67,7 +68,7 @@ export function ToolsPage() {
       const lastPage = Math.max(1, Math.ceil(toolPage.total / pageSize));
       if (page > lastPage) setPage(lastPage);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }
@@ -112,7 +113,7 @@ export function ToolsPage() {
       setForm(null);
       await load();
     } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : "保存失败");
+      setFormError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -124,7 +125,7 @@ export function ToolsPage() {
       notify(tool.is_enabled ? "工具已停用" : "工具已启用");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "操作失败");
+      notifyError(caught, "操作失败");
     }
   };
 
@@ -135,7 +136,7 @@ export function ToolsPage() {
       notify("工具已删除");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
+      notifyError(caught, "删除失败");
     }
   };
 
@@ -158,7 +159,7 @@ export function ToolsPage() {
       notify(result.state === "succeeded" ? "执行成功" : `执行结束：${result.state}`);
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "执行失败");
+      notifyError(caught, "执行失败");
     } finally {
       setExecuting(false);
     }

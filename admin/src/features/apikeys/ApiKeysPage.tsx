@@ -14,6 +14,7 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import { useAuth } from "../auth/AuthContext";
 import type {
   ApiKey,
@@ -112,7 +113,7 @@ export function ApiKeysPage() {
       setModels(modelPage.items.map((item) => ({ id: item.id, model_id: item.model_id })));
       setLlmConfigs(llmPage.items.filter((cfg) => cfg.is_enabled));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }
@@ -199,14 +200,14 @@ export function ApiKeysPage() {
     try {
       if (form.id) {
         await updateApiKey(form.id, payload);
-        notify("API Key 已更新");
+        notify("API Key 已更新", "success");
       } else {
         setCreated(await createApiKey(payload));
       }
       setForm(null);
       await load();
     } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : "保存失败");
+      setFormError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -215,10 +216,10 @@ export function ApiKeysPage() {
   const toggle = async (key: ApiKey) => {
     try {
       await updateApiKey(key.id, { enabled: !key.is_enabled });
-      notify(key.is_enabled ? "Key 已停用" : "Key 已启用");
+      notify(key.is_enabled ? "Key 已停用" : "Key 已启用", "success");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "操作失败");
+      notifyError(caught, "操作失败");
     }
   };
 
@@ -226,10 +227,10 @@ export function ApiKeysPage() {
     if (!(await confirmAction({ message: `确认删除 Key「${key.name}」？删除后立即阻止新请求。` }))) return;
     try {
       await deleteApiKey(key.id);
-      notify("Key 已删除");
+      notify("Key 已删除", "success");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
+      notifyError(caught, "删除失败");
     }
   };
 

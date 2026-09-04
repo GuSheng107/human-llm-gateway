@@ -16,6 +16,7 @@ import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import type {
   AssistantMessage,
   AssistantSession,
@@ -193,7 +194,7 @@ export function AssistantPanel() {
       setActiveSessionId(created.id);
       return created.id;
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "创建会话失败");
+      notifyError(caught, "创建会话失败");
       return null;
     }
   }, [activeSessionId, preferredConfigId, refreshSessions, setActiveSessionId]);
@@ -294,14 +295,14 @@ export function AssistantPanel() {
             void refreshSessions();
           } catch (fallbackError) {
             appendInlineError(
-              fallbackError instanceof Error ? fallbackError.message : "发送失败",
+              friendlyErrorMessage(fallbackError, "发送失败"),
               "fallback_failed",
               null,
             );
           }
         } else {
           appendInlineError(
-            caught instanceof Error ? caught.message : "发送失败",
+            friendlyErrorMessage(caught, "发送失败"),
             "send_failed",
             null,
           );
@@ -341,9 +342,9 @@ export function AssistantPanel() {
       setMessages([]);
       setUsage(null);
       await refreshSessions();
-      notify("会话已删除");
+      notify("会话已删除", "success");
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
+      notifyError(caught, "删除失败");
     }
   }, [activeSessionId, refreshSessions, setActiveSessionId]);
 
@@ -362,13 +363,13 @@ export function AssistantPanel() {
       const updated = await patchAssistantSession(renameTarget.id, { title: next });
       setRenameTarget(null);
       await refreshSessions();
-      notify("会话已重命名");
+      notify("会话已重命名", "success");
       // 直接更新本地，确保下拉中显示
       if (updated && activeSessionId === updated.id) {
         setActiveSessionId(updated.id);
       }
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "重命名失败");
+      notifyError(caught, "重命名失败");
     }
   }, [renameTarget, activeSession?.title, activeSessionId, refreshSessions, setActiveSessionId]);
 
@@ -383,7 +384,7 @@ export function AssistantPanel() {
       setActiveSessionId(created.id);
       setSessionMenuOpen(false);
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "创建失败");
+      notifyError(caught, "创建失败");
     }
   }, [preferredConfigId, refreshSessions, setActiveSessionId]);
 

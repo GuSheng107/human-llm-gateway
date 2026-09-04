@@ -9,6 +9,7 @@ import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { formatDeadline } from "./labels";
 import { TaskEditor } from "./TaskEditor";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const POLL_INTERVAL_MS = 3000;
 
@@ -76,7 +77,7 @@ export function RepliesWorkbenchPage() {
         });
         setError("");
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "加载失败");
+        setError(friendlyErrorMessage(caught, "加载失败"));
       } finally {
         setLoading(false);
       }

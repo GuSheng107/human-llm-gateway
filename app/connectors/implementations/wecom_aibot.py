@@ -128,7 +128,7 @@ class WeComAibotConnector(Connector):
             try:
                 await client.disconnect()
             except Exception:  # 关闭失败不阻塞停止流程
-                logger.info("wecom disconnect failed", exc_info=True)
+                logger.warning("wecom disconnect failed", exc_info=True)
 
     async def wait_closed(self) -> None:
         if self._task is not None:

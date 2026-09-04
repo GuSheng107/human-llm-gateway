@@ -263,6 +263,16 @@ class ConnectionService:
                 )
             row.config_ciphertext = self._encrypt_config(merged)
             changed_fields = sorted(set(changed_fields))
+            # 需要绑定的平台（如企微 Bot）：配置已变化，旧绑定建立在旧凭据上，
+            # 必须清除绑定强迫重新完成绑定/扫码，避免把任务投递给旧 Bot。
+            # 运行中的旧连接器由 watchdog 按 desired_running=False 收敛停止。
+            if changed_fields and spec.requires_binding and row.bound_external_user_id:
+                row.bound_external_user_id = None
+                row.binding_code_hash = None
+                row.binding_code_expires_at = None
+                row.desired_running = False
+                row.state = ConnectionState.STOPPED
+                changed_fields.append("binding")
         if name is not None:
             new_name = name.strip()
             if not new_name or len(new_name) > 100:
@@ -378,6 +388,9 @@ class ConnectionService:
         self._login_connectors.pop(row.id, None)
         row.desired_running = False
         await run_in_threadpool(session.flush)
+        # 清理投递与入站回执子行：二者以 NOT NULL FK 指向本连接且无级联，
+        # 不先清理会在 commit/flush 时抛 IntegrityError（表现为偶发删除失败）。
+        await run_in_threadpool(self.repo.delete_related_rows, session, row.id)
         await run_in_threadpool(self.repo.delete, session, row.id)
         self.audit.add(
             session,
@@ -866,6 +879,19 @@ class ConnectionService:
         await run_in_threadpool(session.flush)
         await run_in_threadpool(session.refresh, row)
         self._login_connectors.pop(row.id, None)
+        # 运行中的连接仍持有旧 Token：重扫码成功后重启，让新凭据立即生效。
+        if row.desired_running:
+            from ..connectors import connection_manager as manager
+
+            await manager.stop(row.id)
+            try:
+                await manager.start(row, config, self.inbound_handler())
+            except Exception as exc:
+                logger.warning(
+                    "connection restart after re-login failed",
+                    extra={"connection_id": row.id},
+                    exc_info=exc,
+                )
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_UPDATED,

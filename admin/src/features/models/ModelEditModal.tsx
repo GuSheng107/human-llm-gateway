@@ -1,17 +1,19 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   CAPABILITY_LABELS,
   ENDPOINT_LABELS,
   createFakeModel,
+  replaceGroupMembers,
   updateFakeModel,
   type FakeModelPayload,
   type FakeModelUpdatePayload,
 } from "../../api/models";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
+import { notifyError } from "../../utils/notify";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
-import type { FakeModel } from "../../types/gateway";
+import type { FakeModel, ModelGroup } from "../../types/gateway";
 
 const CAPABILITY_OPTIONS = Object.keys(CAPABILITY_LABELS);
 const ENDPOINT_OPTIONS = Object.keys(ENDPOINT_LABELS);
@@ -19,6 +21,10 @@ const CONTEXT_PRESETS = [128_000, 256_000, 512_000, 1_000_000];
 
 interface ModelEditModalProps {
   model: FakeModel | null;
+  groups: ModelGroup[];
+  models: FakeModel[];
+  currentUserId: string;
+  isAdmin: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -31,6 +37,7 @@ interface FormState {
   max_output_tokens: string;
   capabilities: string[];
   endpoint_types: string[];
+  groupIds: string[];
 }
 
 const EMPTY_FORM: FormState = {
@@ -41,6 +48,7 @@ const EMPTY_FORM: FormState = {
   max_output_tokens: "",
   capabilities: [],
   endpoint_types: [...ENDPOINT_OPTIONS],
+  groupIds: [],
 };
 
 function fromModel(model: FakeModel): FormState {
@@ -52,6 +60,7 @@ function fromModel(model: FakeModel): FormState {
     max_output_tokens: model.max_output_tokens ? String(model.max_output_tokens) : "",
     capabilities: [...model.capabilities],
     endpoint_types: [...model.endpoint_types],
+    groupIds: [],
   };
 }
 
@@ -69,23 +78,72 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "capabilities", label: "能力" },
 ];
 
-export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps) {
+export function ModelEditModal({
+  model,
+  groups,
+  models,
+  currentUserId,
+  isAdmin,
+  onClose,
+  onSaved,
+}: ModelEditModalProps) {
   const [tab, setTab] = useState<TabKey>("basic");
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
+  // 可管组：管理员可管理全部分组，普通用户只能管理自己创建的分组。
+  const manageableGroups = useMemo(
+    () => (isAdmin ? groups : groups.filter((group) => group.owner_user_id === currentUserId)),
+    [groups, isAdmin, currentUserId],
+  );
+
   useEffect(() => {
     setTab("basic");
-    setForm(model ? fromModel(model) : EMPTY_FORM);
-  }, [model]);
+    if (model) {
+      // 初始选中 = 所有包含该模型的分组（model_ids 为 model_id 字符串数组）。
+      const groupIds = groups
+        .filter((group) => group.model_ids.includes(model.model_id))
+        .map((group) => group.id);
+      setForm({ ...fromModel(model), groupIds });
+    } else {
+      setForm(EMPTY_FORM);
+    }
+  }, [groups, model]);
 
   const patch = (changes: Partial<FormState>) =>
     setForm((previous) => ({ ...previous, ...changes }));
 
+  const toggleGroup = (groupId: string, checked: boolean) => {
+    patch({
+      groupIds: checked
+        ? [...new Set([...form.groupIds, groupId])]
+        : form.groupIds.filter((id) => id !== groupId),
+    });
+  };
+
+  // 对每个可管组做"应含/应不含"收敛：组内成员列表以 model_id 字符串维护，
+  // 提交时映射为数字 id 调 replaceGroupMembers；非可管组的既有成员不受影响。
+  const syncGroups = async (modelId: string) => {
+    const target = new Set(form.groupIds);
+    const numericIdOf = new Map(models.map((item) => [item.model_id, Number(item.id)]));
+    for (const group of manageableGroups) {
+      const shouldContain = target.has(group.id);
+      const contains = group.model_ids.includes(modelId);
+      if (shouldContain === contains) continue;
+      const nextModelIds = shouldContain
+        ? [...group.model_ids, modelId]
+        : group.model_ids.filter((id) => id !== modelId);
+      const numericIds = nextModelIds
+        .map((id) => numericIdOf.get(id))
+        .filter((id): id is number => id != null);
+      await replaceGroupMembers(group.id, numericIds);
+    }
+  };
+
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!form.model_id.trim()) {
-      notify("model_id 不能为空");
+      notify("model_id 不能为空", "error");
       return;
     }
     setSaving(true);
@@ -100,7 +158,8 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
           endpoint_types: form.endpoint_types,
         };
         await updateFakeModel(model.id, payload);
-        notify("模型已更新");
+        await syncGroups(model.model_id);
+        notify("模型已更新", "success");
       } else {
         const payload: FakeModelPayload = {
           model_id: form.model_id.trim(),
@@ -111,13 +170,14 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
           capabilities: form.capabilities,
           endpoint_types: form.endpoint_types,
         };
-        await createFakeModel(payload);
-        notify("模型已创建");
+        const created = await createFakeModel(payload);
+        await syncGroups(created.model_id);
+        notify("模型已创建", "success");
       }
       onSaved();
       onClose();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "保存失败");
+      notifyError(caught, "保存失败");
     } finally {
       setSaving(false);
     }
@@ -179,6 +239,43 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
                   placeholder="可留空"
                 />
               </label>
+              <div>
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">所属分组（可多选）</span>
+                {manageableGroups.length > 0 ? (
+                  <div className="space-y-2 rounded-md border border-slate-200 p-3">
+                    {manageableGroups.map((group) => {
+                      const checked = form.groupIds.includes(group.id);
+                      return (
+                        <label
+                          key={group.id}
+                          className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs transition ${
+                            checked
+                              ? "border-primary bg-primary/5 text-primary"
+                              : "border-slate-200 text-slate-600 hover:border-slate-300"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => toggleGroup(group.id, event.target.checked)}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{group.name}</span>
+                          {!group.is_enabled && (
+                            <span className="text-[10px] text-slate-400">已停用</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="rounded-md bg-slate-50 px-3 py-2.5 text-xs text-slate-400">
+                    暂无可选分组，可先在「管理分组」中创建。
+                  </p>
+                )}
+                <p className="mt-1.5 text-[10px] text-slate-400">
+                  可留空；未选择分组的模型在列表中归入 default 分组展示。
+                </p>
+              </div>
             </>
           )}
 

@@ -5,6 +5,7 @@ import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
 import { Button } from "../../components/ui/Button";
 import type { Invitation } from "../../types/governance";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const MAX_USES = 1000;
 
@@ -57,7 +58,7 @@ export function InvitationFormModal({
         expires_at: expiresAt ? new Date(expiresAt).toISOString() : null,
       });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "保存失败");
+      setError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSubmitting(false);
     }

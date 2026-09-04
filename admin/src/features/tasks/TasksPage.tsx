@@ -13,6 +13,7 @@ import type { TaskItem, TaskState } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 import { DeadlineBadge } from "./DeadlineBadge";
 import { TaskDetailDrawer } from "./TaskDetailDrawer";
+import { friendlyErrorMessage } from "../../utils/notify";
 import {
   DELIVERY_MODE_LABELS,
   PROTOCOL_LABELS,
@@ -81,7 +82,7 @@ export function TasksPage() {
         setTotal(result.total);
         setError("");
       } catch (caught) {
-        setError(caught instanceof Error ? caught.message : "加载失败");
+        setError(friendlyErrorMessage(caught, "加载失败"));
       } finally {
         if (!silent) setLoading(false);
       }

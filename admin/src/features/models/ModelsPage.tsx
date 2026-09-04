@@ -14,6 +14,7 @@ import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { notify } from "../../components/feedback/Toast";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
@@ -106,7 +107,7 @@ export function ModelsPage() {
       setModels(modelPage);
       setGroups(groupPage.items);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setCatalogLoading(false);
     }
@@ -135,7 +136,7 @@ export function ModelsPage() {
       if (page > lastPage) setPage(lastPage);
     } catch (caught) {
       if (requestId === pageRequest.current) {
-        setError(caught instanceof Error ? caught.message : "加载失败");
+        setError(friendlyErrorMessage(caught, "加载失败"));
       }
     } finally {
       if (requestId === pageRequest.current) setPageLoading(false);
@@ -170,13 +171,21 @@ export function ModelsPage() {
     (model.scope === "system" && isAdmin) ||
     (model.scope === "private" && model.owner_user_id === user?.id);
 
+  // 模型所属分组；无分组时对外显示 default。
+  const groupNamesOf = (model: FakeModel): string[] => {
+    const names = groups
+      .filter((group) => group.model_ids.includes(model.model_id))
+      .map((group) => group.name);
+    return names.length > 0 ? names : ["default"];
+  };
+
   const toggleModel = async (model: FakeModel) => {
     try {
       await updateFakeModel(model.id, { enabled: !model.is_enabled });
       notify(model.is_enabled ? "模型已停用" : "模型已启用");
       await refresh();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "操作失败");
+      notifyError(caught, "操作失败");
     }
   };
 
@@ -187,7 +196,7 @@ export function ModelsPage() {
       notify("模型已删除");
       await refresh();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
+      notifyError(caught, "删除失败");
     }
   };
 
@@ -420,6 +429,15 @@ export function ModelsPage() {
                   )}
 
                   <div className="mt-2 space-y-1">
+                    <div className="flex items-baseline justify-between gap-2 text-xs">
+                      <span className="shrink-0 text-slate-400">分组</span>
+                      <span
+                        className="min-w-0 truncate text-slate-700"
+                        title={groupNamesOf(model).join("、")}
+                      >
+                        {groupNamesOf(model).join("、")}
+                      </span>
+                    </div>
                     {model.context_window && (
                       <div className="flex items-baseline justify-between text-xs">
                         <span className="text-slate-400">上下文</span>
@@ -470,11 +488,12 @@ export function ModelsPage() {
           {!loading && view === "table" && total > 0 && (
             <Card>
               <div className="overflow-x-auto">
-                <table className="min-w-[820px] w-full text-left text-xs">
+                <table className="min-w-[900px] w-full text-left text-xs">
                   <thead className="bg-slate-50 text-slate-400">
                     <tr>
                       <th className="px-4 py-3 font-medium">model_id</th>
                       <th className="px-4 py-3 font-medium">显示名</th>
+                      <th className="px-4 py-3 font-medium">分组</th>
                       <th className="px-4 py-3 font-medium">端点</th>
                       <th className="px-4 py-3 font-medium">上下文</th>
                       <th className="px-4 py-3 font-medium">能力</th>
@@ -496,6 +515,22 @@ export function ModelsPage() {
                           </button>
                         </td>
                         <td className="px-4 py-3 text-slate-500">{model.display_name ?? "-"}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex max-w-48 flex-wrap gap-1">
+                            {groupNamesOf(model).map((name) => (
+                              <span
+                                key={name}
+                                className={`rounded px-1.5 py-0.5 text-[10px] ${
+                                  name === "default"
+                                    ? "bg-slate-100 text-slate-400"
+                                    : "bg-blue-50 text-blue-600"
+                                }`}
+                              >
+                                {name}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
                         <td className="px-4 py-3 text-slate-500">
                           <div className="flex max-w-48 flex-wrap gap-1">
                             {model.endpoint_types.map((endpoint) => (
@@ -581,6 +616,10 @@ export function ModelsPage() {
       {(creating || editing) && (
         <ModelEditModal
           model={editing}
+          groups={groups}
+          models={models}
+          currentUserId={user?.id ?? ""}
+          isAdmin={isAdmin}
           onClose={() => {
             setCreating(false);
             setEditing(null);
@@ -592,7 +631,6 @@ export function ModelsPage() {
       {groupsOpen && user && (
         <ModelsGroupsDrawer
           groups={groups}
-          models={models}
           currentUserId={user.id}
           isAdmin={isAdmin}
           onClose={() => setGroupsOpen(false)}

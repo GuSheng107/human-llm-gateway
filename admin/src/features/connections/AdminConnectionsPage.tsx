@@ -16,6 +16,7 @@ import {
   type ConnectionFilter,
 } from "../../api/connections";
 import type { ImConnection, PlatformSpec } from "../../types/gateway";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -61,7 +62,7 @@ export function AdminConnectionsPage() {
       setTotal(list.total);
       setPlatforms(platformList);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }
@@ -82,7 +83,7 @@ export function AdminConnectionsPage() {
       notify("连接已关闭", "success");
       void load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "操作失败");
+      setError(friendlyErrorMessage(caught, "操作失败"));
     } finally {
       setBusyId(null);
     }
@@ -102,7 +103,7 @@ export function AdminConnectionsPage() {
       notify("连接已删除", "success");
       void load();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "操作失败");
+      setError(friendlyErrorMessage(caught, "操作失败"));
     } finally {
       setBusyId(null);
     }

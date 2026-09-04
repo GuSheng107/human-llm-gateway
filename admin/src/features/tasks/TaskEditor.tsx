@@ -22,6 +22,7 @@ import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import type { LlmConfig, ReplyDraft, TaskDetail, TaskEvent, ToolCall } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 import { registerEditBridge } from "../assistant/bridge";
@@ -207,7 +208,7 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
     try {
       setTask(await getTask(taskId));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     }
   }, [taskId]);
 
@@ -271,7 +272,7 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
         result.raw_request ? JSON.stringify(result.raw_request, null, 2) : "(空)",
       );
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "加载原始请求失败");
+      notifyError(caught, "加载原始请求失败");
     } finally {
       setRawLoading(false);
     }
@@ -316,7 +317,7 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
     if (!task || !task.can_edit || saving) return;
     const result = buildDraft(reasoning, toolCalls, finalText);
     if (!result.ok) {
-      notify(result.error);
+      notify(result.error, "error");
       return;
     }
     setSaving(true);
@@ -335,11 +336,11 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
         setActiveDraftId(created.id);
         setDraftVersion(created.version);
       }
-      notify("草稿已保存");
+      notify("草稿已保存", "success");
       void load();
   } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "保存失败";
-      notify(message);
+      const message = friendlyErrorMessage(caught, "保存失败");
+      notify(message, "error");
       if (message.includes("草稿已被其他端修改")) {
         void load();
       }
@@ -352,15 +353,15 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
     if (!task || !task.can_edit) return;
     const result = buildDraft(reasoning, toolCalls, finalText);
     if (!result.ok) {
-      notify(result.error);
+      notify(result.error, "error");
       return;
     }
     if (result.draft.tool_calls.length > 0 && !sandboxAvailable) {
-      notify("当前环境工具沙箱不可用，不能提交伪造的工具调用");
+      notify("当前环境工具沙箱不可用，不能提交伪造的工具调用", "error");
       return;
     }
     if (isEmptyDraft(result.draft)) {
-      notify("回复内容不能为空");
+      notify("回复内容不能为空", "error");
       return;
     }
     setPreview(result.draft);
@@ -371,15 +372,15 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
     setSubmitting(true);
     try {
       await submitReply(task.id, preview, activeDraftId ?? undefined);
-      notify("回复已提交");
+      notify("回复已提交", "success");
       if (onSubmitted) {
         onSubmitted(task.id);
       } else {
         navigate("/tasks", { replace: true });
       }
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : "提交失败";
-      notify(message);
+      const message = friendlyErrorMessage(caught, "提交失败");
+      notify(message, "error");
       // 任务被其他来源（IM/超时/fallback）抢先：清空预览并刷新任务详情
       if (message.includes("该任务已被其他提交接管") || message.includes("任务已结束")) {
         setPreview(null);
@@ -423,10 +424,11 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
           : generateMode === "reply"
             ? "已生成回复，请继续编辑"
             : "已生成草稿，请继续编辑",
+        "success",
       );
       void load();
     } catch (caught) {
-      setGenerateError(caught instanceof Error ? caught.message : "生成失败");
+      setGenerateError(friendlyErrorMessage(caught, "生成失败"));
     } finally {
       setGenerating(false);
     }

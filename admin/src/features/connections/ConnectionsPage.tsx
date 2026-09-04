@@ -13,6 +13,7 @@ import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
@@ -120,7 +121,7 @@ export function ConnectionsPage() {
       setItems(connections);
       setPlatforms(platformList);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }
@@ -158,7 +159,7 @@ export function ConnectionsPage() {
           : target,
       );
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "打开连接配置失败", "error");
+      notifyError(caught, "打开连接配置失败");
       setConfigTarget((target) =>
         target?.platform.code === platform.code ? null : target,
       );
@@ -188,7 +189,7 @@ export function ConnectionsPage() {
       notify(item.desired_running ? "连接已关闭" : "连接已开启", "success");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "操作失败", "error");
+      notifyError(caught, "操作失败");
     } finally {
       setBusyKey(null);
     }
@@ -208,7 +209,13 @@ export function ConnectionsPage() {
       notify("连接已删除", "success");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败", "error");
+      const message = friendlyErrorMessage(caught, "");
+      if (message.includes("仍被") && message.includes("引用")) {
+        // 连接被 API Key 绑定（409）：引导用户先解绑，而不是当成系统错误
+        notify(`暂时无法删除：${message}`, "info");
+      } else {
+        notify(friendlyErrorMessage(caught, "删除失败，请稍后重试"), "error");
+      }
     } finally {
       setBusyKey(null);
     }
@@ -221,7 +228,7 @@ export function ConnectionsPage() {
       setHealthReport(report);
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "检查失败", "error");
+      notifyError(caught, "检查失败");
     } finally {
       setChecking(false);
     }

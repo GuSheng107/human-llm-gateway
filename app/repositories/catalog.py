@@ -53,6 +53,17 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "OpenAI",
         "owned_by": "openai",
         "models": {
+            "gpt-6-astra": {
+                # 与 gpt-5.6-sol 相同的能力标签与上下文（仅名称不同）
+                "input": 4,
+                "output": 20,
+                "cached": 0.4,
+                "context": 1_050_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoints": ["openai_chat", "openai_responses"],
+                "tags": ["旗舰", "多模态"],
+            },
             "gpt-5.6-sol": {
                 "input": 4,
                 "output": 20,
@@ -109,6 +120,30 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "Claude",
         "owned_by": "claude",
         "models": {
+            # Fable 5.1 与 Mythos 5.1 为同一底层模型：1M 上下文，128K 输出，
+            # Mythos 5.1 官方定价 $10/$50 每百万 tokens（受限发布）。
+            "claude-mythos-5.1": {
+                "input": 10,
+                "output": 50,
+                "cached": 1,
+                "cached_write": 12.5,
+                "context": 1_000_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoints": ["anthropic_messages"],
+                "tags": ["旗舰"],
+            },
+            "claude-fable-5.1": {
+                "input": 10,
+                "output": 50,
+                "cached": 1,
+                "cached_write": 12.5,
+                "context": 1_000_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoints": ["anthropic_messages"],
+                "tags": ["旗舰"],
+            },
             "claude-fable-5": {
                 "input": 30,
                 "output": 120,
@@ -227,6 +262,15 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "Grok",
         "owned_by": "grok",
         "models": {
+            "grok-4.7": {
+                # 参数与 grok-4.6 一致（尚未发布，先占位）
+                "input": 18,
+                "output": 72,
+                "context": 500_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "tags": ["旗舰"],
+            },
             "grok-4.6": {
                 "input": 18,
                 "output": 72,
@@ -694,5 +738,9 @@ class FakeModelRepository:
                     )
                     session.flush()
                 model_pks.append(model.id)
-            if not self.group_items(session, group.id):
-                self.replace_group_items(session, group.id, model_pks)
+            # 只需保证种子模型在分组内（新增模型可落入既有分组）；不移除管理员
+            # 手工增删的其他成员。
+            existing_pks = {item.id for item in self.group_items(session, group.id)}
+            missing = [pk for pk in model_pks if pk not in existing_pks]
+            if missing:
+                self.replace_group_items(session, group.id, list(existing_pks) + missing)

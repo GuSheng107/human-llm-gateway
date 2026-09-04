@@ -7,6 +7,7 @@ import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const DEFAULT_PAGE_SIZE = 20;
 const LOG_RETENTION_DAYS = 7;
@@ -51,7 +52,7 @@ export function LogsPage() {
       setItems(result.items);
       setTotal(result.total);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }

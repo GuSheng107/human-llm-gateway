@@ -13,6 +13,7 @@ import { Icon } from "../../icons";
 import type { BindingStatus, ImConnection, PlatformSpec } from "../../types/gateway";
 import { copyText } from "../../utils/clipboard";
 import { platformSetupGuide } from "./connectionPresentation";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 interface ConnectionSetupSectionProps {
   connection: ImConnection;
@@ -56,7 +57,7 @@ export function ConnectionSetupSection({
       setCommand(created.binding_code);
       setBinding(await bindingStatus(connection.id));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "发起绑定失败");
+      setError(friendlyErrorMessage(caught, "发起绑定失败"));
     } finally {
       setBindingBusy(false);
     }
@@ -106,7 +107,7 @@ export function ConnectionSetupSection({
       notify("本次绑定已取消，连接与配置已保留", "info");
       onConnectionChange(saved);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "取消绑定失败");
+      setError(friendlyErrorMessage(caught, "取消绑定失败"));
     } finally {
       setBindingBusy(false);
     }
@@ -124,7 +125,7 @@ export function ConnectionSetupSection({
       onTokenGenerated(result.field, result.token);
       notify(`${label}已重新生成，请立即复制并更新客户端`, "success");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "重新生成失败");
+      setError(friendlyErrorMessage(caught, "重新生成失败"));
     } finally {
       setRotatingField(null);
     }

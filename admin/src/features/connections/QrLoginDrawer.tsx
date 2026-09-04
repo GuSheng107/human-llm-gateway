@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { pollQrLogin, startQrLogin } from "../../api/connections";
 import type { ImConnection } from "../../types/gateway";
 import { Button } from "../../components/ui/Button";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 type QrPhase = "loading" | "wait" | "scanned" | "saving" | "success" | "expired" | "error";
 
@@ -49,7 +50,7 @@ export function QrLoginSection({ connection, onBound, disabled = false }: QrLogi
         setPhase("wait");
       } catch (caught) {
         setPhase("error");
-        setErrorText(caught instanceof Error ? caught.message : "获取二维码失败");
+        setErrorText(friendlyErrorMessage(caught, "获取二维码失败"));
         return;
       }
       const controller = new AbortController();
@@ -76,7 +77,7 @@ export function QrLoginSection({ connection, onBound, disabled = false }: QrLogi
           if (!controller.signal.aborted) {
             stopPolling();
             setPhase("error");
-            setErrorText(caught instanceof Error ? caught.message : "轮询登录状态失败");
+            setErrorText(friendlyErrorMessage(caught, "轮询登录状态失败"));
           }
           return;
         }

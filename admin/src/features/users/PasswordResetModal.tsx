@@ -3,6 +3,7 @@ import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
 import { Button } from "../../components/ui/Button";
 import type { UserSummary } from "../../types/governance";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 export function PasswordResetModal({
   user,
@@ -24,7 +25,7 @@ export function PasswordResetModal({
     try {
       await onSubmit(password || undefined);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "重置失败");
+      setError(friendlyErrorMessage(caught, "重置失败"));
     } finally {
       setSubmitting(false);
     }

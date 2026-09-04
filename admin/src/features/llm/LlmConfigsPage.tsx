@@ -21,6 +21,7 @@ import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import type { LlmConfig } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 
@@ -116,7 +117,7 @@ export function LlmConfigsPage() {
       setItems(result.items);
       setTotal(result.total);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }
@@ -200,7 +201,7 @@ export function LlmConfigsPage() {
       }
       extraBody = parsed as Record<string, unknown>;
     } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : "Extra Body 不是合法 JSON");
+      setFormError(friendlyErrorMessage(caught, "Extra Body 不是合法 JSON 对象"));
       return;
     }
     const advanced = {
@@ -237,15 +238,15 @@ export function LlmConfigsPage() {
     try {
       if (form.id) {
         await updateLlmConfig(form.id, payload as LlmConfigUpdatePayload);
-        notify("LLM 配置已更新");
+        notify("LLM 配置已更新", "success");
       } else {
         await createLlmConfig(payload as LlmConfigPayload);
-        notify("LLM 配置已创建");
+        notify("LLM 配置已创建", "success");
       }
       setForm(null);
       await load();
     } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : "保存失败");
+      setFormError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -267,10 +268,10 @@ export function LlmConfigsPage() {
     }
     try {
       await deleteLlmConfig(cfg.id);
-      notify("LLM 配置已删除");
+      notify("LLM 配置已删除", "success");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
+      notifyError(caught, "删除失败");
     }
   };
 
@@ -286,10 +287,14 @@ export function LlmConfigsPage() {
         detail: outcome.detail,
         http_status: outcome.http_status,
       });
-      notify(outcome.success ? "连通性测试成功" : "连通性测试失败");
+      if (outcome.success) {
+        notify("连通性测试成功", "success");
+      } else {
+        notify("连通性测试失败，请查看下方测试结果详情", "error");
+      }
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "测试失败");
+      notifyError(caught, "测试失败");
     } finally {
       setTestingId(null);
     }

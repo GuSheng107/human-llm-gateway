@@ -7,6 +7,7 @@ import { Icon } from "../../icons";
 import type { ImConnection, PlatformSpec } from "../../types/gateway";
 import { ConnectionSetupSection } from "./ConnectionSetupModal";
 import { QrLoginSection } from "./QrLoginDrawer";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 interface ConnectionFormModalProps {
   platform: PlatformSpec;
@@ -78,11 +79,18 @@ export function ConnectionFormModal({
             config,
           });
       if (saved.generated_tokens) setGeneratedTokens(saved.generated_tokens);
-      if (current?.desired_running) saved = await applyConnection(current.id);
+      if (current?.desired_running && saved.desired_running) saved = await applyConnection(current.id);
       publishConnection(saved);
-      notify(current ? "配置已保存" : "连接已创建并保存", "success");
+      notify(
+        current
+          ? platform.requires_binding && !saved.bound && current.bound
+            ? "配置已保存，原绑定已失效，请重新完成绑定/扫码后再启用"
+            : "配置已保存"
+          : "连接已创建并保存",
+        "success",
+      );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "保存失败");
+      setError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSaving(false);
     }

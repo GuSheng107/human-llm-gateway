@@ -12,6 +12,7 @@ import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import type { LlmConfig, TaskDetail, TaskEvent } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
+import { friendlyErrorMessage } from "../../utils/notify";
 import {
   ACTOR_TYPE_LABELS,
   DELIVERY_MODE_LABELS,
@@ -85,7 +86,7 @@ export function TaskDetailDrawer({
     try {
       setDetail(await getTask(taskId));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     }
   }, [taskId]);
 
@@ -116,7 +117,7 @@ export function TaskDetailDrawer({
       await load();
       onChanged();
     } catch (caught) {
-      setGenerateError(caught instanceof Error ? caught.message : "生成失败");
+      setGenerateError(friendlyErrorMessage(caught, "生成失败"));
     } finally {
       setGenerating(false);
     }

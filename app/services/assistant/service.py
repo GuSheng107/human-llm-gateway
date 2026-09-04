@@ -1022,8 +1022,6 @@ class AssistantService:
         session: Session, user: User, name: str, arguments: dict[str, Any]
     ) -> str:
         """执行 MCP 工具并返回文本结果。"""
-        import logging
-
         from ..mcp.tools import get_mcp_tool
 
         tool_def = get_mcp_tool(name)
@@ -1039,9 +1037,14 @@ class AssistantService:
                 if isinstance(c, dict) and c.get("type") == "text"
             ]
             return "\n".join(texts) if texts else json.dumps(result, ensure_ascii=False)
-        except Exception as exc:
-            logging.getLogger(__name__).warning(
-                "MCP tool %s execution failed: %s", name, exc, exc_info=True
+        except Exception as exc:  # noqa: BLE001  # 工具失败需返回错误而非中断会话
+            log_event(
+                "warning",
+                "assistant.mcp_tool_failed",
+                f"MCP 工具 {name} 执行失败",
+                error=type(exc).__name__,
+                detail=str(exc)[:500],
+                user_id=user.id,
             )
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
 

@@ -2,20 +2,19 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createModelGroup,
   deleteModelGroup,
-  replaceGroupMembers,
   updateModelGroup,
 } from "../../api/models";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { Drawer } from "../../components/feedback/Drawer";
 import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { notify } from "../../components/feedback/Toast";
+import { notifyError } from "../../utils/notify";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
-import type { FakeModel, ModelGroup } from "../../types/gateway";
+import type { ModelGroup } from "../../types/gateway";
 
 interface Props {
   groups: ModelGroup[];
-  models: FakeModel[];
   currentUserId: string;
   isAdmin: boolean;
   onClose: () => void;
@@ -26,19 +25,16 @@ interface GroupForm {
   name: string;
   description: string;
   enabled: boolean;
-  memberIds: number[];
 }
 
 const emptyForm = (): GroupForm => ({
   name: "",
   description: "",
   enabled: true,
-  memberIds: [],
 });
 
 export function ModelsGroupsDrawer({
   groups,
-  models,
   currentUserId,
   isAdmin,
   onClose,
@@ -50,19 +46,8 @@ export function ModelsGroupsDrawer({
   );
   const [selectedId, setSelectedId] = useState<string | null>(manageable[0]?.id ?? null);
   const [form, setForm] = useState<GroupForm>(emptyForm);
-  const [memberSearch, setMemberSearch] = useState("");
   const [saving, setSaving] = useState(false);
   const selected = manageable.find((group) => group.id === selectedId) ?? null;
-
-  const availableModels = useMemo(() => {
-    const ownerId = selected?.owner_user_id ?? currentUserId;
-    const term = memberSearch.trim().toLowerCase();
-    return models.filter((model) => {
-      if (model.scope === "private" && model.owner_user_id !== ownerId) return false;
-      if (!term) return true;
-      return `${model.model_id} ${model.display_name ?? ""}`.toLowerCase().includes(term);
-    });
-  }, [currentUserId, memberSearch, models, selected?.owner_user_id]);
 
   useEffect(() => {
     if (!selected) {
@@ -73,23 +58,17 @@ export function ModelsGroupsDrawer({
       name: selected.name,
       description: selected.description ?? "",
       enabled: selected.is_enabled,
-      memberIds: selected.model_ids
-        .map((modelId) => models.find((model) => model.model_id === modelId)?.id)
-        .filter((id): id is string => Boolean(id))
-        .map(Number),
     });
-  }, [models, selected]);
+  }, [selected]);
 
   const choose = (group: ModelGroup | null) => {
     setSelectedId(group?.id ?? null);
-    setMemberSearch("");
   };
 
   const save = async () => {
     if (!form.name.trim()) return;
     setSaving(true);
     try {
-      let groupId = selected?.id;
       if (selected) {
         await updateModelGroup(selected.id, {
           name: form.name.trim(),
@@ -102,14 +81,12 @@ export function ModelsGroupsDrawer({
           description: form.description.trim() || null,
           enabled: form.enabled,
         });
-        groupId = created.id;
+        setSelectedId(created.id);
       }
-      await replaceGroupMembers(groupId!, form.memberIds);
       notify(selected ? "模型分组已更新" : "模型分组已创建", "success");
       await onChanged();
-      setSelectedId(groupId!);
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "保存失败", "error");
+      notifyError(caught, "保存失败");
     } finally {
       setSaving(false);
     }
@@ -124,27 +101,18 @@ export function ModelsGroupsDrawer({
       setSelectedId(null);
       await onChanged();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败", "error");
+      notifyError(caught, "删除失败");
     } finally {
       setSaving(false);
     }
   };
 
-  const toggleMember = (modelId: number, checked: boolean) => {
-    setForm((current) => ({
-      ...current,
-      memberIds: checked
-        ? [...new Set([...current.memberIds, modelId])]
-        : current.memberIds.filter((id) => id !== modelId),
-    }));
-  };
-
   return (
     <Drawer
       title="管理模型分组"
-      description="创建、改名、启停分组并维护成员模型"
+      description="创建、改名、启停模型分组；分组成员在新建/编辑模型时选择"
       onClose={onClose}
-      width="max-w-4xl"
+      width="max-w-2xl"
       side="left"
     >
       <div className="grid min-h-full md:grid-cols-[15rem_1fr]">
@@ -213,38 +181,8 @@ export function ModelsGroupsDrawer({
               className="field-input"
             />
           </label>
-          <div>
-            <div className="mb-2 flex items-center justify-between gap-3">
-              <span className="text-xs font-medium text-slate-600">
-                成员模型（已选 {form.memberIds.length}）
-              </span>
-              <input
-                value={memberSearch}
-                onChange={(event) => setMemberSearch(event.target.value)}
-                className="field-input max-w-56"
-                placeholder="搜索模型"
-              />
-            </div>
-            <div className="max-h-72 divide-y divide-slate-100 overflow-y-auto rounded-md border border-slate-200">
-              {availableModels.map((model) => (
-                <label key={model.id} className="flex items-center gap-3 px-3 py-2 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={form.memberIds.includes(Number(model.id))}
-                    onChange={(event) => toggleMember(Number(model.id), event.target.checked)}
-                  />
-                  <span className="min-w-0 flex-1 truncate font-mono text-slate-700">
-                    {model.model_id}
-                  </span>
-                  <span className="text-slate-400">
-                    {model.scope === "system" ? "系统" : "私有"}
-                  </span>
-                </label>
-              ))}
-              {availableModels.length === 0 && (
-                <p className="p-8 text-center text-xs text-slate-400">没有可选模型</p>
-              )}
-            </div>
+          <div className="rounded-md bg-slate-50 px-3 py-2.5 text-xs text-slate-500">
+            分组成员在「新建模型 / 编辑模型」对话框的「所属分组」中维护，一个模型可同时属于多个分组。
           </div>
           <div className="flex justify-between border-t border-slate-100 pt-4">
             <div>
