@@ -43,13 +43,6 @@ class Settings(BaseSettings):
     # 无法识别"这就是本服务"：公网域名部署时必须填写，防止用户把 LLM 上游
     # 指回本网关 /v1 形成自指转发链（绕过人工回复的工具沙箱约束）。
     gateway_public_hosts: str = ""
-    # 工具只在本机 Docker/Podman 的 Linux OCI 容器中执行；运行时缺失时失败关闭。
-    tool_sandbox_runtime: str = "auto"
-    tool_sandbox_image: str = "human-llm-gateway-tool-sandbox:latest"
-    tool_sandbox_memory_mb: int = Field(default=256, ge=64, le=4096)
-    tool_sandbox_cpus: float = Field(default=1.0, gt=0, le=8)
-    tool_sandbox_pids_limit: int = Field(default=64, ge=16, le=512)
-    tool_sandbox_tmpfs_mb: int = Field(default=64, ge=16, le=1024)
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -70,24 +63,6 @@ class Settings(BaseSettings):
         if base64.urlsafe_b64encode(raw).rstrip(b"=").decode() != value:
             raise ValueError("APP_SECRET 必须是无 padding 的规范 base64url（43 字符）")
         return value
-
-    @field_validator("tool_sandbox_runtime")
-    @classmethod
-    def _validate_tool_sandbox_runtime(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized not in {"auto", "docker", "podman"}:
-            raise ValueError("TOOL_SANDBOX_RUNTIME 只允许 auto、docker 或 podman")
-        return normalized
-
-    @field_validator("tool_sandbox_image")
-    @classmethod
-    def _validate_tool_sandbox_image(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or normalized.startswith("-") or any(c.isspace() for c in normalized):
-            raise ValueError("TOOL_SANDBOX_IMAGE 不是合法 OCI 镜像引用")
-        if len(normalized) > 255:
-            raise ValueError("TOOL_SANDBOX_IMAGE 最多 255 字符")
-        return normalized
 
     def ensure_data_dir(self) -> None:
         if self.database_url.startswith("sqlite:///"):

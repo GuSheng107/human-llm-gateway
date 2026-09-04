@@ -170,7 +170,7 @@ class InboundResult(StrEnum):
     UNBOUND = "unbound"
     UNHANDLED = "unhandled"
     BOUND = "bound"
-    REJECTED = "rejected"  # 业务规则拒绝（如无沙箱时伪造 tool_call）
+    REJECTED = "rejected"  # 业务规则拒绝（如 IM 提交携带 tool_call）
 
 
 class TaskEventType(StrEnum):
@@ -178,7 +178,7 @@ class TaskEventType(StrEnum):
     DELIVERED = "delivered"
     REPLY_SUBMITTED = "reply_submitted"
     REPLY_REJECTED_LATE = "reply_rejected_late"
-    REPLY_REJECTED_POLICY = "reply_rejected_policy"  # 策略拒绝（如无沙箱时伪造 tool_call）
+    REPLY_REJECTED_POLICY = "reply_rejected_policy"  # 策略拒绝（如 IM 提交携带 tool_call）
     FALLBACK = "fallback"
     STREAM = "stream"
     COMPLETED = "completed"
@@ -193,16 +193,6 @@ class ActorType(StrEnum):
     IM = "im"
     UPSTREAM = "upstream"
     CALLER = "caller"
-
-
-class ToolExecutionState(StrEnum):
-    """工具沙箱执行状态（M12）。"""
-
-    RUNNING = "running"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    TIMED_OUT = "timed_out"
-    LIMIT_EXCEEDED = "limit_exceeded"
 
 
 class AuditResult(StrEnum):
@@ -250,9 +240,4 @@ class AuditAction(StrEnum):
     API_KEY_UPDATED = "api_key.updated"
     API_KEY_DELETED = "api_key.deleted"
     TASK_REPLY_SUBMITTED = "task.reply_submitted"
-    TOOL_WHITELIST_CREATED = "tool_whitelist.created"
-    TOOL_WHITELIST_UPDATED = "tool_whitelist.updated"
-    TOOL_WHITELIST_DELETED = "tool_whitelist.deleted"
-    TOOL_EXECUTED = "tool.executed"
-    TOOL_EXECUTION_DENIED = "tool.execution_denied"
     MCP_TOOL_CALLED = "mcp_tool.called"

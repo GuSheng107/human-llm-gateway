@@ -23,7 +23,6 @@ from ..repositories.models import (
     InboundReceipt,
     TaskEvent,
     TaskInboxState,
-    ToolExecution,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,9 +88,6 @@ class DataRetentionService:
             )
             counts["task_inbox_states"] = _deleted(
                 session.execute(delete(TaskInboxState).where(TaskInboxState.updated_at < cutoff))
-            )
-            counts["tool_executions"] = _deleted(
-                session.execute(delete(ToolExecution).where(ToolExecution.created_at < cutoff))
             )
             counts["inbound_receipts"] = _deleted(
                 session.execute(delete(InboundReceipt).where(InboundReceipt.created_at < cutoff))

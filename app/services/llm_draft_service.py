@@ -32,6 +32,7 @@ from ..domain.enums import (
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft
 from ..protocols import cross
+from ..protocols.normalized import declared_tool_names
 from ..repositories.llm_configs import LlmConfigRepository
 from ..repositories.models import LlmConfig, RequestTask, TaskDraft, User
 from ..repositories.system import AuditRepository
@@ -94,6 +95,10 @@ _REASONING_ONLY_INSTRUCTION = (
 )
 _REPLY_FROM_SEED_TEMPLATE = (
     "以下思考过程已由人工确认，请严格基于它直接输出最终答复，不要再输出额外的推理过程。\n\n{seed}"
+)
+_GUIDANCE_TEMPLATE = (
+    "以下是任务回复者对本次生成内容（思考链 / 正式回复 / 工具调用参数）的引导性要求，"
+    "请严格遵循它来生成：\n\n{guidance}"
 )
 
 # 生成模式（DraftGenerateInput.mode）
@@ -471,6 +476,7 @@ class LlmDraftService:
         mode: str = MODE_BOTH,
         exclude_context_indices: list[int] | None = None,
         reasoning_seed: str | None = None,
+        guidance: str | None = None,
     ) -> TaskDraft:
         """生成草稿。
 
@@ -580,6 +586,10 @@ class LlmDraftService:
             _inject_mode_instruction(
                 body, cfg.protocol, _REPLY_FROM_SEED_TEMPLATE.format(seed=reasoning_seed.strip())
             )
+        if guidance and guidance.strip():
+            _inject_mode_instruction(
+                body, cfg.protocol, _GUIDANCE_TEMPLATE.format(guidance=guidance.strip())
+            )
         # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch）
         secret = _decrypt_config(cfg)
         cfg_id = cfg.id
@@ -650,9 +660,7 @@ class LlmDraftService:
                 f"上游响应解析失败: {exc.__class__.__name__}",
                 status_code=502,
             ) from exc
-        # 5.9 模式后处理 + 沙箱不可用时的 tool_calls 剥离
-        from .task_service import fake_tool_calls_allowed
-
+        # 5.9 模式后处理 + 工具名校验（只允许调用方已声明的工具）
         log_event(
             "info",
             "llm_draft.upstream_completed",
@@ -678,13 +686,15 @@ class LlmDraftService:
                 tool_calls=draft.tool_calls,
                 final_text=draft.final_text,
             )
-        if draft.tool_calls and not fake_tool_calls_allowed():
-            # 无沙箱环境落库即丢弃工具调用，避免伪造调用被提交转发。
-            draft = ReplyDraft(
-                reasoning=draft.reasoning,
-                tool_calls=[],
-                final_text=draft.final_text,
-            )
+        if draft.tool_calls:
+            declared = set(declared_tool_names(normalized))
+            unknown = sorted({call.name for call in draft.tool_calls if call.name not in declared})
+            if unknown:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    f"上游生成的工具 {'、'.join(unknown)} 不在调用方声明的工具内，已拒绝保存",
+                    status_code=400,
+                )
         # 7. 落库前原子复核；调用期间若人工已回复或生成了草稿，拒绝晚到结果。
         begin_immediate_if_sqlite(session)
         current_task = session.get(RequestTask, task_id, with_for_update=True)

@@ -12,7 +12,6 @@ from ..core.exceptions import SchemaVersionMismatch
 from ..core.security import decrypt_secret, encrypt_secret
 from ..repositories.catalog import FakeModelRepository
 from ..repositories.system import SystemSettingRepository
-from ..repositories.tools import ToolRepository
 from ..repositories.users import UserRepository
 
 # 旧库可幂等补齐的列：idempotent ALTER，避免小字段新增阻塞现有用户。
@@ -59,7 +58,6 @@ class BootstrapService:
         self.settings_repo = SystemSettingRepository()
         self.users = UserRepository()
         self.models = FakeModelRepository()
-        self.tools = ToolRepository()
 
     def initialize(self, session: Session, settings: Settings) -> None:
         # 在 session 的 bind 上检查/建表（生产为模块 engine，测试可注入内存库）。
@@ -88,9 +86,8 @@ class BootstrapService:
                 f"数据库 schema_version={displayed} 与代码 {SCHEMA_VERSION} 不一致，"
                 "请备份后重新初始化"
             )
-        # 已有目标数据库：校验 sentinel，并幂等补齐平台内置工具。
+        # 已有目标数据库：校验加密 sentinel。
         self._verify_sentinel(session, settings.app_secret)
-        self.tools.seed_default_platform_tools(session)
         session.commit()
 
     def _validate_schema_shape(self, inspector, existing_tables: set[str]) -> None:
@@ -138,9 +135,6 @@ class BootstrapService:
         # 3. 默认系统 Fake Model。
         if admin is not None:
             self.models.seed_default_system_models(session, admin.id)
-
-        # 4. Fake Tool Call 编辑器和工具沙箱共用的平台工具。
-        self.tools.seed_default_platform_tools(session)
 
         session.commit()
 

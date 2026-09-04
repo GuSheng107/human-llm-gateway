@@ -19,6 +19,29 @@ def _text_preview(text: str) -> tuple[str, bool]:
     return text[:PREVIEW_CHARS], True
 
 
+def _resolve_image_url(block: dict[str, Any]) -> str | None:
+    """把各协议图片块归一为可直接渲染的 URL 字符串。
+
+    - OpenAI Chat: {"image_url": "https://... "} 或 {"image_url": {"url": ...}}
+    - Anthropic: {"source": {"type": "base64", "media_type": ..., "data": ...}}
+    - Responses: {"content": [{"type": "input_image", "image_url": ...}]}
+    """
+    image_url = block.get("image_url")
+    if isinstance(image_url, str) and image_url:
+        return image_url
+    if isinstance(image_url, dict):
+        url = image_url.get("url")
+        if isinstance(url, str) and url:
+            return url
+    source = block.get("source")
+    if isinstance(source, dict):
+        media_type = source.get("media_type") or source.get("content_type") or ""
+        data = source.get("data")
+        if source.get("type") == "base64" and isinstance(data, str) and data:
+            return f"data:{media_type};base64,{data}"
+    return None
+
+
 def _block_from_mapping(block: dict[str, Any]) -> dict[str, Any]:
     btype = str(block.get("type") or "text")
     item: dict[str, Any] = {"type": btype}
@@ -36,6 +59,20 @@ def _block_from_mapping(block: dict[str, Any]) -> dict[str, Any]:
         media2 = source.get("media_type") or source.get("content_type")
         if isinstance(media2, str):
             item.setdefault("media_type", media2)
+    if btype in {"image", "input_image", "image_url"} or (
+        isinstance(source, dict) and source.get("type") == "base64"
+    ):
+        url = _resolve_image_url(block)
+        if url is not None:
+            item["url"] = url
+    size = block.get("size")
+    if isinstance(size, dict):
+        width = size.get("width")
+        height = size.get("height")
+        if isinstance(width, int):
+            item["width"] = width
+        if isinstance(height, int):
+            item["height"] = height
     return item
 
 

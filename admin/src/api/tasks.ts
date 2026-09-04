@@ -61,6 +61,8 @@ export interface DraftGeneratePayload {
   exclude_context_indices?: number[];
   /** mode=reply 时可携带人工已确认的思考链作为生成依据。 */
   reasoning_seed?: string | null;
+  /** 引导性提示词：注入为系统指令，引导生成思考链 / 回复 / 工具调用参数。 */
+  guidance?: string | null;
 }
 
 export function generateDraft(
@@ -144,6 +146,10 @@ export interface ConversationBlock {
   name?: string | null;
   media_type?: string | null;
   tool_call_id?: string | null;
+  /** 图片块可直接渲染的 URL（http(s) 或 data URL）。 */
+  url?: string | null;
+  width?: number | null;
+  height?: number | null;
 }
 
 export interface ConversationMessage {

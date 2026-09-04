@@ -50,8 +50,6 @@ from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ImConnection, RequestTask, User
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
-from . import task_service as _task_service
-from .tools.service import assert_reply_tool_calls_allowed
 
 _IM_CONFIG_PURPOSE = "im-config"
 logger = logging.getLogger(__name__)
@@ -1089,8 +1087,8 @@ class ConnectionService:
         draft = parse_reply(text)
         if is_empty_draft(draft):
             return InboundResult.UNHANDLED
-        # 无沙箱环境禁止伪造 tool_call：假调用拿不到真实执行结果，会破坏调用方。
-        if draft.tool_calls and not _task_service.fake_tool_calls_allowed():
+        # IM 入口本期不允许携带 tool_call（连接器改造在下一迭代）；带调用直接拒绝。
+        if draft.tool_calls:
             self._add_task_event(
                 session,
                 task_id=task.id,
@@ -1100,25 +1098,7 @@ class ConnectionService:
                 payload={
                     "source": "im",
                     "connection_id": row.id,
-                    "reason": "sandbox_unavailable",
-                },
-            )
-            return InboundResult.REJECTED
-        # tool_call 名称必须命中沙箱白名单（与 Web 人工提交同一约束），避免
-        # 伪造调用方声明的外部工具。
-        try:
-            assert_reply_tool_calls_allowed(session, draft.tool_calls)
-        except DomainError:
-            self._add_task_event(
-                session,
-                task_id=task.id,
-                event_type=TaskEventType.REPLY_REJECTED_POLICY,
-                actor_type=ActorType.IM,
-                actor_user_id=row.owner_user_id,
-                payload={
-                    "source": "im",
-                    "connection_id": row.id,
-                    "reason": "tool_not_whitelisted",
+                    "reason": "tool_call_not_supported",
                 },
             )
             return InboundResult.REJECTED

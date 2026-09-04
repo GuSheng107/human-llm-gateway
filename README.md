@@ -70,7 +70,7 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 - IM DSL: `::: reasoning` / `::: tool` fences, shared structure with the web editor
 - First valid submission wins — irrevocable
 
-> ⚠️ When replying manually, tool calls may **only reference admin-whitelisted sandbox tools** (in an enabled state, executed inside the fail-closed OCI sandbox). Tool calls are never run on the gateway host, and caller-declared tools can never be invoked through human replies.
+> ⚠️ When replying manually, tool calls may **only reference tools declared by the caller in the original request** (names must match; otherwise the reply is rejected with 400). The gateway never executes any tool and makes no guarantee about execution results — the caller declares and runs tools at their own risk.
 
 </td><td width="50%" valign="top">
 
@@ -86,11 +86,10 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 - Two-layer page-context redaction (closed schema + pattern scrubbing)
 - 8 MiB / 1 MiB request caps, stream byte/duration budgets
 
-### 🧰 Tool Sandbox
-- Admin-maintained whitelist with explicit user confirmation
-- Fail-closed OCI isolation: no network or mounts, read-only root, resource and output caps
-- Optional text input over container stdin for approved tools; never rendered into a shell command
-- Caller-declared tool calls are never auto-executed
+### 🧰 Tool-Call Passthrough
+- Human replies may reference caller-declared tools (name must be declared, otherwise 400)
+- The gateway only forges and forwards tool-call output; no execution, no whitelist, no sandbox
+- The caller declares and executes tools themselves and bears all consequences
 
 </td></tr>
 </table>
@@ -100,8 +99,8 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 ```
                     ┌────────────────────────────────────────────┐
                     │                admin/ (React 19)           │
-                    │   login · console · tasks · keys · models  │
-                    │      LLM configs · logs · tools · chat     │
+│   login · console · tasks · keys · models  │
+│      LLM configs · logs · chat             │
                     └────────────────────┬───────────────────────┘
                                          │ /api/*
 ┌──────────────┐  /v1/*  ┌───────────────▼────────────────┐  upstream ┌─────────────┐
@@ -125,7 +124,6 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
 - Python 3.12+ with [uv](https://docs.astral.sh/uv/)
 - Node.js 18+
-- Docker or Podman when approved tools need the sandbox
 
 ### Three Steps
 
@@ -207,15 +205,15 @@ for chunk in stream:
 | M9 | Dashboard stats · log auditing · UX polish | ✅ |
 | M10 | Deployment & ops baseline | ✅ |
 | M11 | Release acceptance | ✅ |
-| M12 | Isolated tool sandbox | ✅ |
+| M12 | Tool-call passthrough (sandbox removed) | ✅ |
 | M13 | Trace-linked logs, IM ownership isolation, retention | ✅ |
 | M14 | Unified reply workbench | ✅ |
 
 Full plan in [ROADMAP](docs/ROADMAP.md) (Chinese). Current test totals are reported by the quality gates below.
 
-M12 uses a fail-closed Docker/Podman OCI sandbox on Windows, macOS and Linux. Build the
-default image and review the security boundary in [SANDBOX](docs/SANDBOX.md). Approved
-stdin tools pass text through the container pipe with a 64 KiB limit.
+M12 originally shipped an isolated tool sandbox; it has been removed. The gateway no longer
+executes tools — human replies may only reference tools declared by the caller (validated by
+name), and the caller executes them at their own risk.
 
 The deployed service exposes `/api/*` for the console, `/v1/*` for the three supported
 inference protocols, `/connectors/*` for connector entry points, and `/healthz` for

@@ -8,6 +8,7 @@ TaskRepository.first_reply_wins 做首个有效提交裁决，晚到回复只记
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -24,22 +25,37 @@ from ..domain.enums import (
     UserRole,
 )
 from ..domain.errors import DomainError, DomainErrorCode
-from ..domain.values import ReplyDraft
+from ..domain.values import ReplyDraft, ReplyToolCall
+from ..protocols.normalized import declared_tool_names
 from ..repositories.catalog import FakeModelRepository
 from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, User
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
-from .tools.sandbox import sandbox_available
-from .tools.service import assert_reply_tool_calls_allowed
 
 
-def fake_tool_calls_allowed() -> bool:
-    """伪造 tool_call 前置条件：本机沙箱可用（含运行时与镜像探测）。
+def assert_reply_tool_names_declared(
+    task: RequestTask, tool_calls: Sequence[ReplyToolCall]
+) -> None:
+    """人工写回的 tool_call 名称必须命中调用方在请求中声明的工具。
 
-    单独成函数便于测试与前端能力探测复用；无沙箱时三类人工写入口
-    （草稿保存 / 更新 / 提交）一律拒绝携带 tool_calls。
+    与真实 LLM 对齐：网关只伪造输出、不执行，也不允许凭空捏造未声明
+    的工具名回传给调用方；未命中时拒绝 400，避免协议解析失败或诱导
+    调用方执行未知工具。
     """
-    return sandbox_available()
+    if not tool_calls:
+        return
+    try:
+        normalized: dict[str, Any] = json.loads(task.normalized_request_json or "{}")
+    except (ValueError, TypeError):
+        normalized = {}
+    declared = set(declared_tool_names(normalized))
+    unknown = sorted({call.name for call in tool_calls if call.name not in declared})
+    if unknown:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            f"工具 {'、'.join(unknown)} 不在调用方声明的工具内，人工回复的 tool_call 只能引用请求声明的工具",
+            status_code=400,
+        )
 
 
 class TaskService:
@@ -120,8 +136,7 @@ class TaskService:
     ) -> TaskDraft:
         """新建或更新活动草稿（upsert 语义：已有 EDITING 则覆盖字段）。"""
         self._assert_writable(task, owner)
-        assert_reply_tool_calls_allowed(session, draft.tool_calls)
-        self._assert_fake_tool_calls_allowed(draft)
+        assert_reply_tool_names_declared(task, draft.tool_calls)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_active_draft(session, task_id=task.id)
         payload = self._draft_payload(draft)
@@ -167,8 +182,7 @@ class TaskService:
         "刷新 / 强制覆盖"。不再兼容不带 expected_version 的旧语义。
         """
         self._assert_writable(task, owner)
-        assert_reply_tool_calls_allowed(session, draft.tool_calls)
-        self._assert_fake_tool_calls_allowed(draft)
+        assert_reply_tool_names_declared(task, draft.tool_calls)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_draft(session, draft_id)
         if row is None or row.task_id != task.id or row.owner_user_id != owner.id:
@@ -223,8 +237,7 @@ class TaskService:
     ) -> bool:
         """首个有效提交获胜；晚到返回 False（调用方需记录晚到事件后抛 409）。"""
         self._assert_writable(task, owner)
-        assert_reply_tool_calls_allowed(session, draft.tool_calls)
-        self._assert_fake_tool_calls_allowed(draft)
+        assert_reply_tool_names_declared(task, draft.tool_calls)
         begin_immediate_if_sqlite(session)
         accepted = self.repo.first_reply_wins(
             session,
@@ -293,17 +306,6 @@ class TaskService:
 
     # ------------------------------------------------------------------
     # 内部
-
-    @staticmethod
-    def _assert_fake_tool_calls_allowed(draft: ReplyDraft) -> None:
-        """无沙箱环境禁止伪造 tool_call（假调用拿不到真实执行结果，会坑调用方）。"""
-        if draft.tool_calls and not fake_tool_calls_allowed():
-            raise DomainError(
-                DomainErrorCode.VALIDATION_FAILED,
-                "当前环境工具沙箱不可用，暂不支持伪造工具调用；请仅使用思考链与正文回复",
-                status_code=400,
-                public_code="sandbox_unavailable",
-            )
 
     @staticmethod
     def _assert_owner(task: RequestTask, user: User) -> None:

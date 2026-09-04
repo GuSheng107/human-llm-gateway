@@ -70,6 +70,8 @@ class DraftGenerateInput(StrictModel):
     exclude_context_indices: list[int] | None = Field(default=None, max_length=200)
     # mode=reply 时可携带人工已确认的思考链作为生成依据。
     reasoning_seed: str | None = Field(default=None, max_length=20000)
+    # 引导性提示词：注入为系统指令，引导 LLM 生成思考链 / 回复 / 工具调用参数。
+    guidance: str | None = Field(default=None, max_length=4000)
 
 
 # ------------------------------------------------------------------
@@ -205,6 +207,10 @@ class ConversationBlock(BaseModel):
     name: str | None = None
     size: int | None = None
     media_type: str | None = None
+    # 图片块可直接渲染的 URL（http(s) 或 data URL）；无则 None。
+    url: str | None = None
+    width: int | None = None
+    height: int | None = None
 
 
 class ConversationMessage(BaseModel):
@@ -627,6 +633,7 @@ async def generate_draft(
         mode=payload.mode,
         exclude_context_indices=payload.exclude_context_indices,
         reasoning_seed=payload.reasoning_seed,
+        guidance=payload.guidance,
     )
     db.commit()
     db.refresh(row)
@@ -740,6 +747,9 @@ def _conversation_message_view(msg: dict[str, Any]) -> ConversationMessage:
             name=block.get("name"),
             media_type=block.get("media_type"),
             tool_call_id=block.get("tool_call_id"),
+            url=block.get("url"),
+            width=block.get("width"),
+            height=block.get("height"),
         )
         for block in msg.get("blocks", [])
     ]

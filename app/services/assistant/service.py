@@ -56,7 +56,6 @@ _FEATURE_DESCRIPTIONS: dict[str, str] = {
     "task_list": "任务列表：按状态筛选和搜索待回复/已回复/超时等任务。",
     "task_detail": "任务详情/回复：查看单条任务的完整对话历史并输入回复内容。",
     "replies": "回复工作台：批量处理待回复任务和审核回复。",
-    "tools": "工具沙箱：管理可调用的工具白名单和隔离执行。",
     "logs": "日志查询：按 traceId 串联审计与业务日志。",
     "adminConnections": "IM 连接监管：管理员查看和处置用户连接。",
     "api_keys": "API Key 管理：创建、查看、停用供外部调用方使用的 API Key。",

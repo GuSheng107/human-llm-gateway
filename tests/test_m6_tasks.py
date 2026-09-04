@@ -44,9 +44,25 @@ def _make_waiting_task(
     owner_user_id: int,
     *,
     content: str = "hello",
+    tool_names: list[str] | None = None,
 ) -> int:
     """直接经编排服务创建一个 WAITING_HUMAN 任务并返回其 id。"""
-    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": content}]}
+    payload: dict[str, Any] = {
+        "model": "deepseek-v4-pro",
+        "messages": [{"role": "user", "content": content}],
+    }
+    if tool_names:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": name,
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+            for name in tool_names
+        ]
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     service = InferenceService()
@@ -211,7 +227,9 @@ def _create_other_user_headers(client, admin_headers) -> dict:
 
 
 def test_draft_save_and_restore_roundtrip(client, created_user, created_key) -> None:
-    task_id = _make_waiting_task(created_key.id, created_user.user_id)
+    task_id = _make_waiting_task(
+        created_key.id, created_user.user_id, tool_names=["search", "calc"]
+    )
     draft = _draft_body(
         reasoning="思考过程",
         tool_calls=[_TOOL_CALL_A, _TOOL_CALL_B],
@@ -311,7 +329,7 @@ def test_draft_update_nonexistent_returns_404(client, created_user, created_key)
 
 
 def test_submit_reply_first_wins_accepted(client, created_user, created_key) -> None:
-    task_id = _make_waiting_task(created_key.id, created_user.user_id)
+    task_id = _make_waiting_task(created_key.id, created_user.user_id, tool_names=["search"])
     resp = client.post(
         f"/api/tasks/{task_id}/reply",
         headers=created_user.headers,

@@ -66,6 +66,25 @@ def reject_unsupported_field(payload: dict[str, Any], field: str) -> None:
         )
 
 
+def declared_tool_names(normalized: dict[str, Any]) -> list[str]:
+    """从规范化请求中提取调用方声明的工具名（OpenAI function / Anthropic 工具）。
+
+    tools 数组条目结构兼容两种协议：
+    - OpenAI/Responses: {"type":"function","function":{"name": ...}}
+    - Anthropic: {"name": ..., "input_schema": ...}
+    """
+    names: list[str] = []
+    tools = normalized.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            name = tool.get("name") or (tool.get("function", {}) or {}).get("name")
+            if isinstance(name, str) and name:
+                names.append(name)
+    return names
+
+
 def context_item_count(items: list[Any]) -> int:
     """规范化上下文条目计数：顶级条目各计 1 条（message 内容块合并计 1）。"""
     return len(items)

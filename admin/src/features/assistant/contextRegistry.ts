@@ -92,10 +92,6 @@ const FEATURES: Record<string, FeatureSpec> = {
     match: (p) => p === "/settings/account",
     resource: () => ({}),
   },
-  tools: {
-    match: (p) => p === "/tools" || p.startsWith("/tools/"),
-    resource: () => ({}),
-  },
   logs: {
     match: (p) => p === "/settings/logs" || p.startsWith("/settings/logs"),
     resource: (_p, search) => {
@@ -126,7 +122,6 @@ export const CONTEXT_VERSIONS: Record<string, number> = {
   invitations: 1,
   users: 1,
   account: 1,
-  tools: 1,
   logs: 1,
   adminConnections: 1,
 };

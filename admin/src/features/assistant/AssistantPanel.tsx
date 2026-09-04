@@ -37,7 +37,6 @@ const CONTEXT_FEATURE_LABELS: Record<string, string> = {
   llm_configs: "LLM 管理",
   connections: "连接 IM",
   models: "模型广场",
-  tools: "工具沙箱",
   logs: "日志查询",
   invitations: "邀请码",
   users: "用户管理",

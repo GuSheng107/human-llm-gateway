@@ -50,7 +50,14 @@ def _create_llm_config(client, headers: dict[str, str], body: dict[str, Any]) ->
     return resp.json()
 
 
-def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hello") -> int:
+def _make_waiting_task(
+    client,
+    key_id: int,
+    user_id: int,
+    *,
+    content: str = "hello",
+    tool_names: list[str] | None = None,
+) -> int:
     """直接经编排服务创建一个 WAITING_HUMAN 任务（与 test_m6_tasks 同样的方式）。"""
     import app.core.db as database
     from app.domain.enums import InferenceProtocol
@@ -58,7 +65,18 @@ def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hel
     from app.repositories.models import ApiKey, User
     from app.services.inference_service import InferenceService
 
-    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": content}]}
+    payload: dict[str, Any] = {
+        "model": "deepseek-v4-pro",
+        "messages": [{"role": "user", "content": content}],
+    }
+    if tool_names:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {"name": name, "description": name, "parameters": {"type": "object"}},
+            }
+            for name in tool_names
+        ]
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     with database.SessionLocal() as session:
@@ -85,7 +103,7 @@ def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hel
 
 def test_generate_chat_with_openai_chat_llm(client, created_user, created_key) -> None:
     task_id = _make_waiting_task(
-        client, created_key.id, created_user.user_id, content="hello world"
+        client, created_key.id, created_user.user_id, content="hello world", tool_names=["search"]
     )
     cfg = _create_llm_config(
         client,
@@ -264,7 +282,12 @@ def test_generate_draft_then_edit_then_submit(client, created_user, created_key)
 
 
 def _make_anthropic_waiting_task(
-    client, key_id: int, user_id: int, *, content: str = "hello"
+    client,
+    key_id: int,
+    user_id: int,
+    *,
+    content: str = "hello",
+    tool_names: list[str] | None = None,
 ) -> int:
     import app.core.db as database
     from app.domain.enums import InferenceProtocol
@@ -272,11 +295,20 @@ def _make_anthropic_waiting_task(
     from app.repositories.models import ApiKey, User
     from app.services.inference_service import InferenceService
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": "deepseek-v4-pro",
         "max_tokens": 256,
         "messages": [{"role": "user", "content": content}],
     }
+    if tool_names:
+        payload["tools"] = [
+            {
+                "name": name,
+                "description": name,
+                "input_schema": {"type": "object", "properties": {}},
+            }
+            for name in tool_names
+        ]
     raw = json.dumps(payload).encode()
     parsed = anthropic_protocol.parse_request(raw)
     with database.SessionLocal() as session:
@@ -297,7 +329,9 @@ def _make_anthropic_waiting_task(
 
 
 def test_generate_anthropic_with_anthropic_llm(client, created_user, created_key) -> None:
-    task_id = _make_anthropic_waiting_task(client, created_key.id, created_user.user_id)
+    task_id = _make_anthropic_waiting_task(
+        client, created_key.id, created_user.user_id, tool_names=["lookup"]
+    )
     cfg = _create_llm_config(
         client,
         created_user.headers,
@@ -1041,11 +1075,8 @@ def test_generate_exclude_invalid_index_returns_400(client, created_user, create
     assert "下标越界" in resp.json()["error"]["message"]
 
 
-def test_save_draft_with_tool_calls_blocked_when_sandbox_unavailable(
-    client, created_user, created_key, monkeypatch
-) -> None:
-    """无沙箱环境：草稿保存拒绝携带 tool_calls（public_code=sandbox_unavailable）。"""
-    monkeypatch.setattr("app.services.task_service.fake_tool_calls_allowed", lambda: False)
+def test_save_draft_with_undeclared_tool_call_rejected(client, created_user, created_key) -> None:
+    """草稿保存：tool_call 名称不在调用方声明工具内时拒绝 400。"""
     task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
     resp = client.post(
         f"/api/tasks/{task_id}/drafts",
@@ -1059,14 +1090,32 @@ def test_save_draft_with_tool_calls_blocked_when_sandbox_unavailable(
     assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["error"]["code"] == "validation_failed"
-    assert "沙箱不可用" in body["error"]["message"]
+    assert "不在调用方声明的工具内" in body["error"]["message"]
 
 
-def test_submit_reply_with_tool_calls_blocked_when_sandbox_unavailable(
-    client, created_user, created_key, monkeypatch
-) -> None:
-    """无沙箱环境：直接回复提交同样拒绝携带 tool_calls。"""
-    monkeypatch.setattr("app.services.task_service.fake_tool_calls_allowed", lambda: False)
+def test_save_draft_with_declared_tool_call_allowed(client, created_user, created_key) -> None:
+    """草稿保存：tool_call 名称命中调用方声明工具时放行。"""
+    task_id = _make_waiting_task(
+        client,
+        created_key.id,
+        created_user.user_id,
+        content="hi",
+        tool_names=["search"],
+    )
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "search", "arguments": {"q": "x"}}],
+            "final_text": "ok",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_submit_reply_with_undeclared_tool_call_rejected(client, created_user, created_key) -> None:
+    """直接回复提交：tool_call 名称不在声明工具内时拒绝 400。"""
     task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
     resp = client.post(
         f"/api/tasks/{task_id}/reply",
@@ -1079,14 +1128,11 @@ def test_submit_reply_with_tool_calls_blocked_when_sandbox_unavailable(
         },
     )
     assert resp.status_code == 400, resp.text
-    assert "沙箱不可用" in resp.json()["error"]["message"]
+    assert "不在调用方声明的工具内" in resp.json()["error"]["message"]
 
 
-def test_generate_strips_tool_calls_when_sandbox_unavailable(
-    client, created_user, created_key, monkeypatch
-) -> None:
-    """无沙箱环境：LLM 草稿生成也会丢弃上游返回的 tool_calls。"""
-    monkeypatch.setattr("app.services.task_service.fake_tool_calls_allowed", lambda: False)
+def test_generate_rejects_tool_call_not_declared(client, created_user, created_key) -> None:
+    """LLM 草稿生成：上游返回未声明工具名时拒绝保存 400。"""
     task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
 
@@ -1115,8 +1161,50 @@ def test_generate_strips_tool_calls_when_sandbox_unavailable(
             headers=created_user.headers,
             json={"llm_config_id": int(cfg["id"]), "mode": "both"},
         )
+    assert resp.status_code == 400, resp.text
+    assert "不在调用方声明的工具内" in resp.json()["error"]["message"]
+
+
+def test_generate_persists_declared_tool_call(client, created_user, created_key) -> None:
+    """LLM 草稿生成：上游返回已声明工具名的调用正常落库。"""
+    task_id = _make_waiting_task(
+        client,
+        created_key.id,
+        created_user.user_id,
+        content="hi",
+        tool_names=["search"],
+    )
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                        "tool_calls": [
+                            {
+                                "id": "call_01",
+                                "type": "function",
+                                "function": {"name": "search", "arguments": '{"q":"x"}'},
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "both"},
+        )
     assert resp.status_code == 201, resp.text
-    assert resp.json()["tool_calls"] == []
+    assert resp.json()["tool_calls"] == [
+        {"id": "call_01", "name": "search", "arguments": {"q": "x"}}
+    ]
 
 
 def test_conversation_includes_context_index(client, created_user, created_key) -> None:

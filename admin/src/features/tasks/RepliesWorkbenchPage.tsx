@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { getConversation, getConversationMessage, listInbox, markTaskSeen } from "../../api/tasks";
+import {
+  getConversation,
+  getConversationMessage,
+  listInbox,
+  markTaskSeen,
+  type ConversationBlock,
+  type InboxItem,
+  type ConversationPage,
+} from "../../api/tasks";
 import { Card } from "../../components/data-display/Card";
-import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
+import { Modal } from "../../components/feedback/Modal";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
@@ -13,7 +21,59 @@ import { friendlyErrorMessage } from "../../utils/notify";
 
 const POLL_INTERVAL_MS = 3000;
 
-/** 消息体渲染：支持超长折叠的纯文本展示。 */
+// ---------------------------------------------------------------------------
+// 消息块渲染：文本折叠 / 图片缩略图 / 附件徽章，完整保留多模态内容
+// ---------------------------------------------------------------------------
+
+function isImageBlock(block: ConversationBlock): boolean {
+  return block.type === "image" && Boolean(block.url);
+}
+
+function BlockBadge({ text, tone = "slate" }: { text: string; tone?: "slate" | "amber" }) {
+  return (
+    <span
+      className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+        tone === "amber" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"
+      }`}
+    >
+      {text}
+    </span>
+  );
+}
+
+function ImageBlock({ url, width, height }: { url: string; width?: number | null; height?: number | null }) {
+  const sizeHint = width && height ? `${width}×${height}` : null;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className="block overflow-hidden rounded-lg border border-slate-200 transition hover:border-primary/50"
+      title={sizeHint ? `点击查看原图（${sizeHint}）` : "点击查看原图"}
+    >
+      <img
+        src={url}
+        alt={sizeHint ? `图片 ${sizeHint}` : "图片"}
+        loading="lazy"
+        className="max-h-48 w-auto max-w-full bg-slate-50 object-contain"
+      />
+    </a>
+  );
+}
+
+function FileBlock({ block }: { block: ConversationBlock }) {
+  const name = block.name || "未命名附件";
+  const mediaType = block.media_type || "未知类型";
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+      <Icon name="link" className="h-4 w-4 shrink-0 text-slate-400" />
+      <span className="min-w-0 flex-1 truncate text-xs text-slate-700">{name}</span>
+      <BlockBadge text={mediaType} />
+    </div>
+  );
+}
+
+/** 文本块：超长折叠，展开后按需拉取全文。 */
 function MessageText({ text, taskId, messageIndex, length }: { text: string; taskId: string; messageIndex: number; length: number }) {
   const [expanded, setExpanded] = useState(false);
   const [full, setFull] = useState<string | null>(null);
@@ -55,14 +115,70 @@ function MessageText({ text, taskId, messageIndex, length }: { text: string; tas
   );
 }
 
+/** 单条消息：按 blocks 完整渲染（文本 / 图片 / 文件），不丢失多模态内容。 */
+function MessageBlocks({
+  blocks,
+  text,
+  taskId,
+  messageIndex,
+  length,
+}: {
+  blocks: ConversationBlock[];
+  text: string;
+  taskId: string;
+  messageIndex: number;
+  length: number;
+}) {
+  const hasRichBlocks = blocks.some((block) => block.type !== "text");
+  if (!hasRichBlocks) {
+    return <MessageText text={text} taskId={taskId} messageIndex={messageIndex} length={length} />;
+  }
+  return (
+    <div className="space-y-2">
+      {blocks.map((block, index) => {
+        if (isImageBlock(block) && block.url) {
+          return (
+            <ImageBlock key={index} url={block.url} width={block.width} height={block.height} />
+          );
+        }
+        if (block.type === "file" || block.type === "attachment") {
+          return <FileBlock key={index} block={block} />;
+        }
+        if (block.type === "text" && block.text) {
+          return (
+            <MessageText
+              key={index}
+              text={block.text}
+              taskId={taskId}
+              messageIndex={messageIndex}
+              length={block.text.length}
+            />
+          );
+        }
+        return (
+          <div key={index} className="flex items-center gap-2 text-[11px] text-slate-400">
+            <BlockBadge text={block.type} tone="amber" />
+            <span className="min-w-0 flex-1 truncate font-mono">{block.text || block.name || block.tool_call_id || ""}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 页面：收件箱 + 完整上下文；回复编辑器在弹窗内打开
+// ---------------------------------------------------------------------------
+
 export function RepliesWorkbenchPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const focusId = searchParams.get("focus");
-  const [items, setItems] = useState<import("../../api/tasks").InboxItem[]>([]);
+  const [items, setItems] = useState<InboxItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [conversation, setConversation] = useState<import("../../api/tasks").ConversationPage | null>(null);
+  const [conversation, setConversation] = useState<ConversationPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [replyOpen, setReplyOpen] = useState(false);
 
   const loadInbox = useCallback(
     async (silent = false) => {
@@ -115,6 +231,7 @@ export function RepliesWorkbenchPage() {
 
   const handleSubmitted = useCallback(
     (taskId: string) => {
+      setReplyOpen(false);
       setSelectedId((prev) => {
         if (prev !== taskId) return prev;
         const next = items.filter((item) => item.id !== taskId);
@@ -124,6 +241,8 @@ export function RepliesWorkbenchPage() {
     },
     [items, loadInbox],
   );
+
+  const selectedItem = items.find((item) => item.id === selectedId) ?? null;
 
   return (
     <div className="space-y-5">
@@ -138,7 +257,7 @@ export function RepliesWorkbenchPage() {
       />
       {error && <ErrorBanner message={error} />}
 
-      <div className="grid gap-4 md:grid-cols-[minmax(232px,0.8fr)_minmax(0,1.4fr)_minmax(0,1.4fr)]">
+      <div className="grid gap-4 md:grid-cols-[minmax(232px,0.9fr)_minmax(0,2.1fr)]">
         <Card className="h-fit space-y-0 overflow-hidden md:sticky md:top-24">
           <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700">
             收件箱
@@ -191,8 +310,14 @@ export function RepliesWorkbenchPage() {
         </Card>
 
         <Card className="min-h-96 overflow-y-auto">
-          <div className="border-b border-slate-100 px-4 py-3 text-sm font-medium text-slate-700">
-            对话
+          <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+            <span className="text-sm font-medium text-slate-700">对话上下文</span>
+            {selectedItem && (
+              <Button onClick={() => setReplyOpen(true)}>
+                <Icon name="reply" className="h-4 w-4" />
+                回复
+              </Button>
+            )}
           </div>
           {!selectedId && (
             <p className="grid h-64 place-items-center px-4 text-xs text-slate-400">
@@ -213,7 +338,8 @@ export function RepliesWorkbenchPage() {
                     <span>{message.length.toLocaleString()} 字</span>
                     {message.has_more && <span className="text-amber-500">截断</span>}
                   </div>
-                  <MessageText
+                  <MessageBlocks
+                    blocks={message.blocks}
                     text={message.preview}
                     taskId={selectedId || ""}
                     messageIndex={message.index}
@@ -227,21 +353,20 @@ export function RepliesWorkbenchPage() {
             </div>
           )}
         </Card>
-
-        <Card className="h-fit md:sticky md:top-24">
-          {selectedId ? (
-            <TaskEditor
-              taskId={selectedId}
-              standalone={false}
-              onSubmitted={handleSubmitted}
-            />
-          ) : (
-            <p className="grid h-64 place-items-center px-4 py-6 text-center text-xs text-slate-400">
-              选择任务后在此回复
-            </p>
-          )}
-        </Card>
       </div>
+
+      {replyOpen && selectedId && (
+        <Modal
+          title={`回复任务 #${selectedItem?.public_id ?? ""}`}
+          description="人工回复必须先提交完整结果，再进行伪流式输出"
+          onClose={() => setReplyOpen(false)}
+          width="max-w-6xl"
+        >
+          <div className="max-h-[84vh] overflow-y-auto p-6">
+            <TaskEditor taskId={selectedId} onSubmitted={handleSubmitted} />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

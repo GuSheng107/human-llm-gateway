@@ -406,7 +406,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | DELETE | `/api/assistant/sessions/{id}` | 删除自己的会话和消息。 |
 | POST | `/api/assistant/sessions/{id}/messages` | 使用选定 LLM 配置发送文本和当前页面上下文快照。 |
 
-每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。M8 第一阶段不提供可执行系统工具。
+每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。网关不执行任何工具；工具由调用方声明并自行执行，网关只转发伪造输出，不担保结果。
 
 ## 11. 设置、日志与审计
 
