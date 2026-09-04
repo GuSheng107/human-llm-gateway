@@ -531,7 +531,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | `service_tier` 等计费层参数 | 供应商字段 | 供应商字段 | 供应商字段 | 同协议透传；跨协议未逐项声明等价时返回 400。 |
 | `background`（Responses 后台模式） | 无 | 供应商字段 | 无 | 网关不提供后台响应生命周期接口（无 `GET/cancel` 响应端点），透传会使 RequestTask 无法正确收尾；显式 `background=true` 返回 400 `unsupported_parameter`。 |
 | `conversation`（Responses 服务端会话引用） | 无 | 供应商字段 | 无 | 引用上游服务端持久状态，不能机械转给用户自己的真实上游；显式提交返回 400 `unsupported_parameter`。 |
-| `store`（响应持久化开关） | 供应商字段 | 供应商字段 | 无 | 网关始终完整持久化 RequestTask，`store` 不是网关数据库的存储开关；显式提交任何值（含 `false`）返回 400 `unsupported_parameter`，避免“看似兼容、语义不同”。 |
+| `store`（响应持久化开关） | 供应商字段 | 供应商字段 | 无 | Responses 接受 `store=false` 以兼容无状态客户端：同协议转发时原样保留，网关自行响应或跨协议时作为“无 Responses API 可检索状态”消费；网关内部 RequestTask 留存是独立的审计与人工处理契约，不受该字段控制。`store=true` 因未提供 retrieve/cancel 生命周期端点而返回 400 `unsupported_parameter`。Chat 显式提交 `store` 仍返回 400。 |
 | 未知扩展字段 | 原样保留 | 原样保留 | 原样保留 | 同协议原样透传；跨协议返回 400 `unsupported_parameter`。 |
 
 转换适配器必须为每个非透传字段记录字段名、处理类型和结果，不记录字段值。新增支持前先更新此矩阵和契约测试。
@@ -570,7 +570,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 最低要求：`model` 为非空字符串，`input` 为有效字符串或输入项数组。`instructions`、tools 和所有扩展字段完整保存。
 
-`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。显式提交 `background`、`conversation` 或 `store` 按 12.6 矩阵返回 400 `unsupported_parameter`；本网关不提供后台响应 retrieve/cancel 等生命周期端点。
+`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。显式提交 `background`、`conversation` 或 `store=true` 按 12.6 矩阵返回 400 `unsupported_parameter`；`store=false` 用于兼容 OpenCode 等无状态客户端，不改变网关内部 RequestTask 留存策略。本网关不提供后台响应 retrieve/cancel 等生命周期端点。
 
 ### 14.2 输出项
 

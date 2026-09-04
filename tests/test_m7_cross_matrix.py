@@ -135,6 +135,11 @@ def test_sample_params_convert() -> None:
     assert anthropic["top_p"] == 0.9
 
 
+def test_to_responses_preserves_stateless_store_false() -> None:
+    body = cross.to_responses_request(_norm(store=False), "gpt")
+    assert body["store"] is False
+
+
 def test_stop_string_to_anthropic_becomes_array() -> None:
     normalized = _norm(options={"stop": "END"})
     body = cross.to_anthropic_request(normalized, "claude")

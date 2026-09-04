@@ -47,8 +47,18 @@ _OPTION_ALLOWLIST = (
 
 class ResponsesRequest:
     def __init__(self, payload: dict[str, Any]) -> None:
-        for field in ("background", "conversation", "store"):
+        for field in ("background", "conversation"):
             reject_unsupported_field(payload, field)
+        store = payload.get("store")
+        if store is not None and not isinstance(store, bool):
+            raise DomainError(
+                DomainErrorCode.INVALID_REQUEST,
+                "store 必须是布尔值",
+                status_code=400,
+            )
+        if store is True:
+            reject_unsupported_field(payload, "store")
+        self.store: bool | None = store
         self.model = require_non_empty_str(payload, "model")
         input_value = payload.get("input")
         if input_value is None or (isinstance(input_value, (list, str)) and not len(input_value)):
@@ -97,6 +107,7 @@ class ResponsesRequest:
             },
             "input": self.input,
             "stream": self.stream,
+            "store": self.store,
         }
 
 

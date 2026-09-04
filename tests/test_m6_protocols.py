@@ -102,9 +102,27 @@ def test_chat_parse_normalizes_stream_and_filters_options() -> None:
 
 
 def test_responses_parse_rejects_server_control_fields() -> None:
-    for field in ("background", "conversation", "store"):
+    for field in ("background", "conversation"):
         error = _parse_error(_responses_payload(**{field: True}), responses_protocol.parse_request)
         assert error.code is DomainErrorCode.UNSUPPORTED_PARAMETER
+        assert error.status_code == 400
+
+
+def test_responses_parse_accepts_stateless_store_false() -> None:
+    parsed = responses_protocol.parse_request(json.dumps(_responses_payload(store=False)).encode())
+    assert parsed.store is False
+    assert parsed.raw["store"] is False
+    assert parsed.normalized_request(parsed.base_context_items())["store"] is False
+
+
+def test_responses_parse_rejects_store_true_or_non_boolean() -> None:
+    error = _parse_error(_responses_payload(store=True), responses_protocol.parse_request)
+    assert error.code is DomainErrorCode.UNSUPPORTED_PARAMETER
+    assert error.status_code == 400
+
+    for value in ("false", 0, []):
+        error = _parse_error(_responses_payload(store=value), responses_protocol.parse_request)
+        assert error.code is DomainErrorCode.INVALID_REQUEST
         assert error.status_code == 400
 
 

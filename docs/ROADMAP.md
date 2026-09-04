@@ -159,7 +159,7 @@ flowchart LR
 - [x] 完成三协议非流式 JSON、流式事件顺序、reasoning、tool call、结束原因和错误契约测试�?
 - [x] SSE 中断语义：Responses �?`response.failed`、Anthropic �?`event: error`、Chat 经锁定版�?OpenAI SDK 契约测试后确定具体中断帧格式或直接断流；中断路径不得伪造正常完成，Chat 中断不得发�?`[DONE]`（正常完成的 Chat 流仍按协议发�?`[DONE]`）�?
 - [x] 使用项目锁定�?`openai` Python SDK 实际调用 Chat Completions 流，验证正常完成、中�?error frame、无 error 断流和客户端主动取消；SDK 升级时重新运行该契约测试�?
-- [x] Responses `background`、`conversation`、`store` 按字段矩阵返�?400 `unsupported_parameter`，不透传语义无法兑现的状态化字段；`service_tier` 同协议透传�?
+- [x] Responses `background`、`conversation`、`store=true` 按字段矩阵返回 400 `unsupported_parameter`；`store=false` 兼容无状态客户端并与网关内部任务留存解耦；`service_tier` 同协议透传。
 - [x] 外部调用方断开规则：任务终态前断开原子进入 CANCELLED（`caller_disconnected`）并幂等释放名额；COMPLETED 与断开竞争时首个合法条件转换获胜，晚到回复只记录审计�?
 - [x] 请求体大小上限：`/v1/*` 推理请求 8 MiB、管�?API 1 MiB，超限在完整 JSON 解析和任务创建之前返回协议兼�?413；chunked 传输按读取累计字节执行同一上限�?
 ### M6-B：任务工作台与人工提�?
