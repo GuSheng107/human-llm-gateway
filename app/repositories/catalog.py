@@ -599,6 +599,21 @@ class FakeModelRepository:
             session.add(ModelGroupItem(model_group_id=group_pk, fake_model_id=model_pk))
         session.flush()
 
+    def model_group_ids(self, session: Session, model_pk: int) -> list[int]:
+        return list(
+            session.scalars(
+                select(ModelGroupItem.model_group_id)
+                .where(ModelGroupItem.fake_model_id == model_pk)
+                .order_by(ModelGroupItem.model_group_id)
+            )
+        )
+
+    def replace_model_groups(self, session: Session, model_pk: int, group_ids: list[int]) -> None:
+        session.query(ModelGroupItem).filter(ModelGroupItem.fake_model_id == model_pk).delete()
+        for group_pk in dict.fromkeys(group_ids):
+            session.add(ModelGroupItem(model_group_id=group_pk, fake_model_id=model_pk))
+        session.flush()
+
     def delete_group(self, session: Session, group_pk: int) -> None:
         row = session.get(ModelGroup, group_pk)
         if row is not None:

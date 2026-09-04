@@ -102,6 +102,7 @@ class InferenceService:
             owner_user_id=owner.id,
             api_key_id=key.id,
             api_key_prefix_snapshot=key.key_prefix,
+            api_key_name_snapshot=key.name,
             fake_model_id=model_row.id,
             requested_model=parsed.model,
             protocol=protocol,

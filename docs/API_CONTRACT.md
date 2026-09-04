@@ -303,9 +303,9 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/api/fake-models` | 登录用户 | 用户看系统模型和自己的私有模型；管理员看全部治理列表。 |
-| POST | `/api/fake-models` | 登录用户 | 管理员创建系统模型，普通用户创建自己的私有模型。 |
+| POST | `/api/fake-models` | 登录用户 | 管理员创建系统模型，普通用户创建自己的私有模型；`group_ids` 可在同一请求中分配模型所属分组。 |
 | GET | `/api/fake-models/{id}` | 登录用户 | 返回权限范围内详情。 |
-| PATCH | `/api/fake-models/{id}` | 登录用户 | 用户修改自己的私有模型；管理员治理全部并维护系统模型。 |
+| PATCH | `/api/fake-models/{id}` | 登录用户 | 用户修改自己的私有模型；管理员治理全部并维护系统模型，`group_ids` 原子替换该模型的分组关系。 |
 | DELETE | `/api/fake-models/{id}` | 登录用户 | 用户删除自己的私有模型；管理员可治理删除。 |
 
 Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型或回复策略。管理员创建的系统模型对全部用户可见；普通用户创建的私有模型只对所有者可见，其他普通用户即使猜到 ID 也返回 404。管理员治理私有模型时不能把它改绑或转授给其他用户。
@@ -319,11 +319,11 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | `/api/model-groups` | 用户查看或创建自己的分组；管理员可治理全部。 |
-| GET/PATCH/DELETE | `/api/model-groups/{id}` | 用户维护自己的分组。 |
-| PUT | `/api/model-groups/{id}/models` | 用当前用户可见的完整 Fake Model ID 集合原子替换成员。 |
+| GET/POST | `/api/model-groups` | 用户查看自己的分组和管理员公开分组，或创建自己的私有分组；管理员可治理全部。 |
+| GET/PATCH/DELETE | `/api/model-groups/{id}` | GET 可查看自己/公开分组；PATCH/DELETE 仅分组所有者或管理员。响应包含 `is_public`、`can_manage`、`can_assign_model`。 |
+| PUT | `/api/model-groups/{id}/models` | 仅管理员可用当前治理模型 ID 集合原子替换成员；普通用户返回 403。普通用户通过 Fake Model 创建/编辑请求的 `group_ids` 分配自己的模型。 |
 
-模型分组是第一层可复用筛选：未绑定分组时，候选集为用户可见的全部有效模型；绑定后，候选集为其中仍属于分组的模型。分组不能引用其他用户的私有模型。
+模型分组是第一层可复用筛选：未绑定分组时，候选集为用户可见的全部有效模型；绑定后，候选集为其中仍属于分组的模型。管理员创建的分组为公开平台分组；普通用户只能把自己的私有模型分配到自己的分组或公开平台分组，不能把其他用户的私有模型带入自己的可见集合，也不能整体覆盖分组成员。管理台会分页拉取全部分组，避免只展示第一页。
 
 ## 8. API Key API
 
@@ -369,13 +369,13 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/tasks` | 用户查看自己的任务；管理员查看脱敏全局任务。 |
-| GET | `/api/tasks/{id}` | 任务详情：所有者可查看完整提示词（不截断）、时间线、草稿和结果；返回 `origin_trace_id` 供跳转日志；原始请求 JSON 不随详情返回。 |
+| GET | `/api/tasks/{id}` | 任务详情：所有者可查看完整提示词（不截断）、时间线、草稿和结果；返回稳定 `display_name`（API Key 名称快照 + 请求模型）及完整 `tool_definitions`；返回 `origin_trace_id` 供跳转日志；原始请求 JSON 不随详情返回。 |
 | GET | `/api/tasks/{id}/raw-request` | 原始请求 JSON 按需加载（仅所有者与管理员）；超大请求不随详情页传输。 |
 | GET | `/api/tasks/{id}/events` | 分页查看任务事件。 |
 | POST | `/api/tasks/{id}/drafts` | 新建或保存人工草稿。 |
 | PATCH | `/api/tasks/{id}/drafts/{draft_id}` | 更新未提交草稿。 |
 | DELETE | `/api/tasks/{id}/drafts/{draft_id}` | 删除未提交草稿。 |
-| POST | `/api/tasks/{id}/drafts/generate` | 选择 LLM 配置生成持久化草稿。 |
+| POST | `/api/tasks/{id}/drafts/generate` | 选择 LLM 配置生成持久化草稿；可用 `selected_tool_names` 传入工作台当前按顺序选择的工具。 |
 | POST | `/api/tasks/{id}/reply` | 原子提交完整回复，首个有效提交获胜。 |
 
 管理员只能查看允许的任务元数据和脱敏请求，不可调用草稿或回复写接口。
@@ -397,18 +397,33 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 }
 ```
 
-`arguments` 必须是合法 JSON 值。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
+`arguments` 必须是 JSON 对象，并符合请求中对应工具的 JSON Schema（required、type、enum、properties 等约束）。工具调用名称、顺序和数量必须来自调用方声明；服务端忽略客户端/上游携带的 ID，按顺序生成稳定的 `call_01`、`call_02`……。用户可以使用调用方声明的 tool，但网关不执行任何工具。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
+
+`POST /api/tasks/{id}/drafts/generate` 的 `selected_tool_names` 语义如下：省略表示沿用请求工具的旧生成语义；传入空数组表示本次生成不提供工具；传入非空数组时，上游只收到这些完整工具定义，且顺序保持一致，单个工具会被设置为指定调用。生成返回后必须校验上游调用的数量、顺序、名称、参数对象和 Schema；校验失败的草稿不得落库。`mode=reasoning` 始终不提供工具。
+
+任务详情的 `tool_definitions` 为：
+
+```json
+[
+  {
+    "name": "lookup",
+    "description": "查询信息",
+    "parameters": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]},
+    "source_type": "openai_function"
+  }
+]
+```
 
 ## 10. Web 小助手 API（M8）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | `/api/assistant/sessions` | 查看或创建自己的会话。 |
+| GET/POST | `/api/assistant/sessions` | 查看或创建自己的会话；POST 必须提供正整数 `llm_config_id`，且配置属于当前用户并处于启用状态。 |
 | GET | `/api/assistant/sessions/{id}` | 查看自己的会话与消息。 |
 | DELETE | `/api/assistant/sessions/{id}` | 删除自己的会话和消息。 |
 | POST | `/api/assistant/sessions/{id}/messages` | 使用选定 LLM 配置发送文本和当前页面上下文快照。 |
 
-每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
+每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。没有自己的启用 LLM 配置时，前端禁用发送和新建会话入口；历史会话仍可阅读。历史会话绑定的配置后来停用或删除时同样只读，发送返回 400。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
 
 ## 11. 设置、日志与审计
 

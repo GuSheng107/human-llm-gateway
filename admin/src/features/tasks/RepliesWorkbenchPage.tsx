@@ -41,8 +41,27 @@ function BlockBadge({ text, tone = "slate" }: { text: string; tone?: "slate" | "
   );
 }
 
-function ImageBlock({ url, width, height }: { url: string; width?: number | null; height?: number | null }) {
+function ImageBlock({
+  url,
+  width,
+  height,
+  sourceType,
+}: {
+  url: string;
+  width?: number | null;
+  height?: number | null;
+  sourceType?: string | null;
+}) {
+  const [failed, setFailed] = useState(false);
   const sizeHint = width && height ? `${width}×${height}` : null;
+  if (failed) {
+    return (
+      <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+        图片加载失败{sourceType ? `（来源：${sourceType}）` : ""}，可复制或打开原始地址检查。
+        <span className="mt-1 block break-all font-mono text-[10px] text-amber-700">{url}</span>
+      </div>
+    );
+  }
   return (
     <a
       href={url}
@@ -55,6 +74,7 @@ function ImageBlock({ url, width, height }: { url: string; width?: number | null
         src={url}
         alt={sizeHint ? `图片 ${sizeHint}` : "图片"}
         loading="lazy"
+        onError={() => setFailed(true)}
         className="max-h-48 w-auto max-w-full bg-slate-50 object-contain"
       />
     </a>
@@ -130,15 +150,21 @@ function MessageBlocks({
   length: number;
 }) {
   const hasRichBlocks = blocks.some((block) => block.type !== "text");
-  if (!hasRichBlocks) {
+  const technicalBlocks = blocks.filter((block) => block.display_kind === "technical");
+  const contentBlocks = blocks.filter((block) => block.display_kind !== "technical");
+  if (!hasRichBlocks && technicalBlocks.length === 0) {
     return <MessageText text={text} taskId={taskId} messageIndex={messageIndex} length={length} />;
   }
-  return (
-    <div className="space-y-2">
-      {blocks.map((block, index) => {
+  const renderBlock = (block: ConversationBlock, index: number) => {
         if (isImageBlock(block) && block.url) {
           return (
-            <ImageBlock key={index} url={block.url} width={block.width} height={block.height} />
+            <ImageBlock
+              key={index}
+              url={block.url}
+              width={block.width}
+              height={block.height}
+              sourceType={block.source_type}
+            />
           );
         }
         if (block.type === "file" || block.type === "attachment") {
@@ -161,7 +187,18 @@ function MessageBlocks({
             <span className="min-w-0 flex-1 truncate font-mono">{block.text || block.name || block.tool_call_id || ""}</span>
           </div>
         );
-      })}
+      };
+  return (
+    <div className="space-y-2">
+      {contentBlocks.map((block, index) => renderBlock(block, index))}
+      {technicalBlocks.length > 0 && (
+        <details className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+          <summary className="cursor-pointer text-[11px] text-slate-500">
+            技术上下文（{technicalBlocks.reduce((total, block) => total + (block.text?.length ?? 0), 0).toLocaleString()} 字）
+          </summary>
+          <div className="mt-2 space-y-2">{technicalBlocks.map((block, index) => renderBlock(block, index))}</div>
+        </details>
+      )}
     </div>
   );
 }
@@ -285,7 +322,7 @@ export function RepliesWorkbenchPage() {
                   <span className="min-w-0 flex-1">
                     <span className="flex items-center gap-2">
                       <span className="truncate font-mono text-xs font-medium text-slate-700">
-                        #{item.public_id}
+                        {item.display_name}
                       </span>
                       <span className="shrink-0 truncate text-[11px] text-slate-400">
                         {item.fake_model_name}
@@ -357,7 +394,7 @@ export function RepliesWorkbenchPage() {
 
       {replyOpen && selectedId && (
         <Modal
-          title={`回复任务 #${selectedItem?.public_id ?? ""}`}
+          title={selectedItem?.display_name ?? "回复任务"}
           description="人工回复必须先提交完整结果，再进行伪流式输出"
           onClose={() => setReplyOpen(false)}
           width="max-w-6xl"

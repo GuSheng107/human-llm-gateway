@@ -19,6 +19,7 @@ import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { friendlyErrorMessage } from "../../utils/notify";
 import type { LlmConfig, ReplyDraft, TaskDetail, ToolCall } from "../../types/gateway";
+import { buildInitialArguments } from "./toolArguments";
 import { registerEditBridge } from "../assistant/bridge";
 import { PROTOCOL_LABELS, formatDeadline, isTerminalTaskState } from "./labels";
 
@@ -33,7 +34,6 @@ function isEmptyDraft(draft: ReplyDraft): boolean {
 // ---------------------------------------------------------------------------
 
 interface ToolCallEditor {
-  id: string;
   name: string;
   argumentsText: string;
 }
@@ -44,17 +44,9 @@ function toEditors(draft: ReplyDraft | null): ToolCallEditor[] {
     return [];
   }
   return draft.tool_calls.map((call) => ({
-    id: call.id,
     name: call.name,
     argumentsText: JSON.stringify(call.arguments, null, 2),
   }));
-}
-
-function nextCallId(existing: ToolCallEditor[]): string {
-  let index = 1;
-  const ids = new Set(existing.map((c) => c.id));
-  while (ids.has(`call_${String(index).padStart(2, "0")}`)) index += 1;
-  return `call_${String(index).padStart(2, "0")}`;
 }
 
 type BuildResult =
@@ -69,12 +61,11 @@ function buildDraft(
   const parsed: ToolCall[] = [];
   for (const editor of toolCalls) {
     // 整行留空视为未添加调用（允许 0 条工具调用直接提交）。
-    const hasId = editor.id.trim().length > 0;
     const hasName = editor.name.trim().length > 0;
     const hasArguments = editor.argumentsText.trim().length > 0;
-    if (!hasId && !hasName && !hasArguments) continue;
-    if (!hasId || !hasName) {
-      return { ok: false, error: "每个工具调用的 id 与 name 不能为空" };
+    if (!hasName && !hasArguments) continue;
+    if (!hasName) {
+      return { ok: false, error: "每个工具调用都必须选择已声明的工具" };
     }
     let args: Record<string, unknown> = {};
     const text = editor.argumentsText.trim();
@@ -82,14 +73,18 @@ function buildDraft(
       try {
         const value = JSON.parse(text);
         if (typeof value !== "object" || value === null || Array.isArray(value)) {
-          return { ok: false, error: `tool ${editor.id} 的 arguments 必须是 JSON 对象` };
+          return { ok: false, error: `tool ${editor.name} 的 arguments 必须是 JSON 对象` };
         }
         args = value as Record<string, unknown>;
       } catch {
-        return { ok: false, error: `tool ${editor.id} 的 arguments 不是合法 JSON` };
+        return { ok: false, error: `tool ${editor.name} 的 arguments 不是合法 JSON` };
       }
     }
-    parsed.push({ id: editor.id.trim(), name: editor.name.trim(), arguments: args });
+    parsed.push({
+      id: `call_${String(parsed.length + 1).padStart(2, "0")}`,
+      name: editor.name.trim(),
+      arguments: args,
+    });
   }
   return {
     ok: true,
@@ -332,6 +327,8 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
         reasoning_seed:
           generateMode === "reply" && reasoning.trim() ? reasoning.trim() : undefined,
         guidance: guidance.trim() ? guidance.trim() : undefined,
+        selected_tool_names:
+          generateMode === "reasoning" ? [] : toolCalls.map((call) => call.name),
       });
       setActiveDraftId(draft.id);
       setDraftVersion(draft.version);
@@ -373,13 +370,19 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     setToolCalls((prev) => prev.map((call, i) => (i === index ? { ...call, ...patch } : call)));
   };
 
-  const addCall = () => {
-    setToolCalls((prev) => [...prev, { id: nextCallId(prev), name: "", argumentsText: "{}" }]);
-  };
-
   const removeCall = (index: number) => {
     // 允许删到 0 条：工具调用不是必须的。
     setToolCalls((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const moveCall = (index: number, direction: -1 | 1) => {
+    setToolCalls((prev) => {
+      const target = index + direction;
+      if (target < 0 || target >= prev.length) return prev;
+      const next = [...prev];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
   };
 
   /** 工具相关操作前的风险警告：本次登录只弹一次（sessionStorage 记忆）。 */
@@ -393,15 +396,21 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     setTab(next);
   };
 
-  /** 声明工具勾选：勾选新增一条调用，取消移除同名调用。 */
-  const toggleTool = (name: string, checked: boolean) => {
+  /** 声明工具勾选：勾选新增一条调用并自动生成 schema 参数骨架。 */
+  const toggleTool = (tool: TaskDetail["tool_definitions"][number], checked: boolean) => {
     if (checked) requireToolWarn();
     setToolCalls((prev) => {
       if (checked) {
-        if (prev.some((c) => c.name === name)) return prev;
-        return [...prev, { id: nextCallId(prev), name, argumentsText: "{}" }];
+        if (prev.some((c) => c.name === tool.name)) return prev;
+        return [
+          ...prev,
+          {
+            name: tool.name,
+            argumentsText: JSON.stringify(buildInitialArguments(tool.parameters), null, 2),
+          },
+        ];
       }
-      return prev.filter((c) => c.name !== name);
+      return prev.filter((c) => c.name !== tool.name);
     });
     if (checked) setTab("tools");
   };
@@ -424,7 +433,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
   }
 
   const canEdit = task.can_edit;
-  const declaredToolNames = new Set(task.tool_names);
+  const declaredToolNames = new Set(task.tool_definitions.map((tool) => tool.name));
   // 提前提示未声明名称（后端会拒绝提交）。
   const undeclaredCallNames = toolCalls
     .map((call) => call.name.trim())
@@ -434,7 +443,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     <div className="flex min-h-0 flex-1 flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-4 py-2.5 shadow-card">
         <div className="flex items-center gap-2 text-xs text-slate-500">
-          <span className="font-mono font-medium text-slate-700">#{task.public_id}</span>
+          <span className="font-medium text-slate-700">{task.display_name}</span>
           <StatusBadge status={task.state} />
           <span className="text-slate-400">{PROTOCOL_LABELS[task.protocol] ?? task.protocol}</span>
           {task.human_deadline_at && !isTerminalTaskState(task.state) && (
@@ -531,10 +540,10 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
               {tab === "tools" && (
                 <div className="space-y-3">
                   <p className="text-xs text-slate-400">
-                    用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
-                    名称必须命中调用方声明的工具，工具调用不是必须的。
+                    选择调用方声明的 tool 后会自动填充对应 JSON Schema 的最小参数骨架；
+                    工具调用不是必须的，命令执行及其风险由调用方自行承担。
                   </p>
-                  {task.tool_names.length === 0 && (
+                  {task.tool_definitions.length === 0 && (
                     <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
                       本次请求未声明任何工具，不能提交工具调用。
                     </p>
@@ -555,24 +564,35 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
                       key={index}
                       className="space-y-2 rounded-lg border border-slate-200 p-3"
                     >
-                      <div className="flex gap-2">
-                        <input
-                          value={call.id}
-                          disabled={!canEdit}
-                          onChange={(event) => updateCall(index, { id: event.target.value })}
-                          className="field-input w-32 font-mono"
-                          placeholder="call_01"
-                        />
-                        <input
-                          value={call.name}
-                          disabled={!canEdit}
-                          onChange={(event) => updateCall(index, { name: event.target.value })}
-                          className="field-input min-w-0 flex-1"
-                          placeholder="工具名称"
-                        />
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[11px] text-slate-400">
+                          call_{String(index + 1).padStart(2, "0")}
+                        </span>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-slate-700">
+                          {call.name}
+                        </span>
                         <Button
                           type="button"
                           variant="ghost"
+                          disabled={!canEdit || index === 0}
+                          onClick={() => moveCall(index, -1)}
+                          aria-label={`上移 ${call.name}`}
+                        >
+                          ↑
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={!canEdit || index === toolCalls.length - 1}
+                          onClick={() => moveCall(index, 1)}
+                          aria-label={`下移 ${call.name}`}
+                        >
+                          ↓
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={!canEdit}
                           onClick={() => removeCall(index)}
                           aria-label="删除工具调用"
                         >
@@ -590,12 +610,6 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
                       />
                     </div>
                   ))}
-                  {canEdit && (
-                    <Button type="button" variant="ghost" onClick={addCall}>
-                      <Icon name="plus" className="h-3.5 w-3.5" />
-                      添加工具调用
-                    </Button>
-                  )}
                 </div>
               )}
             </div>
@@ -654,32 +668,45 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
               调用方声明的工具
             </div>
             <div className="max-h-72 overflow-auto divide-y divide-slate-100">
-              {task.tool_names.map((name) => {
-                const checked = toolCalls.some((call) => call.name === name);
+              {task.tool_definitions.map((tool) => {
+                const checked = toolCalls.some((call) => call.name === tool.name);
                 return (
                   <label
-                    key={name}
+                    key={tool.name}
                     className="flex cursor-pointer items-start gap-2.5 px-4 py-2.5 hover:bg-slate-50"
                   >
                     <input
                       type="checkbox"
                       checked={checked}
                       disabled={!canEdit}
-                      onChange={(event) => toggleTool(name, event.target.checked)}
+                      onChange={(event) => toggleTool(tool, event.target.checked)}
                       className="mt-0.5"
                     />
-                    <span className="min-w-0 flex-1 truncate font-mono text-xs font-medium text-slate-700">
-                      {name}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-mono text-xs font-medium text-slate-700">
+                        {tool.name}
+                      </span>
+                      {tool.description && (
+                        <span className="mt-0.5 block line-clamp-2 text-[10px] leading-relaxed text-slate-400">
+                          {tool.description}
+                        </span>
+                      )}
+                      <details className="mt-1 text-[10px] text-slate-400" onClick={(event) => event.stopPropagation()}>
+                        <summary className="cursor-pointer">查看参数结构</summary>
+                        <pre className="mt-1 max-h-32 overflow-auto rounded bg-slate-50 p-2 font-mono">
+                          {JSON.stringify(tool.parameters, null, 2)}
+                        </pre>
+                      </details>
                     </span>
                   </label>
                 );
               })}
-              {task.tool_names.length === 0 && (
+              {task.tool_definitions.length === 0 && (
                 <p className="px-4 py-4 text-xs text-slate-400">本次请求未声明工具</p>
               )}
             </div>
             <p className="border-t border-slate-100 px-4 py-2.5 text-[11px] leading-relaxed text-slate-400">
-              用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
+              选中工具后会自动生成参数骨架；提交前请补全必填字段。网关不会执行任何工具。
             </p>
           </Card>
         </aside>

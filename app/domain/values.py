@@ -6,6 +6,7 @@ import base64
 import re
 import string
 import unicodedata
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -127,7 +128,7 @@ def password_problems(password: str, username: str = "") -> list[str]:
 class ReplyToolCall(BaseModel):
     id: str
     name: str
-    arguments: dict = Field(default_factory=dict)
+    arguments: dict[str, Any] = Field(default_factory=dict)
 
 
 class ReplyDraft(BaseModel):

@@ -3,7 +3,6 @@ import {
   CAPABILITY_LABELS,
   ENDPOINT_LABELS,
   createFakeModel,
-  replaceGroupMembers,
   updateFakeModel,
   type FakeModelPayload,
   type FakeModelUpdatePayload,
@@ -22,8 +21,6 @@ const CONTEXT_PRESETS = [128_000, 256_000, 512_000, 1_000_000];
 interface ModelEditModalProps {
   model: FakeModel | null;
   groups: ModelGroup[];
-  models: FakeModel[];
-  currentUserId: string;
   isAdmin: boolean;
   onClose: () => void;
   onSaved: () => void;
@@ -81,8 +78,6 @@ const TABS: { key: TabKey; label: string }[] = [
 export function ModelEditModal({
   model,
   groups,
-  models,
-  currentUserId,
   isAdmin,
   onClose,
   onSaved,
@@ -91,24 +86,24 @@ export function ModelEditModal({
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
-  // 可管组：管理员可管理全部分组，普通用户只能管理自己创建的分组。
+  // 模型侧可分配组由后端按 owner/public/admin 计算，不能只依赖前端 owner_id。
   const manageableGroups = useMemo(
-    () => (isAdmin ? groups : groups.filter((group) => group.owner_user_id === currentUserId)),
-    [groups, isAdmin, currentUserId],
+    () => groups.filter((group) => isAdmin || group.can_assign_model),
+    [groups, isAdmin],
   );
 
   useEffect(() => {
     setTab("basic");
     if (model) {
       // 初始选中 = 所有包含该模型的分组（model_ids 为 model_id 字符串数组）。
-      const groupIds = groups
+      const groupIds = manageableGroups
         .filter((group) => group.model_ids.includes(model.model_id))
         .map((group) => group.id);
       setForm({ ...fromModel(model), groupIds });
     } else {
       setForm(EMPTY_FORM);
     }
-  }, [groups, model]);
+  }, [manageableGroups, model]);
 
   const patch = (changes: Partial<FormState>) =>
     setForm((previous) => ({ ...previous, ...changes }));
@@ -119,25 +114,6 @@ export function ModelEditModal({
         ? [...new Set([...form.groupIds, groupId])]
         : form.groupIds.filter((id) => id !== groupId),
     });
-  };
-
-  // 对每个可管组做"应含/应不含"收敛：组内成员列表以 model_id 字符串维护，
-  // 提交时映射为数字 id 调 replaceGroupMembers；非可管组的既有成员不受影响。
-  const syncGroups = async (modelId: string) => {
-    const target = new Set(form.groupIds);
-    const numericIdOf = new Map(models.map((item) => [item.model_id, Number(item.id)]));
-    for (const group of manageableGroups) {
-      const shouldContain = target.has(group.id);
-      const contains = group.model_ids.includes(modelId);
-      if (shouldContain === contains) continue;
-      const nextModelIds = shouldContain
-        ? [...group.model_ids, modelId]
-        : group.model_ids.filter((id) => id !== modelId);
-      const numericIds = nextModelIds
-        .map((id) => numericIdOf.get(id))
-        .filter((id): id is number => id != null);
-      await replaceGroupMembers(group.id, numericIds);
-    }
   };
 
   const submit = async (event?: FormEvent) => {
@@ -156,9 +132,9 @@ export function ModelEditModal({
           max_output_tokens: intOrNull(form.max_output_tokens),
           capabilities: form.capabilities,
           endpoint_types: form.endpoint_types,
+          group_ids: form.groupIds.map(Number),
         };
         await updateFakeModel(model.id, payload);
-        await syncGroups(model.model_id);
         notify("模型已更新", "success");
       } else {
         const payload: FakeModelPayload = {
@@ -169,9 +145,9 @@ export function ModelEditModal({
           max_output_tokens: intOrNull(form.max_output_tokens),
           capabilities: form.capabilities,
           endpoint_types: form.endpoint_types,
+          group_ids: form.groupIds.map(Number),
         };
-        const created = await createFakeModel(payload);
-        await syncGroups(created.model_id);
+        await createFakeModel(payload);
         notify("模型已创建", "success");
       }
       onSaved();

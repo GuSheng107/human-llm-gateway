@@ -123,6 +123,9 @@ export interface ModelGroup {
   description: string | null;
   is_enabled: boolean;
   model_ids: string[];
+  is_public: boolean;
+  can_manage: boolean;
+  can_assign_model: boolean;
   created_at: string;
 }
 
@@ -184,6 +187,13 @@ export interface ToolCall {
   arguments: Record<string, unknown>;
 }
 
+export interface ToolDefinition {
+  name: string;
+  description: string | null;
+  parameters: Record<string, unknown>;
+  source_type: string;
+}
+
 export interface ReplyDraft {
   reasoning: string | null;
   tool_calls: ToolCall[];
@@ -219,6 +229,8 @@ export interface TaskItem {
   reply_strategy: string;
   delivery_mode: string;
   api_key_prefix: string;
+  api_key_name: string;
+  display_name: string;
   stream_requested: boolean;
   has_tools: boolean;
   /** 提示词尾部预览（Agent 提示词的提问在末尾）。 */
@@ -236,7 +248,7 @@ export interface TaskDetail extends TaskItem {
   is_owner: boolean;
   can_edit: boolean;
   prompt_text: string;
-  tool_names: string[];
+  tool_definitions: ToolDefinition[];
   raw_request: Record<string, unknown> | null;
   previous_task_id: string | null;
   drafts: TaskDraft[];

@@ -30,9 +30,10 @@ from ..domain.enums import (
     ThinkingMode,
 )
 from ..domain.errors import DomainError, DomainErrorCode
+from ..domain.tool_validation import normalize_tool_calls
 from ..domain.values import ReplyDraft
 from ..protocols import cross
-from ..protocols.normalized import declared_tool_names
+from ..protocols.normalized import declared_tool_definitions
 from ..repositories.llm_configs import LlmConfigRepository
 from ..repositories.models import LlmConfig, RequestTask, TaskDraft, User
 from ..repositories.system import AuditRepository
@@ -99,6 +100,10 @@ _REPLY_FROM_SEED_TEMPLATE = (
 _GUIDANCE_TEMPLATE = (
     "以下是任务回复者对本次生成内容（思考链 / 正式回复 / 工具调用参数）的引导性要求，"
     "请严格遵循它来生成：\n\n{guidance}"
+)
+_TOOL_SELECTION_TEMPLATE = (
+    "只允许按以下顺序各调用一次工具：{names}。每次调用的 name 必须精确命中，"
+    "arguments 必须是对应 JSON Schema 的 JSON 对象；不要调用未列出的工具，不要重复调用。"
 )
 
 # 生成模式（DraftGenerateInput.mode）
@@ -187,6 +192,72 @@ def _inject_mode_instruction(body: dict[str, Any], protocol: LLMProtocol, instru
             body["system"] = f"{instruction}\n\n{system}"
         else:
             body["system"] = instruction
+
+
+def _raw_tool_name(tool: dict[str, Any]) -> str | None:
+    function = tool.get("function")
+    if isinstance(function, dict) and isinstance(function.get("name"), str):
+        name = function["name"].strip()
+        return name or None
+    name = tool.get("name")
+    if not isinstance(name, str):
+        return None
+    name = name.strip()
+    return name or None
+
+
+def _prepare_tool_selection(
+    normalized: dict[str, Any],
+    selected_tool_names: list[str] | None,
+    *,
+    protocol: LLMProtocol,
+    mode: str,
+) -> tuple[dict[str, Any], list[str] | None]:
+    """按工作台选择重建工具集合，并返回生成结果应满足的调用顺序。"""
+    # reasoning 模式绝不向上游提供工具，也不接受上游工具调用。
+    selection_is_explicit = selected_tool_names is not None or mode == MODE_REASONING
+    if not selection_is_explicit:
+        return normalized, None
+    selected = [name.strip() for name in (selected_tool_names or [])]
+    if len(selected) != len(set(selected)):
+        raise DomainError(DomainErrorCode.VALIDATION_FAILED, "选中的工具不能重复", status_code=400)
+    declared = declared_tool_definitions(normalized)
+    declared_names = {item["name"] for item in declared}
+    unknown = [name for name in selected if name not in declared_names]
+    if unknown:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            f"选中的工具 {'、'.join(unknown)} 不在调用方声明的工具内",
+            status_code=400,
+        )
+    if mode == MODE_REASONING:
+        selected = []
+    raw_tools = normalized.get("tools")
+    by_name = {
+        name: tool
+        for tool in (raw_tools if isinstance(raw_tools, list) else [])
+        if isinstance(tool, dict)
+        for name in [_raw_tool_name(tool)]
+        if name
+    }
+    filtered = [by_name[name] for name in selected if name in by_name]
+    options = dict(normalized.get("options") or {})
+    options.pop("tools", None)
+    options.pop("tool_choice", None)
+    prepared = {
+        **normalized,
+        "tools": filtered or None,
+        "options": options,
+        # 显式选择覆盖请求原有 tool_choice；空选择必须同时移除二者。
+        "tool_choice": None,
+    }
+    if len(selected) == 1:
+        name = selected[0]
+        if protocol is LLMProtocol.OPENAI_CHAT:
+            prepared["tool_choice"] = {"type": "function", "function": {"name": name}}
+        elif protocol is LLMProtocol.ANTHROPIC_MESSAGES:
+            prepared["tool_choice"] = {"type": "tool", "name": name}
+    return prepared, selected
 
 
 def _build_chat_request(
@@ -477,6 +548,7 @@ class LlmDraftService:
         exclude_context_indices: list[int] | None = None,
         reasoning_seed: str | None = None,
         guidance: str | None = None,
+        selected_tool_names: list[str] | None = None,
     ) -> TaskDraft:
         """生成草稿。
 
@@ -489,6 +561,10 @@ class LlmDraftService:
         ``exclude_context_indices`` 对应 normalized context 下标（与
         ``GET /tasks/{id}/conversation`` 返回的 context_index 一致），用于
         消息级勾选：剔除不送入上游的历史消息。
+
+        ``selected_tool_names`` 为前端当前选择的有序工具名；显式传入空数组
+        表示本次生成不提供工具。只要显式选择，就必须走规范化重建路径，
+        不复用原始请求中的 tools/tool_choice。
 
         已存在未提交的 LLM 草稿时按模式合并更新，而不是拒绝（三模式需要
         允许「先生成思考链、再按它生成回复」的两次序列）。
@@ -536,11 +612,22 @@ class LlmDraftService:
         except (ValueError, json.JSONDecodeError):
             normalized = {}
         normalized = _filter_context(normalized, exclude_context_indices)
+        normalized, expected_tool_names = _prepare_tool_selection(
+            normalized,
+            selected_tool_names,
+            protocol=cfg.protocol,
+            mode=mode,
+        )
         # 5. 构造目标协议请求体（同协议直拼；跨协议走 cross 矩阵，§12.6）
         expected_llm_protocol = _INFERENCE_TO_LLM.get(task.protocol)
         raw_body: dict[str, Any] | None = None
         # 上下文勾选过滤后必须使用规范化重建路径，不能直拼原始请求。
-        if not exclude_context_indices and expected_llm_protocol is cfg.protocol:
+        if (
+            selected_tool_names is None
+            and mode != MODE_REASONING
+            and not exclude_context_indices
+            and expected_llm_protocol is cfg.protocol
+        ):
             try:
                 decoded_raw = json.loads(task.raw_payload_json)
                 if isinstance(decoded_raw, dict):
@@ -589,6 +676,12 @@ class LlmDraftService:
         if guidance and guidance.strip():
             _inject_mode_instruction(
                 body, cfg.protocol, _GUIDANCE_TEMPLATE.format(guidance=guidance.strip())
+            )
+        if expected_tool_names is not None:
+            _inject_mode_instruction(
+                body,
+                cfg.protocol,
+                _TOOL_SELECTION_TEMPLATE.format(names="、".join(expected_tool_names) or "无"),
             )
         # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch）
         secret = _decrypt_config(cfg)
@@ -686,15 +779,17 @@ class LlmDraftService:
                 tool_calls=draft.tool_calls,
                 final_text=draft.final_text,
             )
-        if draft.tool_calls:
-            declared = set(declared_tool_names(normalized))
-            unknown = sorted({call.name for call in draft.tool_calls if call.name not in declared})
-            if unknown:
-                raise DomainError(
-                    DomainErrorCode.VALIDATION_FAILED,
-                    f"上游生成的工具 {'、'.join(unknown)} 不在调用方声明的工具内，已拒绝保存",
-                    status_code=400,
+        # 任何落库前都校验参数 schema；显式选择还要求数量、顺序、名称完全一致。
+        draft = draft.model_copy(
+            update={
+                "tool_calls": normalize_tool_calls(
+                    normalized,
+                    draft.tool_calls,
+                    expected_names=expected_tool_names,
+                    source="上游生成",
                 )
+            }
+        )
         # 7. 落库前原子复核；调用期间若人工已回复或生成了草稿，拒绝晚到结果。
         begin_immediate_if_sqlite(session)
         current_task = session.get(RequestTask, task_id, with_for_update=True)

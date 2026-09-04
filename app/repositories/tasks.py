@@ -238,6 +238,7 @@ class TaskRepository:
                     RequestTask.public_id.ilike(f"%{term}%"),
                     RequestTask.requested_model.ilike(f"%{term}%"),
                     RequestTask.api_key_prefix_snapshot.ilike(f"%{term}%"),
+                    RequestTask.api_key_name_snapshot.ilike(f"%{term}%"),
                 )
             )
         total = session.scalar(select(func.count()).select_from(RequestTask).where(*filters)) or 0

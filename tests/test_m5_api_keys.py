@@ -208,6 +208,7 @@ def test_disabled_or_deleted_key_blocks_new_requests_but_admitted_task_continues
             owner_user_id=user_id,
             api_key_id=key_id,
             api_key_prefix_snapshot=created["key_prefix"],
+            api_key_name_snapshot=created["name"],
             requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json="{}",
@@ -312,26 +313,32 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
     headers = _create_user(client, admin_headers, "key-user-8")
     listed = client.get("/api/fake-models", headers=headers).json()["items"]
     by_id = {item["model_id"]: int(item["id"]) for item in listed}
+    platform_group = client.post(
+        "/api/model-groups",
+        headers=admin_headers,
+        json={"name": "平台分组筛选"},
+    ).json()
+    assert platform_group["is_public"] is True
+    assigned = client.patch(
+        f"/api/fake-models/{by_id['deepseek-v4-pro']}",
+        headers=admin_headers,
+        json={"group_ids": [int(platform_group["id"])]},
+    )
+    assert assigned.status_code == 200, assigned.text
     private = client.post(
-        "/api/fake-models", headers=headers, json={"model_id": "narrow-private"}
+        "/api/fake-models",
+        headers=headers,
+        json={
+            "model_id": "narrow-private",
+            "group_ids": [int(platform_group["id"])],
+        },
     ).json()
     by_id["narrow-private"] = int(private["id"])
-
-    group = client.post(
-        "/api/model-groups",
-        headers=headers,
-        json={"name": "分组筛选"},
-    ).json()
-    client.put(
-        f"/api/model-groups/{group['id']}/models",
-        headers=headers,
-        json={"fake_model_ids": [by_id["deepseek-v4-pro"], by_id["narrow-private"]]},
-    )
 
     grouped_key = client.post(
         "/api/api-keys",
         headers=headers,
-        json={"name": "grouped", "model_group_id": int(group["id"])},
+        json={"name": "grouped", "model_group_id": int(platform_group["id"])},
     ).json()
     models = client.get(
         "/v1/models", headers={"Authorization": f"Bearer {grouped_key['plaintext']}"}
@@ -344,7 +351,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
         headers=headers,
         json={
             "name": "outside-group",
-            "model_group_id": int(group["id"]),
+            "model_group_id": int(platform_group["id"]),
             "fake_model_ids": [by_id["deepseek-v4-flash"]],
         },
     )
@@ -355,7 +362,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
         headers=headers,
         json={
             "name": "selected",
-            "model_group_id": int(group["id"]),
+            "model_group_id": int(platform_group["id"]),
             "fake_model_ids": [by_id["deepseek-v4-pro"]],
         },
     ).json()
@@ -482,6 +489,7 @@ def test_deleted_model_or_group_keep_history_task_snapshot(client, admin_headers
             owner_user_id=user_id,
             api_key_id=int(created["id"]),
             api_key_prefix_snapshot=created["key_prefix"],
+            api_key_name_snapshot=created["name"],
             requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json="{}",

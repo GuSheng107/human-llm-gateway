@@ -59,7 +59,7 @@ class PageContextSnapshot(StrictModel):
 
 class SessionCreate(StrictModel):
     title: str = Field(default="新会话", max_length=255)
-    llm_config_id: int | None = None
+    llm_config_id: int = Field(ge=1)
 
 
 class SessionPatch(StrictModel):

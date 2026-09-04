@@ -245,56 +245,54 @@ def test_user_can_manage_own_private_model_and_admin_creates_system(client, admi
     assert duplicate.status_code == 409
 
 
-def test_model_group_membership_is_limited_to_visible_models(client, admin_headers) -> None:
+def test_model_group_membership_is_assigned_from_model_editor(client, admin_headers) -> None:
     headers = _create_user(client, admin_headers, "group-user")
     other = _create_user(client, admin_headers, "group-user-2")
     owner_private = _model(client, headers, "group-visible")
     foreign_private = _model(client, other, "group-foreign")
+    owner_second = _model(client, headers, "group-visible-2")
 
     group = client.post("/api/model-groups", headers=headers, json={"name": "常用模型"}).json()
     assert group["model_ids"] == []
+    assert group["is_public"] is False
+    assert group["can_manage"] is True
+    assert group["can_assign_model"] is True
 
-    updated = client.put(
+    blocked = client.put(
         f"/api/model-groups/{group['id']}/models",
         headers=headers,
         json={"fake_model_ids": [999999]},
     )
-    # 不存在的模型 id 属于无效成员。
-    assert updated.status_code == 400
+    assert blocked.status_code == 403
 
-    updated = client.put(
-        f"/api/model-groups/{group['id']}/models",
+    invalid = client.patch(
+        f"/api/fake-models/{owner_private['id']}",
         headers=headers,
-        json={"fake_model_ids": [int(owner_private["id"]), int(foreign_private["id"])]},
+        json={"group_ids": [999999]},
     )
-    assert updated.status_code == 400
-    assert "可见" in updated.json()["error"]["message"]
+    assert invalid.status_code == 400
 
-    updated = client.put(
-        f"/api/model-groups/{group['id']}/models",
+    foreign_update = client.patch(
+        f"/api/fake-models/{foreign_private['id']}",
         headers=headers,
-        json={"fake_model_ids": [int(owner_private["id"])]},
+        json={"group_ids": [int(group["id"])]},
     )
-    assert updated.status_code == 200
-    assert updated.json()["model_ids"] == ["group-visible"]
+    assert foreign_update.status_code == 404
 
-    # 系统模型也在可见集合内，可加入分组。
-    system_ids = [
-        int(item["id"])
-        for item in client.get("/api/fake-models", headers=headers).json()["items"]
-        if item["scope"] == "system"
-    ]
-    updated = client.put(
-        f"/api/model-groups/{group['id']}/models",
+    updated = client.patch(
+        f"/api/fake-models/{owner_private['id']}",
         headers=headers,
-        json={"fake_model_ids": [int(owner_private["id"]), *system_ids]},
+        json={"group_ids": [int(group["id"])]},
     )
     assert updated.status_code == 200
-    assert set(updated.json()["model_ids"]) == {"group-visible"} | {
-        item["model_id"]
-        for item in client.get("/api/fake-models", headers=headers).json()["items"]
-        if item["scope"] == "system"
-    }
+    updated = client.patch(
+        f"/api/fake-models/{owner_second['id']}",
+        headers=headers,
+        json={"group_ids": [int(group["id"])]},
+    )
+    assert updated.status_code == 200
+    group_detail = client.get(f"/api/model-groups/{group['id']}", headers=headers).json()
+    assert set(group_detail["model_ids"]) == {"group-visible", "group-visible-2"}
 
     first_page = client.get(
         "/api/fake-models",
@@ -306,7 +304,7 @@ def test_model_group_membership_is_limited_to_visible_models(client, admin_heade
         headers=headers,
         params={"group_id": group["id"], "page": 2, "page_size": 1},
     ).json()
-    assert first_page["total"] == len(updated.json()["model_ids"])
+    assert first_page["total"] == 2
     assert len(first_page["items"]) == 1
     assert len(second_page["items"]) == 1
     assert first_page["items"][0]["id"] != second_page["items"][0]["id"]

@@ -44,7 +44,7 @@ const CONTEXT_FEATURE_LABELS: Record<string, string> = {
   adminConnections: "IM 连接监管",
 };
 
-/** 默认 LLM 偏好持久化 key（新建会话 / 直接发消息时使用）。 */
+/** LLM 配置偏好持久化 key（新建会话 / 直接发消息时使用）。 */
 const DEFAULT_LLM_KEY = "hlg_assistant_default_llm";
 /** 上下文使用比例 >= 此值时进度条转红。 */
 const USAGE_WARN_RATIO = 0.8;
@@ -104,7 +104,13 @@ export function AssistantPanel() {
     listLlmConfigs(1)
       .then((page) => {
         if (cancelled) return;
-        setLlmConfigs(page.items.filter((cfg) => cfg.is_enabled));
+        const available = page.items.filter((cfg) => cfg.is_enabled);
+        setLlmConfigs(available);
+        setPreferredConfigId((current) => {
+          if (current && available.some((cfg) => cfg.id === current)) return current;
+          if (current) localStorage.removeItem(DEFAULT_LLM_KEY);
+          return "";
+        });
       })
       .catch(() => {
         if (cancelled) return;
@@ -169,6 +175,16 @@ export function AssistantPanel() {
     [sessions, activeSessionId],
   );
 
+  const preferredConfig = useMemo(
+    () => llmConfigs.find((cfg) => cfg.id === preferredConfigId) ?? null,
+    [llmConfigs, preferredConfigId],
+  );
+  const activeSessionCanSend = Boolean(
+    activeSession && llmConfigs.some((cfg) => cfg.id === activeSession.llm_config_id),
+  );
+  const canCreateSession = preferredConfig !== null;
+  const canSend = activeSession ? activeSessionCanSend : canCreateSession;
+
   const context = useMemo(
     () => (feature ? buildContextSnapshot(location.pathname, location.search) : null),
     [feature, location.pathname, location.search, bridge],
@@ -180,15 +196,19 @@ export function AssistantPanel() {
     else localStorage.removeItem(DEFAULT_LLM_KEY);
   };
 
-  /** 确保存在可用会话：无会话时按默认 LLM 自动创建。 */
+  /** 确保存在可用会话；历史绑定已停用/删除的配置只能阅读。 */
   const ensureSession = useCallback(async (): Promise<string | null> => {
-    if (activeSessionId) return activeSessionId;
-    if (!preferredConfigId) {
-      notify("请先在顶部选择默认 LLM");
+    if (activeSessionId && activeSession) {
+      if (activeSessionCanSend) return activeSessionId;
+      notify("当前会话绑定的 LLM 配置已停用或删除，只能查看历史");
+      return null;
+    }
+    if (!preferredConfig) {
+      notify("请先选择可用的 LLM 配置");
       return null;
     }
     try {
-      const created = await createAssistantSession("新会话", Number(preferredConfigId));
+      const created = await createAssistantSession("新会话", Number(preferredConfig.id));
       await refreshSessions();
       setActiveSessionId(created.id);
       return created.id;
@@ -196,7 +216,7 @@ export function AssistantPanel() {
       notifyError(caught, "创建会话失败");
       return null;
     }
-  }, [activeSessionId, preferredConfigId, refreshSessions, setActiveSessionId]);
+  }, [activeSession, activeSessionCanSend, activeSessionId, preferredConfig, refreshSessions, setActiveSessionId]);
 
   /** 局部替换最后一条 assistant 消息为内联错误。 */
   const appendInlineError = useCallback(
@@ -373,19 +393,19 @@ export function AssistantPanel() {
   }, [renameTarget, activeSession?.title, activeSessionId, refreshSessions, setActiveSessionId]);
 
   const createNewSession = useCallback(async () => {
-    if (!preferredConfigId) {
-      notify("请先选择默认 LLM");
+    if (!preferredConfig) {
+      notify("请先选择可用的 LLM 配置");
       return;
     }
     try {
-      const created = await createAssistantSession("新会话", Number(preferredConfigId));
+      const created = await createAssistantSession("新会话", Number(preferredConfig.id));
       await refreshSessions();
       setActiveSessionId(created.id);
       setSessionMenuOpen(false);
     } catch (caught) {
       notifyError(caught, "创建失败");
     }
-  }, [preferredConfigId, refreshSessions, setActiveSessionId]);
+  }, [preferredConfig, refreshSessions, setActiveSessionId]);
 
   if (!user || user.role === "admin") {
     // 管理员无个人业务场景（无 LLM 配置），不展示助手。
@@ -474,6 +494,7 @@ export function AssistantPanel() {
                   <button
                     type="button"
                     onClick={() => void createNewSession()}
+                    disabled={!canCreateSession}
                     className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-primary hover:bg-slate-50"
                   >
                     <Icon name="plus" className="h-3 w-3" />
@@ -546,9 +567,9 @@ export function AssistantPanel() {
               value={preferredConfigId}
               onChange={(event) => changeDefaultLlm(event.target.value)}
               className="field-input h-8 w-32 py-0 text-xs"
-              aria-label="默认 LLM 配置"
+              aria-label="选择 LLM 配置"
             >
-              <option value="">默认 LLM</option>
+              <option value="">选择 LLM 配置</option>
               {llmConfigs.map((cfg) => (
                 <option key={cfg.id} value={cfg.id}>
                   {cfg.name}
@@ -558,12 +579,22 @@ export function AssistantPanel() {
             <Button
               variant="ghost"
               className="h-8 px-2 text-xs"
-              disabled={!preferredConfigId}
+              disabled={!canCreateSession}
               onClick={() => void createNewSession()}
             >
               <Icon name="plus" className="h-3 w-3" />
             </Button>
           </div>
+
+          {!canSend && (
+            <div className="border-b border-amber-100 bg-amber-50 px-4 py-2 text-[11px] leading-relaxed text-amber-800">
+              {activeSession
+                ? "当前会话绑定的 LLM 配置已停用或删除，可查看历史，但不能发送消息。"
+                : llmConfigs.length === 0
+                  ? "暂无可用 LLM 配置，请先创建并启用配置。"
+                  : "请选择一个 LLM 配置后再新建会话或发送消息。"}
+            </div>
+          )}
 
           {usage && activeSessionId && (
             <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-1.5 text-[11px] text-slate-500">
@@ -621,6 +652,7 @@ export function AssistantPanel() {
                       key={card.title}
                       type="button"
                       onClick={() => setInput(card.prompt)}
+                      disabled={!canSend}
                       className="block w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-left transition hover:border-primary/50 hover:shadow-card"
                     >
                       <span className="block text-xs font-medium text-slate-700">
@@ -738,6 +770,7 @@ export function AssistantPanel() {
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              disabled={!canSend || sending}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
@@ -747,11 +780,11 @@ export function AssistantPanel() {
                   setOpen(false);
                 }
               }}
-              placeholder="输入问题…（Enter 发送）"
+              placeholder={canSend ? "输入问题…（Enter 发送）" : "选择可用 LLM 配置后才能发送"}
               rows={2}
               className="field-input min-h-[44px] flex-1 resize-none text-xs"
             />
-            <Button type="submit" loading={sending} disabled={!input.trim()}>
+            <Button type="submit" loading={sending} disabled={!canSend || !input.trim()}>
               发送
             </Button>
           </form>

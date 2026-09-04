@@ -17,7 +17,7 @@ export function listAssistantSessions(): Promise<AssistantSession[]> {
 
 export function createAssistantSession(
   title: string,
-  llmConfigId: number | null,
+  llmConfigId: number,
 ): Promise<AssistantSession> {
   return api<AssistantSession>("/api/assistant/sessions", {
     method: "POST",

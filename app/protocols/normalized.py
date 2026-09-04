@@ -66,23 +66,55 @@ def reject_unsupported_field(payload: dict[str, Any], field: str) -> None:
         )
 
 
-def declared_tool_names(normalized: dict[str, Any]) -> list[str]:
-    """从规范化请求中提取调用方声明的工具名（OpenAI function / Anthropic 工具）。
+def declared_tool_definitions(normalized: dict[str, Any]) -> list[dict[str, Any]]:
+    """提取调用方声明的完整工具定义，统一为工作台展示结构。
 
-    tools 数组条目结构兼容两种协议：
-    - OpenAI/Responses: {"type":"function","function":{"name": ...}}
-    - Anthropic: {"name": ..., "input_schema": ...}
+    原始工具定义仍保留在 normalized.tools 中；这里仅生成独立的展示/校验
+    结构，避免把协议差异泄露给前端。parameters 对 OpenAI function 取
+    ``function.parameters``，对 Anthropic 取 ``input_schema``。
     """
-    names: list[str] = []
+    definitions: list[dict[str, Any]] = []
     tools = normalized.get("tools")
-    if isinstance(tools, list):
-        for tool in tools:
-            if not isinstance(tool, dict):
-                continue
-            name = tool.get("name") or (tool.get("function", {}) or {}).get("name")
-            if isinstance(name, str) and name:
-                names.append(name)
-    return names
+    if not isinstance(tools, list):
+        return definitions
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        function_data = function if isinstance(function, dict) else {}
+        name = tool.get("name")
+        if not isinstance(name, str) or not name.strip():
+            name = function_data.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        name = name.strip()
+        description = tool.get("description") or function_data.get("description")
+        if not isinstance(description, str):
+            description = None
+        parameters = (
+            function_data.get("parameters")
+            if function_data
+            else tool.get("input_schema") or tool.get("parameters")
+        )
+        if not isinstance(parameters, dict):
+            parameters = {"type": "object", "properties": {}}
+        source_type = "openai_function" if function_data else "anthropic_tool"
+        if tool.get("type") == "function" and not function_data:
+            source_type = "function"
+        definitions.append(
+            {
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+                "source_type": source_type,
+            }
+        )
+    return definitions
+
+
+def declared_tool_names(normalized: dict[str, Any]) -> list[str]:
+    """从完整工具定义中提取调用方声明的工具名。"""
+    return [definition["name"] for definition in declared_tool_definitions(normalized)]
 
 
 def context_item_count(items: list[Any]) -> int:

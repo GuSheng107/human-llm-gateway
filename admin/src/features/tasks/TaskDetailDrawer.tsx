@@ -104,7 +104,7 @@ export function TaskDetailDrawer({
 
   return (
     <Drawer
-      title={`任务 #${detail.public_id}`}
+      title={detail.display_name}
       description={detail.fake_model_name}
       onClose={onClose}
       width="max-w-2xl"
@@ -188,17 +188,22 @@ export function TaskDetailDrawer({
           )}
         </section>
 
-        {detail.tool_names.length > 0 && (
+        {detail.tool_definitions.length > 0 && (
           <section>
             <h3 className="mb-2 text-sm font-medium text-slate-700">声明的工具</h3>
-            <div className="flex flex-wrap gap-2">
-              {detail.tool_names.map((name) => (
-                <span
-                  key={name}
-                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 font-mono text-[11px] text-slate-600"
-                >
-                  {name}
-                </span>
+            <div className="space-y-2">
+              {detail.tool_definitions.map((tool) => (
+                <details key={tool.name} className="rounded border border-slate-200 px-3 py-2">
+                  <summary className="cursor-pointer font-mono text-[11px] text-slate-600">
+                    {tool.name}
+                  </summary>
+                  {tool.description && (
+                    <p className="mt-1 text-[11px] text-slate-400">{tool.description}</p>
+                  )}
+                  <pre className="mt-2 max-h-40 overflow-auto rounded bg-slate-50 p-2 font-mono text-[10px] text-slate-500">
+                    {JSON.stringify(tool.parameters, null, 2)}
+                  </pre>
+                </details>
               ))}
             </div>
           </section>

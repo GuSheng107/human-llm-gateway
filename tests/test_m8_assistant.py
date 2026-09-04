@@ -17,7 +17,7 @@ from typing import Any
 from unittest.mock import patch
 
 import app.core.db as database
-from app.repositories.models import AssistantMessage
+from app.repositories.models import AssistantMessage, AssistantSession
 from app.services.llm_upstream import UpstreamChunk
 
 _UPSTREAM_CHAT = "app.services.llm_upstream.post_chat_completions"
@@ -42,7 +42,7 @@ def _make_llm_config(client, headers, name: str = "assistant-cfg") -> dict[str, 
     return resp.json()
 
 
-def _make_session(client, headers, llm_config_id: int | None) -> dict[str, Any]:
+def _make_session(client, headers, llm_config_id: int) -> dict[str, Any]:
     resp = client.post(
         "/api/assistant/sessions",
         headers=headers,
@@ -436,9 +436,31 @@ def test_anthropic_config_reply_extracted(client, created_user) -> None:
     assert resp.json()["text"] == "Anthropic 回答"
 
 
-def test_send_without_bound_config_rejected(client, created_user) -> None:
-    """会话未绑定 LLM 配置时发送 400。"""
-    session_data = _make_session(client, created_user.headers, None)
+def test_create_without_bound_config_rejected(client, created_user) -> None:
+    """新会话必须显式绑定可用 LLM 配置。"""
+    resp = client.post(
+        "/api/assistant/sessions",
+        headers=created_user.headers,
+        json={"title": "测试会话", "llm_config_id": None},
+    )
+    assert resp.status_code == 422
+
+
+def test_historical_unbound_session_is_readable_but_not_sendable(client, created_user) -> None:
+    """历史遗留的未绑定会话可读，但不能继续发送消息。"""
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    with database.SessionLocal() as db:
+        row = db.get(AssistantSession, int(session_data["id"]))
+        assert row is not None
+        row.llm_config_id = None
+        db.commit()
+
+    detail = client.get(
+        f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
+    )
+    assert detail.status_code == 200
+    assert detail.json()["llm_config_id"] is None
     resp = client.post(
         f"/api/assistant/sessions/{session_data['id']}/messages",
         headers=created_user.headers,
@@ -546,7 +568,13 @@ def test_stream_message_delta_and_done(client, created_user) -> None:
 
 def test_stream_message_error_event(client, created_user) -> None:
     """流中 DomainError → error 事件（HTTP 仍为 200）；user 消息保留。"""
-    session_data = _make_session(client, created_user.headers, None)  # 未绑定配置
+    cfg = _make_llm_config(client, created_user.headers, "historical-stream")
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    with database.SessionLocal() as db:
+        row = db.get(AssistantSession, int(session_data["id"]))
+        assert row is not None
+        row.llm_config_id = None
+        db.commit()
     resp = client.post(
         f"/api/assistant/sessions/{session_data['id']}/messages/stream",
         headers=created_user.headers,

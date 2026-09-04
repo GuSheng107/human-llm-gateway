@@ -4,8 +4,8 @@ import {
   ENDPOINT_LABELS,
   deleteFakeModel,
   listAllFakeModels,
+  listAllModelGroups,
   listFakeModels,
-  listModelGroups,
   updateFakeModel,
 } from "../../api/models";
 import { Card } from "../../components/data-display/Card";
@@ -102,10 +102,10 @@ export function ModelsPage() {
     try {
       const [modelPage, groupPage] = await Promise.all([
         listAllFakeModels({ include_disabled: true }),
-        listModelGroups(),
+        listAllModelGroups(),
       ]);
       setModels(modelPage);
-      setGroups(groupPage.items);
+      setGroups(groupPage);
     } catch (caught) {
       setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
@@ -617,8 +617,6 @@ export function ModelsPage() {
         <ModelEditModal
           model={editing}
           groups={groups}
-          models={models}
-          currentUserId={user?.id ?? ""}
           isAdmin={isAdmin}
           onClose={() => {
             setCreating(false);
@@ -631,7 +629,6 @@ export function ModelsPage() {
       {groupsOpen && user && (
         <ModelsGroupsDrawer
           groups={groups}
-          currentUserId={user.id}
           isAdmin={isAdmin}
           onClose={() => setGroupsOpen(false)}
           onChanged={refresh}

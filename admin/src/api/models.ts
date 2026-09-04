@@ -54,6 +54,7 @@ export interface FakeModelPayload {
   endpoint_types?: string[];
   logo_url?: string | null;
   tags?: string[];
+  group_ids?: number[];
 }
 
 export type FakeModelUpdatePayload = Partial<Omit<FakeModelPayload, "model_id">> & {
@@ -79,6 +80,9 @@ export interface GroupPayload {
   description?: string | null;
   enabled?: boolean;
 }
+
+const LIST_ALL_GROUP_PAGE_SIZE = 100;
+const LIST_ALL_GROUP_CONCURRENCY = 4;
 
 export function listFakeModels(
   filters: ModelListFilters = {},
@@ -140,7 +144,24 @@ export async function deleteFakeModel(id: string): Promise<void> {
 }
 
 export function listModelGroups(page = 1): Promise<Page<ModelGroup>> {
-  return api<Page<ModelGroup>>(`/api/model-groups?page=${page}&page_size=100`);
+  return api<Page<ModelGroup>>(
+    `/api/model-groups?page=${page}&page_size=${LIST_ALL_GROUP_PAGE_SIZE}`,
+  );
+}
+
+export async function listAllModelGroups(): Promise<ModelGroup[]> {
+  const first = await listModelGroups(1);
+  const items = [...first.items];
+  const totalPages = Math.ceil(first.total / LIST_ALL_GROUP_PAGE_SIZE);
+  for (let start = 2; start <= totalPages; start += LIST_ALL_GROUP_CONCURRENCY) {
+    const pages = Array.from(
+      { length: Math.min(LIST_ALL_GROUP_CONCURRENCY, totalPages - start + 1) },
+      (_, index) => start + index,
+    );
+    const batch = await Promise.all(pages.map((page) => listModelGroups(page)));
+    for (const result of batch) items.push(...result.items);
+  }
+  return items.slice(0, first.total);
 }
 
 export function createModelGroup(payload: GroupPayload): Promise<ModelGroup> {

@@ -57,6 +57,7 @@ def _make_waiting_task(
     *,
     content: str = "hello",
     tool_names: list[str] | None = None,
+    tools: list[dict[str, Any]] | None = None,
 ) -> int:
     """直接经编排服务创建一个 WAITING_HUMAN 任务（与 test_m6_tasks 同样的方式）。"""
     import app.core.db as database
@@ -69,7 +70,9 @@ def _make_waiting_task(
         "model": "deepseek-v4-pro",
         "messages": [{"role": "user", "content": content}],
     }
-    if tool_names:
+    if tools is not None:
+        payload["tools"] = tools
+    elif tool_names:
         payload["tools"] = [
             {
                 "type": "function",
@@ -151,6 +154,175 @@ def test_generate_chat_with_openai_chat_llm(client, created_user, created_key) -
     assert len(body["tool_calls"]) == 1
     assert body["tool_calls"][0]["name"] == "search"
     assert body["tool_calls"][0]["arguments"] == {"q": "weather"}
+
+
+def test_generate_selected_tools_filters_full_schema_and_canonicalizes_calls(
+    client, created_user, created_key
+) -> None:
+    """工作台选中的工具按顺序重建请求，并严格校验返回参数。"""
+    search_tool = {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "搜索天气",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    lookup_tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "查询天气",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    task_id = _make_waiting_task(
+        client,
+        created_key.id,
+        created_user.user_id,
+        tools=[search_tool, lookup_tool],
+    )
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "查询结果",
+                        "tool_calls": [
+                            {
+                                "id": "upstream-arbitrary-id",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"city":"北京"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={
+                "llm_config_id": int(cfg["id"]),
+                "selected_tool_names": ["lookup"],
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["tool_calls"] == [
+        {"id": "call_01", "name": "lookup", "arguments": {"city": "北京"}}
+    ]
+    assert captured["body"]["tools"] == [lookup_tool]
+    assert captured["body"]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "lookup"},
+    }
+    assert "只允许按以下顺序各调用一次工具" in captured["body"]["messages"][0]["content"]
+
+
+def test_generate_with_empty_tool_selection_removes_tools_and_choice(
+    client, created_user, created_key
+) -> None:
+    """显式不选工具时，不能把原始 tools/tool_choice 带给上游。"""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, tools=[tool])
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {"choices": [{"message": {"role": "assistant", "content": "无工具回答"}}]}
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "selected_tool_names": []},
+        )
+    assert resp.status_code == 201, resp.text
+    assert "tools" not in captured["body"]
+    assert "tool_choice" not in captured["body"]
+    assert resp.json()["tool_calls"] == []
+
+
+def test_generate_rejects_tool_arguments_that_break_declared_schema(
+    client, created_user, created_key
+) -> None:
+    """上游返回缺失必填字段或错误类型时，草稿不得落库。"""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, tools=[tool])
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"city": 123}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={
+                "llm_config_id": int(cfg["id"]),
+                "selected_tool_names": ["lookup"],
+            },
+        )
+    assert resp.status_code == 400, resp.text
+    assert "类型不符合" in resp.json()["error"]["message"]
+    detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers).json()
+    assert detail["drafts"] == []
 
 
 def test_generate_draft_uses_active_draft_slot(client, created_user, created_key) -> None:

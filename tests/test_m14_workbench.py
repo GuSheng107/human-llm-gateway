@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 import app.core.db as database
+from app.domain.conversation import project_messages
 from app.domain.enums import InferenceProtocol
 from app.protocols import chat_completions as chat_protocol
 from app.repositories.models import ApiKey, TaskInboxState, User
@@ -124,6 +125,74 @@ def test_conversation_projection(client, created_user, created_key) -> None:
     user_msgs = [m for m in body["messages"] if m["role"] == "user"]
     assert body["total"] >= 1
     assert user_msgs[0]["preview"]  # 非空预览
+
+
+def test_project_messages_uses_context_once_and_normalizes_images() -> None:
+    """工作台只投影 context，并区分技术包裹与用户正文。"""
+    context = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "agent header\n<user_input>真正的问题</user_input>\nagent footer",
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "https://example.test/image.png"},
+                },
+            ],
+        }
+    ]
+    messages = project_messages(
+        {
+            "instructions": "只展示必要内容",
+            "context": context,
+            # 这些字段是诊断/原始保存字段，不应再次产生展示消息。
+            "messages": context,
+            "input": context,
+        }
+    )
+
+    assert [(item["role"], item.get("context_index")) for item in messages] == [
+        ("system", None),
+        ("user", 0),
+    ]
+    user_blocks = messages[1]["blocks"]
+    assert {block["display_kind"] for block in user_blocks if block["type"] == "text"} == {
+        "technical",
+        "content",
+    }
+    image = next(block for block in user_blocks if block["type"] == "image")
+    assert image["url"] == "https://example.test/image.png"
+    assert image["source_type"] == "image_url"
+
+
+def test_project_messages_normalizes_anthropic_base64_image() -> None:
+    messages = project_messages(
+        {
+            "context": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": "YWJj",
+                            },
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    image = messages[0]["blocks"][0]
+    assert image["type"] == "image"
+    assert image["url"] == "data:image/png;base64,YWJj"
+    assert image["media_type"] == "image/png"
+    assert image["source_type"] == "base64"
 
 
 def test_conversation_message_by_index(client, created_user, created_key) -> None:

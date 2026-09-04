@@ -1,13 +1,15 @@
 """M14 工作台：把 normalized_request_json 投影为对话消息列表。
 
-投影不做协议语义转换，只做“展示”排版：把 messages / context / input /
-system 拼接成带 index 的线性消息流，供工作台中间栏和消费。
-推理路径从不使用本投影，原始请求仍在 raw_payload_json 中完整保存。
+投影只把 normalized.context 作为唯一正文来源，instructions / system_blocks
+作为技术补充，避免 Chat/Anthropic 的 messages 与 context 或 Responses 的
+input 被重复展示。推理路径从不使用本投影，原始请求仍在 raw_payload_json
+中完整保存。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 PREVIEW_CHARS = 800
@@ -43,8 +45,13 @@ def _resolve_image_url(block: dict[str, Any]) -> str | None:
 
 
 def _block_from_mapping(block: dict[str, Any]) -> dict[str, Any]:
-    btype = str(block.get("type") or "text")
-    item: dict[str, Any] = {"type": btype}
+    original_type = str(block.get("type") or "text")
+    # OpenAI Chat/Responses 与 Anthropic 的图片块统一成前端可直接渲染的
+    # image；其他未知块保留原类型，方便工作台诊断。
+    btype = "image" if original_type in {"image_url", "input_image"} else original_type
+    if original_type in {"input_text", "output_text"}:
+        btype = "text"
+    item: dict[str, Any] = {"type": btype, "display_kind": "content"}
     text = block.get("text")
     if isinstance(text, str):
         item["text"] = text
@@ -59,9 +66,14 @@ def _block_from_mapping(block: dict[str, Any]) -> dict[str, Any]:
         media2 = source.get("media_type") or source.get("content_type")
         if isinstance(media2, str):
             item.setdefault("media_type", media2)
-    if btype in {"image", "input_image", "image_url"} or (
-        isinstance(source, dict) and source.get("type") == "base64"
-    ):
+    source_type = block.get("source_type")
+    if isinstance(source_type, str) and source_type:
+        item["source_type"] = source_type
+    elif original_type in {"image_url", "input_image"}:
+        item["source_type"] = original_type
+    elif isinstance(source, dict) and isinstance(source.get("type"), str):
+        item["source_type"] = source["type"]
+    if btype == "image" or (isinstance(source, dict) and source.get("type") == "base64"):
         url = _resolve_image_url(block)
         if url is not None:
             item["url"] = url
@@ -73,14 +85,53 @@ def _block_from_mapping(block: dict[str, Any]) -> dict[str, Any]:
             item["width"] = width
         if isinstance(height, int):
             item["height"] = height
+    for key in ("id", "call_id", "tool_call_id", "tool_use_id"):
+        value = block.get(key)
+        if isinstance(value, str) and value:
+            item["tool_call_id"] = value
+            break
     return item
 
 
-def _blocks_from_content(content: Any) -> list[dict[str, Any]]:
+def _text_blocks(text: str, *, role: str) -> list[dict[str, Any]]:
+    """把用户正文与 Agent 技术包裹分开，技术块默认折叠。"""
+    if not text:
+        return []
+    if role == "system":
+        return [{"type": "text", "text": text, "display_kind": "technical"}]
+    match = re.search(r"<user_input>(.*?)</user_input>", text, flags=re.DOTALL)
+    if match is None:
+        return [{"type": "text", "text": text, "display_kind": "content"}]
+    blocks: list[dict[str, Any]] = []
+    technical_before = text[: match.start()].strip()
+    user_text = match.group(1)
+    technical_after = text[match.end() :].strip()
+    if technical_before:
+        blocks.append({"type": "text", "text": technical_before, "display_kind": "technical"})
+    if user_text:
+        blocks.append({"type": "text", "text": user_text, "display_kind": "content"})
+    if technical_after:
+        blocks.append({"type": "text", "text": technical_after, "display_kind": "technical"})
+    return blocks
+
+
+def _blocks_from_content(content: Any, *, role: str) -> list[dict[str, Any]]:
     if isinstance(content, str):
-        return [{"type": "text", "text": content}] if content else []
+        return _text_blocks(content, role=role)
     if isinstance(content, list):
-        return [_block_from_mapping(b) for b in content if isinstance(b, dict)]
+        blocks: list[dict[str, Any]] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if isinstance(block.get("text"), str) and block.get("type") in {
+                "text",
+                "input_text",
+                "output_text",
+            }:
+                blocks.extend(_text_blocks(block["text"], role=role))
+            else:
+                blocks.append(_block_from_mapping(block))
+        return blocks
     return []
 
 
@@ -93,14 +144,16 @@ def project_messages(normalized: dict[str, Any]) -> list[dict[str, Any]]:
         messages.append(
             {
                 "role": "system",
-                "blocks": [{"type": "text", "text": instructions}],
+                "blocks": [{"type": "text", "text": instructions, "display_kind": "technical"}],
             }
         )
     system_blocks = normalized.get("system_blocks")
     if isinstance(system_blocks, list):
         for block in system_blocks:
             if isinstance(block, dict):
-                messages.append({"role": "system", "blocks": [_block_from_mapping(block)]})
+                projected = _block_from_mapping(block)
+                projected["display_kind"] = "technical"
+                messages.append({"role": "system", "blocks": [projected]})
 
     def add(
         role: str,
@@ -108,20 +161,14 @@ def project_messages(normalized: dict[str, Any]) -> list[dict[str, Any]]:
         extra: dict[str, Any] | None = None,
         context_index: int | None = None,
     ) -> None:
-        blocks = _blocks_from_content(content)
+        blocks = _blocks_from_content(content, role=role)
         if not blocks and extra:
-            blocks = [extra]
+            projected = _block_from_mapping(extra)
+            projected["display_kind"] = "technical" if role == "system" else "content"
+            blocks = [projected]
         if not blocks:
             return
         messages.append({"role": role, "blocks": blocks, "context_index": context_index})
-
-    raw_messages = normalized.get("messages")
-    if isinstance(raw_messages, list):
-        for message in raw_messages:
-            if not isinstance(message, dict):
-                continue
-            role = str(message.get("role") or "user")
-            add(role, message.get("content"), message if message.get("type") else None)
 
     context = normalized.get("context")
     if isinstance(context, list):
@@ -141,23 +188,6 @@ def project_messages(normalized: dict[str, Any]) -> list[dict[str, Any]]:
                     item.get("output"),
                     {"type": "tool_result", "tool_call_id": item.get("call_id")},
                     context_index=ctx_index,
-                )
-
-    raw_input = normalized.get("input")
-    if isinstance(raw_input, str) and raw_input.strip():
-        add("user", raw_input, None)
-    elif isinstance(raw_input, list):
-        for item in raw_input:
-            if not isinstance(item, dict):
-                continue
-            itype = item.get("type")
-            if itype == "message":
-                add(str(item.get("role") or "user"), item.get("content"), item)
-            elif itype == "function_call_output":
-                add(
-                    "tool",
-                    item.get("output"),
-                    {"type": "tool_result", "tool_call_id": item.get("call_id")},
                 )
 
     for index, message in enumerate(messages):

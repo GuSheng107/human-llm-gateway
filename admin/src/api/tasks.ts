@@ -63,6 +63,8 @@ export interface DraftGeneratePayload {
   reasoning_seed?: string | null;
   /** 引导性提示词：注入为系统指令，引导生成思考链 / 回复 / 工具调用参数。 */
   guidance?: string | null;
+  /** 当前编辑器选择的工具及顺序；空数组明确表示不提供工具。 */
+  selected_tool_names?: string[];
 }
 
 export function generateDraft(
@@ -101,6 +103,8 @@ export interface InboxItem {
   human_deadline_at: string | null;
   created_at: string;
   prompt_preview: string;
+  api_key_name: string;
+  display_name: string;
   has_tools: boolean;
   unread: boolean;
   seen_at: string | null;
@@ -142,6 +146,7 @@ export async function markTaskSeen(
 
 export interface ConversationBlock {
   type: string;
+  display_kind: "content" | "technical";
   text?: string | null;
   name?: string | null;
   media_type?: string | null;
@@ -150,6 +155,7 @@ export interface ConversationBlock {
   url?: string | null;
   width?: number | null;
   height?: number | null;
+  source_type?: string | null;
 }
 
 export interface ConversationMessage {

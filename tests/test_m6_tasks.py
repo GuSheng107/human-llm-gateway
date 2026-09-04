@@ -100,8 +100,8 @@ def _draft_body(
     return body
 
 
-_TOOL_CALL_A = {"id": "call_001", "name": "search", "arguments": {"q": "天气"}}
-_TOOL_CALL_B = {"id": "call_002", "name": "calc", "arguments": {"expr": "1+1"}}
+_TOOL_CALL_A = {"id": "call_01", "name": "search", "arguments": {"q": "天气"}}
+_TOOL_CALL_B = {"id": "call_02", "name": "calc", "arguments": {"expr": "1+1"}}
 
 
 # ======================================================================

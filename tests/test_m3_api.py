@@ -254,6 +254,7 @@ def test_user_account_and_disable_transaction(client, admin_headers) -> None:
             owner_user_id=user_id,
             api_key_id=key.id,
             api_key_prefix_snapshot=key.key_prefix,
+            api_key_name_snapshot=key.name,
             requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json="{}",

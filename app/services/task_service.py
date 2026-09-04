@@ -25,6 +25,7 @@ from ..domain.enums import (
     UserRole,
 )
 from ..domain.errors import DomainError, DomainErrorCode
+from ..domain.tool_validation import normalize_tool_calls
 from ..domain.values import ReplyDraft, ReplyToolCall
 from ..protocols.normalized import declared_tool_names
 from ..repositories.catalog import FakeModelRepository
@@ -116,6 +117,27 @@ class TaskService:
             return None
 
     @staticmethod
+    def normalize_reply_draft(
+        task: RequestTask,
+        draft: ReplyDraft,
+        *,
+        expected_tool_names: Sequence[str] | None = None,
+        source: str = "回复",
+    ) -> ReplyDraft:
+        """按请求声明校验草稿工具并生成服务端稳定调用 ID。"""
+        try:
+            normalized: dict[str, Any] = json.loads(task.normalized_request_json or "{}")
+        except (ValueError, TypeError):
+            normalized = {}
+        calls = normalize_tool_calls(
+            normalized,
+            draft.tool_calls,
+            expected_names=expected_tool_names,
+            source=source,
+        )
+        return draft.model_copy(update={"tool_calls": calls})
+
+    @staticmethod
     def fake_model_name(session: Session, task: RequestTask) -> str:
         if task.fake_model_id is None:
             return task.requested_model
@@ -136,7 +158,7 @@ class TaskService:
     ) -> TaskDraft:
         """新建或更新活动草稿（upsert 语义：已有 EDITING 则覆盖字段）。"""
         self._assert_writable(task, owner)
-        assert_reply_tool_names_declared(task, draft.tool_calls)
+        draft = self.normalize_reply_draft(task, draft)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_active_draft(session, task_id=task.id)
         payload = self._draft_payload(draft)
@@ -182,7 +204,7 @@ class TaskService:
         "刷新 / 强制覆盖"。不再兼容不带 expected_version 的旧语义。
         """
         self._assert_writable(task, owner)
-        assert_reply_tool_names_declared(task, draft.tool_calls)
+        draft = self.normalize_reply_draft(task, draft)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_draft(session, draft_id)
         if row is None or row.task_id != task.id or row.owner_user_id != owner.id:
@@ -237,7 +259,7 @@ class TaskService:
     ) -> bool:
         """首个有效提交获胜；晚到返回 False（调用方需记录晚到事件后抛 409）。"""
         self._assert_writable(task, owner)
-        assert_reply_tool_names_declared(task, draft.tool_calls)
+        draft = self.normalize_reply_draft(task, draft)
         begin_immediate_if_sqlite(session)
         accepted = self.repo.first_reply_wins(
             session,

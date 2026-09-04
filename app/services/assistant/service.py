@@ -163,7 +163,7 @@ class AssistantService:
         *,
         user: User,
         title: str,
-        llm_config_id: int | None,
+        llm_config_id: int,
     ) -> AssistantSession:
         begin_immediate_if_sqlite(session)
         cleaned_title = (title or "").strip() or "新会话"
@@ -729,11 +729,7 @@ class AssistantService:
         session.flush()
         return reply_message
 
-    def _validate_llm_config(
-        self, session: Session, user: User, llm_config_id: int | None
-    ) -> int | None:
-        if llm_config_id is None:
-            return None
+    def _validate_llm_config(self, session: Session, user: User, llm_config_id: int) -> int:
         cfg = self.llm_repo.get(session, llm_config_id)
         if cfg is None or cfg.owner_user_id != user.id:
             raise DomainError(

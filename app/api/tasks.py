@@ -21,6 +21,7 @@ from ..domain.dsl import is_empty_draft
 from ..domain.enums import TaskState, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft, ReplyToolCall
+from ..protocols.normalized import declared_tool_definitions
 from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, TaskInboxState, User
 from ..services.delivery_service import DeliveryService
 from ..services.task_service import TaskService, draft_from_row
@@ -38,7 +39,8 @@ _service = TaskService()
 
 
 class ToolCallInput(StrictModel):
-    id: str = Field(min_length=1, max_length=128)
+    # 客户端/上游 ID 不可信；服务端按调用顺序重新生成 call_01、call_02。
+    id: str | None = Field(default=None, max_length=128)
     name: str = Field(min_length=1, max_length=128)
     arguments: dict[str, Any] = Field(default_factory=dict)
 
@@ -72,6 +74,9 @@ class DraftGenerateInput(StrictModel):
     reasoning_seed: str | None = Field(default=None, max_length=20000)
     # 引导性提示词：注入为系统指令，引导 LLM 生成思考链 / 回复 / 工具调用参数。
     guidance: str | None = Field(default=None, max_length=4000)
+    # None 表示沿用未选择工具的旧生成语义；前端始终显式发送当前有序选择，
+    # 空数组表示明确不向上游提供工具。
+    selected_tool_names: list[str] | None = Field(default=None, max_length=20)
 
 
 # ------------------------------------------------------------------
@@ -83,6 +88,13 @@ class ToolCallView(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any]
+
+
+class ToolDefinitionView(BaseModel):
+    name: str
+    description: str | None
+    parameters: dict[str, Any]
+    source_type: str
 
 
 class DraftView(BaseModel):
@@ -117,6 +129,8 @@ class TaskItem(BaseModel):
     reply_strategy: str
     delivery_mode: str
     api_key_prefix: str
+    api_key_name: str
+    display_name: str
     stream_requested: bool
     has_tools: bool
     prompt_preview: str
@@ -146,7 +160,9 @@ class TaskDetail(TaskItem):
     is_owner: bool
     can_edit: bool
     prompt_text: str
-    tool_names: list[str]
+    tool_definitions: list[ToolDefinitionView]
+    # 旧客户端只需要名称；完整 Schema 以 tool_definitions 为准。
+    tool_names: list[str] = Field(default_factory=list)
     raw_request: dict[str, Any] | None
     previous_task_id: str | None
     drafts: list[DraftView]
@@ -181,6 +197,8 @@ class InboxItem(BaseModel):
     human_deadline_at: str | None
     created_at: str
     prompt_preview: str
+    api_key_name: str
+    display_name: str
     has_tools: bool
     unread: bool
     seen_at: str | None
@@ -202,6 +220,7 @@ class InboxSummary(BaseModel):
 
 class ConversationBlock(BaseModel):
     type: str
+    display_kind: Literal["content", "technical"] = "content"
     text: str | None = None
     language: str | None = None
     tool_call_id: str | None = None
@@ -212,6 +231,7 @@ class ConversationBlock(BaseModel):
     url: str | None = None
     width: int | None = None
     height: int | None = None
+    source_type: str | None = None
 
 
 class ConversationMessage(BaseModel):
@@ -283,6 +303,20 @@ def _summary(task: RequestTask) -> tuple[str, list[str]]:
     return DeliveryService._extract_request_summary(task)
 
 
+def _tool_definitions(task: RequestTask) -> list[ToolDefinitionView]:
+    try:
+        normalized: dict[str, Any] = json.loads(task.normalized_request_json or "{}")
+    except (ValueError, TypeError):
+        normalized = {}
+    return [
+        ToolDefinitionView(**definition) for definition in declared_tool_definitions(normalized)
+    ]
+
+
+def _task_display_name(task: RequestTask) -> str:
+    return f"{task.api_key_name_snapshot} · {task.requested_model}"
+
+
 # 列表预览长度（字符）；取摘要尾部（Agent 提示词的提问在末尾）。
 _PREVIEW_CAP = 160
 
@@ -342,6 +376,8 @@ def _item_view(
         reply_strategy=task.reply_strategy_snapshot.value,
         delivery_mode=task.delivery_mode_snapshot.value,
         api_key_prefix=task.api_key_prefix_snapshot,
+        api_key_name=task.api_key_name_snapshot,
+        display_name=_task_display_name(task),
         stream_requested=task.stream_requested,
         has_tools=bool(tool_names),
         prompt_preview=_preview_text(_prompt),
@@ -384,6 +420,7 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
         ),
         # 所有者可查看完整提示词（Agent 海量上下文不截断）；非归属用户仅摘要前 200 字。
         prompt_text=prompt if is_owner else (prompt[:200] if prompt else ""),
+        tool_definitions=_tool_definitions(task),
         tool_names=tool_names,
         raw_request=None,
         previous_task_id=previous_public_id,
@@ -401,7 +438,8 @@ def _to_draft(payload: ReplyDraftInput | ReplySubmitInput | DraftUpdateInput) ->
     return ReplyDraft(
         reasoning=payload.reasoning,
         tool_calls=[
-            ReplyToolCall(id=c.id, name=c.name, arguments=c.arguments) for c in payload.tool_calls
+            ReplyToolCall(id=c.id or "", name=c.name, arguments=c.arguments)
+            for c in payload.tool_calls
         ],
         final_text=payload.final_text,
     )
@@ -636,6 +674,7 @@ async def generate_draft(
         exclude_context_indices=payload.exclude_context_indices,
         reasoning_seed=payload.reasoning_seed,
         guidance=payload.guidance,
+        selected_tool_names=payload.selected_tool_names,
     )
     db.commit()
     db.refresh(row)
@@ -704,6 +743,8 @@ def _inbox_item(
         human_deadline_at=iso_utc(task.human_deadline_at),
         created_at=iso_utc(task.created_at) or "",
         prompt_preview=_preview_text(prompt),
+        api_key_name=task.api_key_name_snapshot,
+        display_name=_task_display_name(task),
         has_tools=bool(tool_names),
         unread=seen is None,
         seen_at=iso_utc(seen.seen_at) if seen else None,
@@ -745,6 +786,7 @@ def _conversation_message_view(msg: dict[str, Any]) -> ConversationMessage:
     blocks = [
         ConversationBlock(
             type=str(block.get("type", "text")),
+            display_kind=("technical" if block.get("display_kind") == "technical" else "content"),
             text=block.get("text"),
             name=block.get("name"),
             media_type=block.get("media_type"),
@@ -752,6 +794,7 @@ def _conversation_message_view(msg: dict[str, Any]) -> ConversationMessage:
             url=block.get("url"),
             width=block.get("width"),
             height=block.get("height"),
+            source_type=block.get("source_type"),
         )
         for block in msg.get("blocks", [])
     ]

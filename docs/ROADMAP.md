@@ -330,3 +330,8 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] 生成草稿支持三种模式（只生成思考链 / 只生成回�?/ 两者都生成）；reply 模式可携带人工手写的 `reasoning_seed` 作为生成依据，同任务的后续按模式合并更新同一草稿�?
 - [x] 生成草稿支持消息级上下文勾选：对话投影携带 `context_index`，请求时�?`exclude_context_indices` 精确剔除历史，越界返�?400�?
 - [x] tool_call 唯一校验：写回的工具名必须命中调用方声明，否则拒绝 400；IM 携带 tool_call 的回复一律拒绝（REPLY_REJECTED_POLICY / tool_call_not_supported）。
+- [x] 工作台从 `tool_definitions` 展示调用方完整工具定义；选中工具后按 JSON Schema 自动生成最小参数骨架，支持有序选择、上下移和零调用，不允许自由添加或改名。
+- [x] 工具草稿生成使用 `selected_tool_names`；显式选择时仅把选中的完整 Schema 传给上游，并在落库前校验数量、顺序、名称、参数类型、required 与 enum；`mode=reasoning` 不提供工具。
+- [x] 任务工作台只投影规范化 `context` 一次，区分 content/technical，统一图片预览失败处理，并使用 API Key 名称快照生成稳定任务标题。
+- [x] 模型分组区分管理员公开分组和用户私有分组；普通用户通过模型 `group_ids` 加入自己的/公开分组，不能整体覆盖分组成员；前端分页拉取全部分组。
+- [x] 无个人启用 LLM 配置时禁用小助手全部发送/新建入口；新会话强制绑定正整数配置，历史失效会话只读。

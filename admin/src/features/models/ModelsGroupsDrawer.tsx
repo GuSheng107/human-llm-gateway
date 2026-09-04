@@ -15,7 +15,6 @@ import type { ModelGroup } from "../../types/gateway";
 
 interface Props {
   groups: ModelGroup[];
-  currentUserId: string;
   isAdmin: boolean;
   onClose: () => void;
   onChanged: () => Promise<void>;
@@ -35,14 +34,13 @@ const emptyForm = (): GroupForm => ({
 
 export function ModelsGroupsDrawer({
   groups,
-  currentUserId,
   isAdmin,
   onClose,
   onChanged,
 }: Props) {
   const manageable = useMemo(
-    () => (isAdmin ? groups : groups.filter((group) => group.owner_user_id === currentUserId)),
-    [groups, currentUserId, isAdmin],
+    () => groups.filter((group) => isAdmin || group.can_manage),
+    [groups, isAdmin],
   );
   const [selectedId, setSelectedId] = useState<string | null>(manageable[0]?.id ?? null);
   const [form, setForm] = useState<GroupForm>(emptyForm);
@@ -110,7 +108,7 @@ export function ModelsGroupsDrawer({
   return (
     <Drawer
       title="管理模型分组"
-      description="创建、改名、启停模型分组；分组成员在新建/编辑模型时选择"
+      description="创建、改名、启停模型分组；模型所属关系在新建/编辑模型时原子保存"
       onClose={onClose}
       width="max-w-2xl"
       side="left"

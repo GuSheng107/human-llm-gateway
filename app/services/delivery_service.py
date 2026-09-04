@@ -18,6 +18,7 @@ from ..core.logging import log_event
 from ..core.time import iso_utc
 from ..domain.connections import ERROR_CONFIG
 from ..domain.enums import ActorType, TaskEventType
+from ..protocols.normalized import declared_tool_names
 from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ImConnection, RequestTask
 
@@ -228,9 +229,9 @@ class DeliveryService:
             normalized: dict[str, Any] = json.loads(task.normalized_request_json or "{}")
         except (ValueError, TypeError):
             normalized = {}
-        messages = normalized.get("messages")
-        if isinstance(messages, list) and messages:
-            for message in reversed(messages):
+        context = normalized.get("context")
+        if isinstance(context, list) and context:
+            for message in reversed(context):
                 if isinstance(message, dict) and message.get("role") == "user":
                     content = message.get("content")
                     if isinstance(content, str):
@@ -239,19 +240,12 @@ class DeliveryService:
                         parts = [
                             block.get("text", "")
                             for block in content
-                            if isinstance(block, dict) and block.get("type") == "text"
+                            if isinstance(block, dict)
+                            and block.get("type") in {"text", "input_text", "output_text"}
                         ]
                         prompt = "\n".join(part for part in parts if part)
                     break
-        if not prompt:
-            prompt = normalized.get("input") if isinstance(normalized.get("input"), str) else ""
-        tools = normalized.get("tools")
-        if isinstance(tools, list):
-            for tool in tools:
-                if isinstance(tool, dict):
-                    name = tool.get("name") or (tool.get("function", {}) or {}).get("name")
-                    if isinstance(name, str):
-                        tool_names.append(name)
+        tool_names = declared_tool_names(normalized)
         # Agent 工具（opencode 等）的提示词前面是海量系统上下文，真正的
         # 提问在末尾：超长时保留尾部，仅省略前缀。
         if len(prompt) > _PROMPT_SUMMARY_CAP:
