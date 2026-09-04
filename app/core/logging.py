@@ -149,6 +149,9 @@ def _configure_logging() -> None:
     handler.setFormatter(logging.Formatter("%(message)s"))
     _STRUCTURED.addHandler(handler)
     _STRUCTURED.setLevel(logging.INFO)
+    # log_event 自带异步落库路径；禁止向 root 传播，否则 _PersistHandler
+    # 会把同一条记录再落库一次（event="logging.record" 的重复行）。
+    _STRUCTURED.propagate = False
 
 
 def _clip(value: Any, limit: int) -> Any:
@@ -388,10 +391,10 @@ def get_log_queue() -> _LogQueue:
 
 
 class _PersistHandler(logging.Handler):
-    """把普通 logging 记录（含 logger.exception）转入异步落库队列。"""
+    """把普通 logging 记录（INFO+，含 logger.exception）转入异步落库队列。"""
 
     def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
+        super().__init__(level=logging.INFO)
         self._last_emit: dict[str, float] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -441,7 +444,7 @@ _persist_handler: _PersistHandler | None = None
 
 
 def install_persistence() -> None:
-    """启动日志落库线程并把普通 logging（WARNING+）接入 app_logs。
+    """启动日志落库线程并把普通 logging（INFO+）接入 app_logs。
 
     在应用 lifespan 启动时调用；测试环境（内存库）调用 ``set_direct_store``。
     """
