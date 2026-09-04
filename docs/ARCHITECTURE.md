@@ -405,7 +405,7 @@ flowchart LR
     API <--> Store
 ```
 
-网关不执行任何工具（无白名单、无沙箱、无 ToolExecutionService）。上游或人工回复产生的 tool call 只做名称命中校验（必须命中调用方声明）与伪造输出转发；工具由调用方声明并自行执行，网关不担保结果。
+用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。网关只做名称校验和结果透传，不执行 tool。
 
 ## 11. 数据一致性与并发
 
@@ -433,22 +433,25 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 
 ### 12.2 结构化日志
 
-所有日志使用统一结构，至少包含：`timestamp`、`level`、`event`、`request_id`、`user_id`、`task_id`、`api_key_id`、`connection_id`。缺失字段省略，不写空的伪值。
+所有日志使用统一结构，至少包含：`timestamp`、`level`、`event`、`request_id`、`user_id`、`task_id`、`api_key_id`、`connection_id`。缺失字段省略，不写空的伪值；结构化字段进入脱敏 `context_json`，统一日志查询返回为 `context`。
 
 日志只记录资源 ID、凭据前缀、供应商类型和脱敏错误类别，不记录完整请求 Secret、Authorization、Cookie、二维码或完整上游响应。
 
+HTTP 和 WebSocket 请求进入应用时绑定 trace。访问日志忽略 `/healthz`、`/readyz`、根路径、静态资源和日志查询路径。任务创建时保存入站 trace 到 `request_tasks.origin_trace_id`，任务详情可跳转日志页。LLM 转发记录 request/response/error；IM 回复记录 `im.reply_submitted` / `im.reply_rejected`；小助手上游调用记录 endpoint、model、stream、duration 和 usage，流式回复落库后记录 `assistant.reply_persisted`。
+
 ### 12.3 审计
 
-用户、邀请码、连接、API Key、LLM 配置、Fake Model、任务回复、fallback、管理员治理和未来工具执行都写入不可由普通用户修改的审计事件。动作使用稳定枚举；管理员可以看到操作者、动作、资源 ID、所有者、时间、结果和发生变更的字段名，但审计不保存请求正文、字段值、Secret 的旧值或新值及任何可恢复凭据的材料。
+用户、邀请码、连接、API Key、LLM 配置、Fake Model、任务回复、fallback、管理员治理和工具调用治理都写入不可由普通用户修改的审计事件。动作使用稳定枚举；管理员可以看到操作者、动作、资源 ID、所有者、时间、结果和发生变更的字段名，但审计不保存请求正文、字段值、Secret 的旧值或新值及任何可恢复凭据的材料。
 
 管理员账号不通过后台 API 创建或提升。首次管理员来自部署环境，后续管理员通过受控 CLI 创建；CLI 复用同一用户服务和审计，并拒绝禁用最后一个有效管理员。
 
 ## 13. 部署与运维架构
 
-- `/healthz` 只表示进程存活，不访问数据库或连接器。
+- `/healthz` 只表示进程存活，不检查数据库、连接器或工具执行状态。
 - `/readyz` 固定 5 项就绪条件，全部满足才返回 200：①应用 startup 已完成；②数据库初始化、`schema_version` 校验和启动阶段写入成功；③主加密密钥加载成功并能解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）；④三个协议 adapter/renderer registry 初始化成功；⑤任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。未满足时返回 503。
 - `/readyz` 不检查任何用户 IM 是否在线、不检查真实 LLM 连通、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
 - `/readyz` 本身不执行数据库、IM 或真实 LLM 探测，只读取启动缓存和后台协调器任务状态，避免 Kubernetes 每 5-10 秒的 readiness probe 与 SQLite 全库写锁产生高频竞争。
+- 用户可以使用调用方声明的 tool；若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。`/readyz` 不检查工具执行状态。
 - `/metrics` 使用 Prometheus exposition format，只暴露低基数指标；标签只允许有限枚举，禁止 `user_id`、`api_key_id`、`task_id`、`connection_id`、`model`、`base_url`、`error_message` 出现在 label 中。
 - SQLite 备份使用在线备份 API 或经过验证的 `VACUUM INTO` 流程，不在 WAL 写入期间直接复制单个数据库文件；发布前必须验证恢复。
 - 应用日志优先输出结构化 stderr，由 Docker、systemd 或部署平台轮转；数据库日志按保留期清理。

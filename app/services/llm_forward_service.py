@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from sqlalchemy import select
@@ -59,6 +60,21 @@ _INFERENCE_TO_LLM: dict[InferenceProtocol, LLMProtocol] = {
 _IDENTITY_FALLBACK = (
     "You are a helpful assistant. Respond naturally and concisely in the language the user uses."
 )
+
+
+def _response_status_code(payload: dict[str, Any]) -> int:
+    """Extract an optional status from an annotated payload; HTTP success defaults to 200."""
+    for key in ("status_code", "http_status"):
+        value = payload.get(key)
+        if isinstance(value, int) and 100 <= value <= 599:
+            return value
+        if isinstance(value, str) and value.isdigit() and 100 <= int(value) <= 599:
+            return int(value)
+    return 200
+
+
+def _duration_ms(started_at: float) -> float:
+    return round((time.monotonic() - started_at) * 1000, 1)
 
 
 def identity_system_message(fake_model: FakeModel | None, model_id: str) -> str:
@@ -348,35 +364,80 @@ class LlmForwardService:
         cfg: LlmConfig,
         fake_model: FakeModel | None,
     ) -> ReplyDraft:
-        secret = _decrypt_config(cfg)
+        started_at = time.monotonic()
+        fields = {
+            "task_id": task.id,
+            "protocol": cfg.protocol.value,
+            "model": cfg.real_model,
+            "endpoint": llm_upstream.endpoint_label(cfg.base_url, cfg.protocol),
+            "stream": False,
+        }
+        log_event("info", "llm.upstream.request", "开始调用上游 LLM", **fields)
         try:
-            normalized = json.loads(task.normalized_request_json or "{}")
-        except (ValueError, json.JSONDecodeError):
-            normalized = {}
-        body = self.build_upstream_request(task, cfg, fake_model, normalized)
-        if cfg.protocol is LLMProtocol.OPENAI_CHAT:
-            upstream = await llm_upstream.post_chat_completions(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
+            secret = _decrypt_config(cfg)
+            try:
+                normalized = json.loads(task.normalized_request_json or "{}")
+            except (ValueError, json.JSONDecodeError):
+                normalized = {}
+            body = self.build_upstream_request(task, cfg, fake_model, normalized)
+            if cfg.protocol is LLMProtocol.OPENAI_CHAT:
+                upstream = await llm_upstream.post_chat_completions(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+                result = _parse_chat_response(upstream)
+            elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                upstream = await llm_upstream.post_responses(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+                result = _parse_responses_response(upstream)
+            else:
+                upstream = await llm_upstream.post_anthropic_messages(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+                result = _parse_anthropic_response(upstream)
+        except DomainError as exc:
+            log_event(
+                "warning",
+                "llm.upstream.error",
+                "上游 LLM 调用失败",
+                **fields,
+                error_code=exc.code.value,
+                status_code=exc.status_code,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
             )
-            return _parse_chat_response(upstream)
-        if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
-            upstream = await llm_upstream.post_responses(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                "llm.upstream.error",
+                "上游 LLM 调用异常",
+                **fields,
+                error_code=exc.__class__.__name__,
+                status_code=500,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
             )
-            return _parse_responses_response(upstream)
-        upstream = await llm_upstream.post_anthropic_messages(
-            base_url=cfg.base_url,
-            api_key=secret,
-            request_body=body,
-            timeout_seconds=cfg.timeout_seconds,
+            raise
+        log_event(
+            "info",
+            "llm.upstream.response",
+            "上游 LLM 调用成功",
+            **fields,
+            status_code=_response_status_code(upstream),
+            duration_ms=_duration_ms(started_at),
+            usage=upstream.get("usage") or {},
         )
-        return _parse_anthropic_response(upstream)
+        return result
 
     async def _call_upstream_stream(
         self,
@@ -388,37 +449,87 @@ class LlmForwardService:
         """流式接收上游增量（UpstreamChunk 列表），由内核统一聚合接受。"""
         from ..services.llm_upstream import UpstreamChunk
 
-        secret = _decrypt_config(cfg)
+        started_at = time.monotonic()
+        fields = {
+            "task_id": task.id,
+            "protocol": cfg.protocol.value,
+            "model": cfg.real_model,
+            "endpoint": llm_upstream.endpoint_label(cfg.base_url, cfg.protocol),
+            "stream": True,
+        }
+        log_event("info", "llm.upstream.request", "开始调用上游 LLM", **fields)
         try:
-            normalized = json.loads(task.normalized_request_json or "{}")
-        except (ValueError, json.JSONDecodeError):
-            normalized = {}
-        body = self.build_upstream_request(task, cfg, fake_model, normalized)
-        chunks: list[UpstreamChunk] = []
-        if cfg.protocol is LLMProtocol.OPENAI_CHAT:
-            async for chunk in llm_upstream.stream_chat_completions(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
-            ):
-                chunks.append(chunk)
-        elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
-            async for chunk in llm_upstream.stream_responses(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
-            ):
-                chunks.append(chunk)
-        else:
-            async for chunk in llm_upstream.stream_anthropic_messages(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
-            ):
-                chunks.append(chunk)
+            secret = _decrypt_config(cfg)
+            try:
+                normalized = json.loads(task.normalized_request_json or "{}")
+            except (ValueError, json.JSONDecodeError):
+                normalized = {}
+            body = self.build_upstream_request(task, cfg, fake_model, normalized)
+            chunks: list[UpstreamChunk] = []
+            if cfg.protocol is LLMProtocol.OPENAI_CHAT:
+                async for chunk in llm_upstream.stream_chat_completions(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                ):
+                    chunks.append(chunk)
+            elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                async for chunk in llm_upstream.stream_responses(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                ):
+                    chunks.append(chunk)
+            else:
+                async for chunk in llm_upstream.stream_anthropic_messages(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                ):
+                    chunks.append(chunk)
+        except DomainError as exc:
+            log_event(
+                "warning",
+                "llm.upstream.error",
+                "上游 LLM 流式调用失败",
+                **fields,
+                error_code=exc.code.value,
+                status_code=exc.status_code,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
+            )
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                "llm.upstream.error",
+                "上游 LLM 流式调用异常",
+                **fields,
+                error_code=exc.__class__.__name__,
+                status_code=500,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
+            )
+            raise
+        status_code = next(
+            (
+                getattr(chunk, "status_code", None)
+                for chunk in chunks
+                if getattr(chunk, "status_code", None)
+            ),
+            200,
+        )
+        log_event(
+            "info",
+            "llm.upstream.response",
+            "上游 LLM 流式调用成功",
+            **fields,
+            status_code=status_code,
+            duration_ms=_duration_ms(started_at),
+        )
         return chunks
 
     # ------------------------------------------------------------------

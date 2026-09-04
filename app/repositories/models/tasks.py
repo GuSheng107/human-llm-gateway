@@ -42,6 +42,7 @@ class RequestTask(TimestampMixin, VersionMixin, Base):
         Index("ix_request_tasks_api_key_created", "api_key_id", "created_at"),
         Index("ix_request_tasks_model_created", "requested_model", "created_at"),
         Index("ix_request_tasks_previous", "previous_task_id"),
+        Index("ix_request_tasks_origin_trace", "origin_trace_id"),
         Index("ix_request_tasks_deadline", "state", "human_deadline_at"),
         Index("ix_request_tasks_slot_released", "slot_released_at"),
     )
@@ -52,6 +53,7 @@ class RequestTask(TimestampMixin, VersionMixin, Base):
     previous_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("request_tasks.id"), nullable=True
     )
+    origin_trace_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     api_key_id: Mapped[int] = mapped_column(
         ForeignKey("api_keys.id", ondelete="RESTRICT"), nullable=False

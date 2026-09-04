@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -49,6 +50,24 @@ _COMPRESS_KEEP_RECENT = 6
 _DEFAULT_CONTEXT_LIMIT = 8000
 # token 估算：每 4 个字符约 1 token（中文/英文混合保守估计）。
 _CHARS_PER_TOKEN = 4
+
+
+def _duration_ms(started_at: float) -> int:
+    return max(0, round((time.monotonic() - started_at) * 1000))
+
+
+def _status_code(payload: dict[str, Any]) -> int:
+    value = payload.get("status_code")
+    if isinstance(value, bool):
+        return 200
+    if isinstance(value, int) and 100 <= value <= 599:
+        return value
+    if isinstance(value, str) and value.isdigit():
+        parsed = int(value)
+        if 100 <= parsed <= 599:
+            return parsed
+    return 200
+
 
 # 页面 feature -> 功能描述（注入系统提示词，帮助 LLM 理解用户当前所在页面）。
 _FEATURE_DESCRIPTIONS: dict[str, str] = {
@@ -470,6 +489,15 @@ class AssistantService:
         - ``{"type": "done", "message": {...}}``：回复已落库，附完整消息。
         异常经 DomainError 抛出（API 层转 error 事件）。
         """
+        log_event(
+            "info",
+            "assistant.message_received",
+            "小助手收到用户消息",
+            user_id=user.id,
+            assistant_session_id=session_row.id,
+            llm_config_id=session_row.llm_config_id,
+            stream=True,
+        )
         context_json = self._save_user_message(
             session,
             user=user,
@@ -500,29 +528,15 @@ class AssistantService:
 
         reply_text = ""
         for _round in range(_MAX_TOOL_ROUNDS):
-            if protocol is LLMProtocol.OPENAI_CHAT:
-                chunk_iter: AsyncIterator[llm_upstream.UpstreamChunk] = (
-                    llm_upstream.stream_chat_completions(
-                        base_url=base_url,
-                        api_key=secret,
-                        request_body=request_body,
-                        timeout_seconds=timeout_seconds,
-                    )
-                )
-            elif protocol is LLMProtocol.OPENAI_RESPONSES:
-                chunk_iter = llm_upstream.stream_responses(
-                    base_url=base_url,
-                    api_key=secret,
-                    request_body=request_body,
-                    timeout_seconds=timeout_seconds,
-                )
-            else:
-                chunk_iter = llm_upstream.stream_anthropic_messages(
-                    base_url=base_url,
-                    api_key=secret,
-                    request_body=request_body,
-                    timeout_seconds=timeout_seconds,
-                )
+            chunk_iter = self._stream_upstream(
+                protocol,
+                base_url,
+                secret,
+                request_body,
+                timeout_seconds,
+                assistant_session_id=assistant_session_id,
+                user_id=owner_user_id,
+            )
             collected: dict[str, Any] = {}
             async for chunk in chunk_iter:
                 llm_upstream.collect_chunk(collected, chunk)
@@ -595,6 +609,15 @@ class AssistantService:
         )
         # 流式端点没有 API 层的收尾 commit，这里自行提交。
         session.commit()
+        log_event(
+            "info",
+            "assistant.reply_persisted",
+            "小助手回复已落库",
+            user_id=owner_user_id,
+            assistant_session_id=assistant_session_id,
+            assistant_message_id=reply_message.id,
+            stream=True,
+        )
         yield {
             "type": "done",
             "message": {
@@ -863,7 +886,13 @@ class AssistantService:
         # 已失效对象，因此安全。
         for _round in range(_MAX_TOOL_ROUNDS):
             upstream = await self._post_upstream(
-                protocol, base_url, secret, request_body, timeout_seconds
+                protocol,
+                base_url,
+                secret,
+                request_body,
+                timeout_seconds,
+                assistant_session_id=session_id,
+                user_id=user.id,
             )
             # 检查是否有 tool_calls
             tool_calls = self._extract_tool_calls(upstream)
@@ -922,6 +951,26 @@ class AssistantService:
         metadata = {"finish_reason": finish, "usage": total_usage}
         return reply_text, metadata
 
+    @staticmethod
+    def _upstream_log_fields(
+        protocol: LLMProtocol,
+        base_url: str,
+        request_body: dict[str, Any],
+        *,
+        assistant_session_id: int | None,
+        user_id: int | None,
+    ) -> dict[str, object]:
+        fields: dict[str, object] = {
+            "protocol": protocol.value,
+            "model": str(request_body.get("model") or ""),
+            "endpoint": llm_upstream.endpoint_label(base_url, protocol),
+        }
+        if assistant_session_id is not None:
+            fields["assistant_session_id"] = assistant_session_id
+        if user_id is not None:
+            fields["user_id"] = user_id
+        return fields
+
     async def _post_upstream(
         self,
         protocol: LLMProtocol,
@@ -929,13 +978,25 @@ class AssistantService:
         secret: str,
         request_body: dict[str, Any],
         timeout_seconds: float,
+        *,
+        assistant_session_id: int | None = None,
+        user_id: int | None = None,
     ) -> dict[str, Any]:
-        """根据协议调用上游 LLM。"""
+        """根据协议调用上游 LLM，并记录完整的调用生命周期。"""
+        started_at = time.monotonic()
+        fields = self._upstream_log_fields(
+            protocol,
+            base_url,
+            request_body,
+            assistant_session_id=assistant_session_id,
+            user_id=user_id,
+        )
         log_event(
             "info",
             "assistant.upstream_call_started",
             "小助手开始调用上游 LLM",
-            protocol=protocol.value,
+            **fields,
+            stream=False,
         )
         try:
             if protocol is LLMProtocol.OPENAI_CHAT:
@@ -959,21 +1020,17 @@ class AssistantService:
                     request_body=request_body,
                     timeout_seconds=timeout_seconds,
                 )
-            log_event(
-                "info",
-                "assistant.upstream_call_completed",
-                "小助手上游调用成功",
-                protocol=protocol.value,
-            )
-            return result
-        except DomainError:
-            # 上游返回协议化错误（4xx/5xx）时记录 warning，记录后由上层
-            # raise 为 502。
+        except DomainError as exc:
             log_event(
                 "warning",
                 "assistant.upstream_call_failed",
                 "小助手上游调用失败",
-                protocol=protocol.value,
+                **fields,
+                stream=False,
+                error_code=exc.code.value,
+                status_code=exc.status_code,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
             )
             raise
         except Exception as exc:
@@ -981,10 +1038,116 @@ class AssistantService:
                 "error",
                 "assistant.upstream_call_failed",
                 "小助手上游调用异常",
-                protocol=protocol.value,
+                **fields,
+                stream=False,
+                error_code=exc.__class__.__name__,
+                status_code=500,
                 error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
             )
             raise
+        log_event(
+            "info",
+            "assistant.upstream_call_completed",
+            "小助手上游调用成功",
+            **fields,
+            stream=False,
+            status_code=_status_code(result),
+            duration_ms=_duration_ms(started_at),
+            usage=result.get("usage") or {},
+        )
+        return result
+
+    async def _stream_upstream(
+        self,
+        protocol: LLMProtocol,
+        base_url: str,
+        secret: str,
+        request_body: dict[str, Any],
+        timeout_seconds: float,
+        *,
+        assistant_session_id: int | None,
+        user_id: int | None,
+    ) -> AsyncIterator[llm_upstream.UpstreamChunk]:
+        """按协议转发上游增量，并记录流式调用的完整生命周期。"""
+        started_at = time.monotonic()
+        fields = self._upstream_log_fields(
+            protocol,
+            base_url,
+            request_body,
+            assistant_session_id=assistant_session_id,
+            user_id=user_id,
+        )
+        log_event(
+            "info",
+            "assistant.upstream_call_started",
+            "小助手开始调用上游 LLM",
+            **fields,
+            stream=True,
+        )
+        status_code = 200
+        try:
+            if protocol is LLMProtocol.OPENAI_CHAT:
+                chunk_iter = llm_upstream.stream_chat_completions(
+                    base_url=base_url,
+                    api_key=secret,
+                    request_body=request_body,
+                    timeout_seconds=timeout_seconds,
+                )
+            elif protocol is LLMProtocol.OPENAI_RESPONSES:
+                chunk_iter = llm_upstream.stream_responses(
+                    base_url=base_url,
+                    api_key=secret,
+                    request_body=request_body,
+                    timeout_seconds=timeout_seconds,
+                )
+            else:
+                chunk_iter = llm_upstream.stream_anthropic_messages(
+                    base_url=base_url,
+                    api_key=secret,
+                    request_body=request_body,
+                    timeout_seconds=timeout_seconds,
+                )
+            async for chunk in chunk_iter:
+                if chunk.status_code is not None:
+                    status_code = chunk.status_code
+                yield chunk
+        except DomainError as exc:
+            log_event(
+                "warning",
+                "assistant.upstream_call_failed",
+                "小助手上游流式调用失败",
+                **fields,
+                stream=True,
+                error_code=exc.code.value,
+                status_code=exc.status_code,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
+            )
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                "assistant.upstream_call_failed",
+                "小助手上游流式调用异常",
+                **fields,
+                stream=True,
+                error_code=exc.__class__.__name__,
+                status_code=500,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
+            )
+            raise
+        log_event(
+            "info",
+            "assistant.upstream_call_completed",
+            "小助手上游流式调用成功",
+            **fields,
+            stream=True,
+            status_code=status_code,
+            duration_ms=_duration_ms(started_at),
+            usage={},
+        )
 
     @staticmethod
     def _extract_tool_calls(upstream: dict[str, Any]) -> list[dict[str, Any]]:

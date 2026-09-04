@@ -96,7 +96,7 @@ class AuditRepository:
         if resource_type:
             filters.append(AuditLog.resource_type == resource_type)
         if action:
-            filters.append(AuditLog.action == action)
+            filters.append(AuditLog.action.like(f"%{action}%"))
         if owner_user_id is not None:
             filters.append(AuditLog.owner_user_id == owner_user_id)
         if request_id:
@@ -143,7 +143,7 @@ class AuditRepository:
         if request_id:
             filters.append(AuditLog.request_id == request_id)
         if action:
-            filters.append(AuditLog.action == action)
+            filters.append(AuditLog.action.like(f"%{action}%"))
         rows = list(
             session.scalars(
                 select(AuditLog).where(*filters).order_by(AuditLog.id.desc()).limit(limit)
@@ -191,6 +191,7 @@ class AppLogRepository:
         page_size: int,
         level: str | None = None,
         event: str | None = None,
+        category: str | None = None,
         user_id: int | None = None,
         task_id: int | None = None,
         api_key_id: int | None = None,
@@ -199,14 +200,16 @@ class AppLogRepository:
         scope_owner_id: int | None = None,
         hours: int | None = None,
     ) -> tuple[list[AppLog], int]:
-        """应用日志检索：按级别/事件/关联 ID/request_id/时间窗筛选。"""
+        """应用日志检索：按级别/分类/事件/关联 ID/request_id/时间窗筛选。"""
         from sqlalchemy import func, select
 
         filters: list[Any] = []
         if level:
             filters.append(AppLog.level == level)
         if event:
-            filters.append(AppLog.event == event)
+            filters.append(AppLog.event.like(f"%{event}%"))
+        if category:
+            filters.append(AppLog.event.like(f"{category}.%"))
         if request_id:
             filters.append(AppLog.request_id == request_id)
         if scope_owner_id is not None:

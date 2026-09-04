@@ -7,6 +7,7 @@ import { api } from "./client";
 export interface LogItem {
   id: string;
   kind: "audit" | "app";
+  category: string;
   level: string;
   event: string;
   message: string;
@@ -16,6 +17,7 @@ export interface LogItem {
   task_id: string | null;
   api_key_id: string | null;
   connection_id: string | null;
+  context: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -30,6 +32,8 @@ export interface LogQuery {
   page: number;
   page_size?: number;
   trace_id?: string;
+  level?: "debug" | "error" | "warning" | "info";
+  category?: string;
   event?: string;
   hours?: number;
 }
@@ -40,6 +44,8 @@ export function listLogs(query: LogQuery): Promise<LogPage> {
     page_size: String(query.page_size ?? 20),
   });
   if (query.trace_id) params.set("trace_id", query.trace_id);
+  if (query.level) params.set("level", query.level);
+  if (query.category) params.set("category", query.category);
   if (query.event) params.set("event", query.event);
   if (query.hours) params.set("hours", String(query.hours));
   return api(`/api/logs?${params}`);

@@ -142,6 +142,7 @@ class ReplyDraftView(BaseModel):
 
 
 class TaskDetail(TaskItem):
+    origin_trace_id: str | None
     is_owner: bool
     can_edit: bool
     prompt_text: str
@@ -376,6 +377,7 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
     previous_public_id = _service.repo.get_previous_public_id(session, task)
     return TaskDetail(
         **item.model_dump(),
+        origin_trace_id=task.origin_trace_id,
         is_owner=is_owner,
         can_edit=(
             is_owner and task.state is TaskState.WAITING_HUMAN and user.role is not UserRole.ADMIN

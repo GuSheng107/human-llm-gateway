@@ -531,7 +531,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
               {tab === "tools" && (
                 <div className="space-y-3">
                   <p className="text-xs text-slate-400">
-                    工具调用由调用方声明并自行执行，本网关仅伪造输出转发、不执行也不担保结果；
+                    用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
                     名称必须命中调用方声明的工具，工具调用不是必须的。
                   </p>
                   {task.tool_names.length === 0 && (
@@ -679,7 +679,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
               )}
             </div>
             <p className="border-t border-slate-100 px-4 py-2.5 text-[11px] leading-relaxed text-slate-400">
-              勾选后自动生成调用条目；工具由调用方自行执行，本网关不执行、不担保结果。
+              用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
             </p>
           </Card>
         </aside>
@@ -696,11 +696,10 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
         >
           <div className="space-y-4 p-6 text-sm text-slate-600">
             <p>
-              工具调用由调用方在请求中声明并<span className="font-medium">自行执行</span>，
-              本网关仅转发伪造的 tool call 输出，<span className="font-medium">不执行任何工具、不担保执行结果</span>。
+              用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
             </p>
             <p className="text-amber-700">
-              慎重使用，由此产生的后果由使用者自行承担。本次登录内不再重复提示。
+              名称必须命中调用方声明的工具，工具调用不是必须的。本次登录内不再重复提示。
             </p>
             <div className="flex justify-end border-t border-slate-100 pt-4">
               <Button onClick={dismissToolWarn}>

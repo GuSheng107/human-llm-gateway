@@ -239,3 +239,16 @@ def test_upstream_anthropic_url_helper() -> None:
     assert _anthropic_messages_url("https://host/v1") == "https://host/v1/messages"
     assert _anthropic_messages_url("https://host/v1/") == "https://host/v1/messages"
     assert _anthropic_messages_url("https://host/proxy") == "https://host/proxy/v1/messages"
+
+
+def test_upstream_endpoint_label_removes_query_and_credentials() -> None:
+    from app.domain.enums import LLMProtocol
+    from app.services.llm_upstream import endpoint_label
+
+    label = endpoint_label(
+        "https://user:secret@api.example.com/proxy/v1?api_key=secret",
+        LLMProtocol.OPENAI_CHAT,
+    )
+
+    assert label == "https://api.example.com/proxy/v1/chat/completions"
+    assert "secret" not in label

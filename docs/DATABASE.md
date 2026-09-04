@@ -406,6 +406,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `public_id` | varchar(64) | 非空，唯一，供 UI/IM/协议日志使用 |
 | `response_public_id` | varchar(64) nullable | OpenAI Responses 对外响应 ID，唯一；在任务创建事务中生成（仅 `protocol = openai_responses` 非空，条件约束保证），格式为 `resp_` + 32 位小写 hex（CSPRNG 生成） |
 | `previous_task_id` | integer nullable | FK request_tasks，同一 API Key 的历史响应链 |
+| `origin_trace_id` | varchar(64) nullable | 创建任务时绑定的入站 trace；用于从任务详情回溯原始请求链路，建立索引 |
 | `owner_user_id` | integer | FK users，非空 |
 | `api_key_id` | integer | FK api_keys，非空，ON DELETE RESTRICT |
 | `api_key_prefix_snapshot` | varchar(8) | 创建任务时 8 字符 Key 前缀快照 |
@@ -781,4 +782,4 @@ WHERE id = :task_id
 
 ## 17. 高频数据保留
 
-后台数据保留任务在启动时执行一次，之后每七天执行一次，删除七天前的应用日志、审计日志、助手会话/消息、已过期登录会话、任务事件、收件箱状态、工具执行记录、IM 回执和已完成/失败的投递记录。请求任务、任务原始请求和正式回复草稿不因该任务清理。
+后台数据保留任务在启动时执行一次，之后每七天执行一次，删除七天前的应用日志、审计日志、助手会话/消息、已过期登录会话、任务事件、收件箱状态、IM 回执和已完成/失败的投递记录。请求任务、任务原始请求和正式回复草稿不因该任务清理。

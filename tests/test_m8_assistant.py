@@ -527,6 +527,22 @@ def test_stream_message_delta_and_done(client, created_user) -> None:
     assert messages[1]["role"] == "assistant"
     assert messages[1]["text"] == "小助手回答"
 
+    logs = client.get(
+        "/api/logs?category=assistant",
+        headers=created_user.headers,
+    )
+    assert logs.status_code == 200
+    events = {item["event"] for item in logs.json()["items"]}
+    assert "assistant.reply_persisted" in events
+    completed = next(
+        item
+        for item in logs.json()["items"]
+        if item["event"] == "assistant.upstream_call_completed"
+    )
+    assert completed["context"]["model"] == "gpt-4o-mini"
+    assert completed["context"]["stream"] is True
+    assert "duration_ms" in completed["context"]
+
 
 def test_stream_message_error_event(client, created_user) -> None:
     """流中 DomainError → error 事件（HTTP 仍为 200）；user 消息保留。"""

@@ -15,6 +15,7 @@ def test_readyz_reports_all_startup_checks(client) -> None:
         "protocols": True,
         "coordinators": True,
     }
+    assert "sandbox" not in body["checks"]
     assert response.headers["x-trace-id"]
 
 

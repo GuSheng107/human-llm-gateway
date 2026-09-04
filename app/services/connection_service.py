@@ -25,7 +25,7 @@ from ..connectors.registry import ConnectorRegistry, default_registry
 from ..core.config import get_settings
 from ..core.constants import BINDING_CODE_TTL_FALLBACK_SECONDS
 from ..core.db import begin_immediate_if_sqlite
-from ..core.logging import get_request_id, log_event
+from ..core.logging import bind_trace_id, get_request_id, log_event, new_trace_id, reset_request_id
 from ..core.security import (
     decrypt_secret,
     encrypt_secret,
@@ -951,28 +951,48 @@ class ConnectionService:
         service = self
 
         async def handle(connection_id: int, message: InboundMessage) -> str:
-            with SessionLocal() as session:
-                try:
-                    row = service.repo.get(session, connection_id)
-                    if row is None:
-                        return InboundResult.UNHANDLED.value
-                    result = service.handle_inbound(session, row=row, message=message)
-                    session.commit()
-                    if result is InboundResult.BOUND and not row.desired_running:
-                        from ..connectors import connection_manager as manager
-
-                        await manager.stop(connection_id)
-                        row.state = ConnectionState.STOPPED
-                        row.next_retry_at = None
+            trace_token = None
+            if get_request_id() is None:
+                trace_token = bind_trace_id(new_trace_id())
+            try:
+                with SessionLocal() as session:
+                    try:
+                        row = service.repo.get(session, connection_id)
+                        if row is None:
+                            return InboundResult.UNHANDLED.value
+                        result = service.handle_inbound(session, row=row, message=message)
                         session.commit()
-                    return result.value
-                except Exception:
-                    session.rollback()
-                    raise
+                        if result is InboundResult.BOUND and not row.desired_running:
+                            from ..connectors import connection_manager as manager
+
+                            await manager.stop(connection_id)
+                            row.state = ConnectionState.STOPPED
+                            row.next_retry_at = None
+                            session.commit()
+                        return result.value
+                    except Exception:
+                        session.rollback()
+                        raise
+            finally:
+                if trace_token is not None:
+                    reset_request_id(trace_token)
 
         return handle
 
     def handle_inbound(
+        self, session: Session, *, row: ImConnection, message: InboundMessage
+    ) -> InboundResult:
+        """Process one inbound message under a request trace context."""
+        trace_token = None
+        if get_request_id() is None:
+            trace_token = bind_trace_id(new_trace_id())
+        try:
+            return self._handle_inbound(session, row=row, message=message)
+        finally:
+            if trace_token is not None:
+                reset_request_id(trace_token)
+
+    def _handle_inbound(
         self, session: Session, *, row: ImConnection, message: InboundMessage
     ) -> InboundResult:
         """统一进站处理：幂等 -> 绑定校验 -> 回复定位 -> 首个回复条件提交。"""
@@ -1101,6 +1121,15 @@ class ConnectionService:
                     "reason": "tool_call_not_supported",
                 },
             )
+            log_event(
+                "warning",
+                "im.reply_rejected",
+                "IM 回复因策略限制被拒绝",
+                task_id=task.id,
+                connection_id=row.id,
+                source="im",
+                reason="tool_call_not_supported",
+            )
             return InboundResult.REJECTED
         accepted = self.tasks.first_reply_wins(
             session,
@@ -1119,6 +1148,14 @@ class ConnectionService:
                 payload={"source": "im", "connection_id": row.id},
             )
             receipt.task_id = task.id
+            log_event(
+                "info",
+                "im.reply_submitted",
+                "IM 回复已提交",
+                task_id=task.id,
+                connection_id=row.id,
+                source="im",
+            )
             return InboundResult.ACCEPTED
         # 晚到回复：只记录事件与审计，不覆盖已接受响应。
         self._add_task_event(
@@ -1130,6 +1167,15 @@ class ConnectionService:
             payload={"source": "im", "connection_id": row.id, "payload_hash": receipt.payload_hash},
         )
         receipt.task_id = task.id
+        log_event(
+            "warning",
+            "im.reply_rejected",
+            "IM 回复因任务已处理被拒绝",
+            task_id=task.id,
+            connection_id=row.id,
+            source="im",
+            reason="late",
+        )
         return InboundResult.LATE
 
     def _find_task_by_public_id(

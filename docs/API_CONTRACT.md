@@ -12,8 +12,8 @@
 | `/api/*` | 登录后的管理后台 API | 用户会话 Token |
 | `/v1/*` | 外部 LLM 兼容 API | 用户创建的 API Key |
 | `/connectors/*` | IM/Webhook/WebSocket/HTTP 连接器入口 | 每个连接独立凭据 |
-| `/healthz` | 进程存活检查，不访问数据库或连接器 | 无 |
-| `/readyz` | 就绪检查；启动校验和后台协调器均正常时返回 200 | 无 |
+| `/healthz` | 进程存活检查，不检查数据库、连接器或工具执行状态 | 无 |
+| `/readyz` | 就绪检查；启动校验和后台协调器正常时返回 200 | 无 |
 | `/metrics` | 预留 Prometheus 指标接口 | 尚未开放 |
 
 管理 API 与推理 API 使用不同的鉴权依赖和错误映射。用户登录 Token 不能调用 `/v1/*`，外部 API Key 不能调用 `/api/*`。
@@ -42,6 +42,8 @@
 5. 任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。
 
 `/readyz` 不检查任何用户 IM 连接是否在线、不检查真实 LLM 连通性、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
+
+用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。`/healthz` 和 `/readyz` 不检查工具执行状态。
 
 ### 1.2 `/metrics` 指标契约（预留设计，当前未开放）
 
@@ -367,7 +369,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/tasks` | 用户查看自己的任务；管理员查看脱敏全局任务。 |
-| GET | `/api/tasks/{id}` | 任务详情：所有者可查看完整提示词（不截断）、时间线、草稿和结果；原始请求 JSON 不随详情返回。 |
+| GET | `/api/tasks/{id}` | 任务详情：所有者可查看完整提示词（不截断）、时间线、草稿和结果；返回 `origin_trace_id` 供跳转日志；原始请求 JSON 不随详情返回。 |
 | GET | `/api/tasks/{id}/raw-request` | 原始请求 JSON 按需加载（仅所有者与管理员）；超大请求不随详情页传输。 |
 | GET | `/api/tasks/{id}/events` | 分页查看任务事件。 |
 | POST | `/api/tasks/{id}/drafts` | 新建或保存人工草稿。 |
@@ -395,7 +397,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 }
 ```
 
-`arguments` 必须是合法 JSON 值。系统为不同协议生成对应 tool call 结构，但绝不执行。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
+`arguments` 必须是合法 JSON 值。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
 
 ## 10. Web 小助手 API（M8）
 
@@ -406,7 +408,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | DELETE | `/api/assistant/sessions/{id}` | 删除自己的会话和消息。 |
 | POST | `/api/assistant/sessions/{id}/messages` | 使用选定 LLM 配置发送文本和当前页面上下文快照。 |
 
-每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。网关不执行任何工具；工具由调用方声明并自行执行，网关只转发伪造输出，不担保结果。
+每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
 
 ## 11. 设置、日志与审计
 
@@ -414,11 +416,13 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | --- | --- | --- | --- |
 | GET/PATCH | `/api/settings` | 管理员 | 基础非 Secret 设置。 |
 | GET | `/api/audit-logs` | 管理员 | 按操作者、资源、动作和时间筛选。 |
-| GET | `/api/app-logs` | 登录用户 | 按级别、事件、traceId（request_id）、task/key/connection ID 筛选；`with_context=true` 返回脱敏上下文与异常详情。 |
+| GET | `/api/logs` | 登录用户 | 合并审计与应用日志，按级别、分类、事件、traceId（request_id）和时间窗筛选，返回脱敏上下文。 |
 
-应用日志全员开放但按归属过滤：非管理员只能看到自己资源（用户/Key/连接/任务）范围内的日志。trace_id 即 request_id，日志页可按 traceId 检索一次请求的完整处理链路。
+应用日志全员开放但按归属过滤：非管理员只能看到自己资源（用户/Key/连接/任务）范围内的日志。trace_id 即 request_id，日志页可按 traceId 检索一次请求的完整处理链路。`category` 按应用事件的点号前缀筛选（例如 `llm`、`assistant`、`http`），`event` 为模糊匹配；`level` 只筛选应用日志的 `debug`、`error`、`warning`、`info` 等级。每行返回 `kind`、`category`、`event`、`context` 和资源关联字段，审计 `context` 来自脱敏 `metadata_json`，应用日志 `context` 来自脱敏 `context_json`。
 
-结构化日志（`log_event`）与普通 logging 告警/异常（含看门狗、连接器与 IM 后台任务的 `logger.exception`）全部落入 `app_logs`；落库走异步批量队列，不阻塞事件循环。
+结构化日志（`log_event`）与普通 logging 告警/异常（含看门狗、连接器与 IM 后台任务的 `logger.exception`）全部落入 `app_logs`；落库走异步批量队列，不阻塞事件循环。HTTP 和 WebSocket 请求分别在上下文建立时绑定 trace；`/healthz`、`/readyz`、根路径、静态资源和日志查询本身不写访问噪声日志。
+
+推理链路记录 `llm.upstream.request`、`llm.upstream.response`、`llm.upstream.error`；Web 小助手记录 `assistant.upstream_call_started`、`assistant.upstream_call_completed`、`assistant.upstream_call_failed`，上游日志包含脱敏 endpoint、真实模型名、协议、stream、状态、耗时和 usage。IM 回复提交记录 `im.reply_submitted`，策略拒绝或晚到回复记录 `im.reply_rejected`。
 
 普通用户在任务时间线中只能看到自己的相关业务事件，不能直接读取全局应用日志。
 

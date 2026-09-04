@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { getTask } from "../../api/tasks";
 import { Card } from "../../components/data-display/Card";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
@@ -63,6 +64,7 @@ export function TaskDetailDrawer({
   taskId: string;
   onClose: () => void;
 }) {
+  const navigate = useNavigate();
   const { user: currentUser } = useAuth();
   const isAdmin = currentUser?.role === "admin";
   const [detail, setDetail] = useState<TaskDetail | null>(null);
@@ -145,6 +147,20 @@ export function TaskDetailDrawer({
           )}
           {isAdmin && (
             <MetaCell label="归属用户">{detail.owner_username ?? "-"}</MetaCell>
+          )}
+          {detail.origin_trace_id && (
+            <div className="col-span-2 sm:col-span-3">
+              <span className="block text-slate-400">源头 TraceId</span>
+              <button
+                type="button"
+                onClick={() =>
+                  navigate(`/settings/logs?trace_id=${encodeURIComponent(detail.origin_trace_id!)}`)
+                }
+                className="mt-1 break-all text-left font-mono font-medium text-primary hover:underline"
+              >
+                {detail.origin_trace_id} · 跳转日志页
+              </button>
+            </div>
           )}
         </section>
 

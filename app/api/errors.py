@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import logging
 import time
-import uuid
 from enum import StrEnum
 from typing import Any
 
@@ -16,6 +15,34 @@ from fastapi.responses import JSONResponse
 from ..domain.errors import DomainError, DomainErrorCode
 
 logger = logging.getLogger("app.api")
+
+_STATIC_LOG_SUFFIXES = (
+    ".js",
+    ".css",
+    ".map",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".webp",
+    ".svg",
+    ".ico",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".json",
+)
+
+
+def _should_log_http_access(path: str) -> bool:
+    """Keep request logs useful by omitting health probes and SPA assets."""
+    normalized = path.lower()
+    if normalized in ("", "/"):
+        return False
+    if normalized.startswith(("/healthz", "/readyz", "/api/logs", "/assets/")):
+        return False
+    return not normalized.endswith(_STATIC_LOG_SUFFIXES)
 
 
 class ApiErrorCode(StrEnum):
@@ -115,10 +142,36 @@ class RequestIdMiddleware:
         self.app = app
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        from ..core.logging import new_trace_id, reset_request_id, set_request_id
+
         if scope["type"] != "http":
-            await self.app(scope, receive, send)
+            if scope["type"] != "websocket":
+                await self.app(scope, receive, send)
+                return
+            request_id = new_trace_id()
+            scope.setdefault("state", {})["request_id"] = request_id
+            token = set_request_id(request_id)
+            started_at = time.monotonic()
+            path = str(scope.get("path") or "")
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                try:
+                    from ..core.logging import log_event
+
+                    log_event(
+                        "info",
+                        "http.access",
+                        f"WEBSOCKET {path}",
+                        method="WEBSOCKET",
+                        path=path,
+                        status=101,
+                        kind="ws",
+                        duration_ms=round((time.monotonic() - started_at) * 1000, 1),
+                    )
+                finally:
+                    reset_request_id(token)
             return
-        from ..core.logging import reset_request_id, set_request_id
 
         request_id = ""
         for key, value in scope.get("headers") or []:
@@ -126,7 +179,7 @@ class RequestIdMiddleware:
                 request_id = value.decode("latin-1")
                 break
         if not request_id:
-            request_id = f"req_{uuid.uuid4().hex[:24]}"
+            request_id = new_trace_id()
         scope.setdefault("state", {})["request_id"] = request_id
         token = set_request_id(request_id)
         header_value = request_id.encode("latin-1")
@@ -217,10 +270,10 @@ class RequestIdMiddleware:
         try:
             await self.app(scope, receive, send_with_request_id)
         finally:
-            # 统一访问事件：除日志查询接口与 /healthz 外，任何请求都能按
+            # 统一访问事件：排除探针、静态资源和日志查询噪声后，任何请求都能按
             # traceId 在日志中回溯到这条记录；用户身份由鉴权依赖写入
             # scope.state（跨线程池 Context 不可靠，必须显式传递）。
-            if not path.startswith("/healthz") and not path.startswith("/api/logs"):
+            if _should_log_http_access(path):
                 from ..core.logging import log_event
 
                 state = scope.get("state") or {}

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Any, Literal
 
@@ -21,6 +22,7 @@ from ..domain.enums import FakeModelScope, UserRole
 from ..domain.tasks import TERMINAL_STATES
 from ..repositories.models import (
     ApiKey,
+    AppLog,
     AuditLog,
     FakeModel,
     RequestTask,
@@ -54,6 +56,7 @@ class LogEntry(BaseModel):
 
     id: str
     kind: Literal["audit", "app"]
+    category: str
     level: str
     event: str
     message: str
@@ -63,6 +66,7 @@ class LogEntry(BaseModel):
     task_id: str | None = None
     api_key_id: str | None = None
     connection_id: str | None = None
+    context: dict[str, Any] | None = None
     created_at: str
 
 
@@ -116,10 +120,21 @@ class DashboardResponse(BaseModel):
 # ----------------------------------------------------------------------
 
 
+def _parse_context(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
 def _to_log_entry_from_audit(row: AuditLog, actor_username: str | None) -> LogEntry:
     return LogEntry(
         id=f"audit-{row.id}",
         kind="audit",
+        category="audit",
         level=row.result.value,
         event=row.action,
         message=f"{row.action} {row.resource_type}"
@@ -127,14 +142,16 @@ def _to_log_entry_from_audit(row: AuditLog, actor_username: str | None) -> LogEn
         username=actor_username,
         user_id=str(row.actor_user_id) if row.actor_user_id is not None else None,
         request_id=row.request_id,
+        context=_parse_context(row.metadata_json),
         created_at=iso_utc(row.created_at) or "",
     )
 
 
-def _to_log_entry_from_app(row, username: str | None) -> LogEntry:
+def _to_log_entry_from_app(row: AppLog, username: str | None) -> LogEntry:
     return LogEntry(
         id=f"app-{row.id}",
         kind="app",
+        category=row.event.split(".", 1)[0] if row.event else "app",
         level=row.level,
         event=row.event,
         message=row.message,
@@ -144,6 +161,7 @@ def _to_log_entry_from_app(row, username: str | None) -> LogEntry:
         task_id=str(row.task_id) if row.task_id is not None else None,
         api_key_id=str(row.api_key_id) if row.api_key_id is not None else None,
         connection_id=str(row.connection_id) if row.connection_id is not None else None,
+        context=_parse_context(row.context_json),
         created_at=iso_utc(row.created_at) or "",
     )
 
@@ -154,6 +172,8 @@ def list_logs(
     page_size: int = Query(default=20, ge=1, le=100),
     trace_id: str | None = Query(default=None, max_length=64),
     event: str | None = Query(default=None, max_length=100),
+    category: str | None = Query(default=None, max_length=100),
+    level: Literal["debug", "error", "warning", "info"] | None = Query(default=None),
     hours: int | None = Query(default=None, ge=1, le=24 * 30),
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
@@ -167,13 +187,20 @@ def list_logs(
     # 每侧拿足窗口条数再合并切片。page*page_size 上界 100*100 = 10k，SQLite 可接受。
     fetch = min(page * page_size, 10000)
 
-    # 1) 审计日志
-    if is_admin:
+    category_filter = category.strip() if category else None
+    event_filter = event.strip() if event else None
+    audit_enabled = category_filter in (None, "audit")
+    app_enabled = category_filter != "audit"
+
+    # 1) 审计日志（level 仅定义应用日志等级；带 level 时不混入审计结果）。
+    if level is not None or not audit_enabled:
+        audit_rows, audit_total = [], 0
+    elif is_admin:
         audit_rows, audit_total = _audit_repo.list_page(
             db,
             page=1,
             page_size=fetch,
-            action=event,
+            action=event_filter,
             request_id=trace_id,
             hours=hours,
         )
@@ -184,21 +211,26 @@ def list_logs(
             limit=fetch,
             hours=hours,
             request_id=trace_id,
-            action=event,
+            action=event_filter,
         )
         # 非管理员的全量计数不必精确（合并视图只需要条目本身）。
         audit_total = len(audit_rows)
 
     # 2) 应用日志（复用现有 scope 过滤）
-    app_rows, app_total = _applog_repo.list_page(
-        db,
-        page=1,
-        page_size=fetch,
-        event=event,
-        request_id=trace_id,
-        hours=hours,
-        scope_owner_id=None if is_admin else user.id,
-    )
+    if app_enabled:
+        app_rows, app_total = _applog_repo.list_page(
+            db,
+            page=1,
+            page_size=fetch,
+            event=event_filter,
+            category=category_filter,
+            level=level,
+            request_id=trace_id,
+            hours=hours,
+            scope_owner_id=None if is_admin else user.id,
+        )
+    else:
+        app_rows, app_total = [], 0
 
     # 3) 用户名映射（审计 actor 与应用日志 user_id 统一）
     from sqlalchemy import select as _select

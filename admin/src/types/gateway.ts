@@ -232,6 +232,7 @@ export interface TaskItem {
 }
 
 export interface TaskDetail extends TaskItem {
+  origin_trace_id: string | null;
   is_owner: boolean;
   can_edit: boolean;
   prompt_text: string;

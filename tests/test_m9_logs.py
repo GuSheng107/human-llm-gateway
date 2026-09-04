@@ -47,6 +47,7 @@ def _seed_applog(
     *,
     user_id: int | None = None,
     request_id: str | None = None,
+    context: dict[str, object] | None = None,
 ) -> None:
     with database.SessionLocal() as session:
         AppLogRepository().add(
@@ -56,6 +57,7 @@ def _seed_applog(
             message=message,
             user_id=user_id,
             request_id=request_id,
+            context=context,
         )
         session.commit()
 
@@ -74,6 +76,11 @@ def test_logs_admin_sees_all(client, admin_headers, created_user) -> None:
     items = resp.json()["items"]
     assert any(item["kind"] == "audit" for item in items)
     assert any(item["kind"] == "app" for item in items)
+    audit = next(item for item in items if item["kind"] == "audit")
+    app = next(item for item in items if item["kind"] == "app")
+    assert audit["category"] == "audit"
+    assert audit["context"] == {"fields": ["name"]}
+    assert app["category"] == "test"
 
 
 def test_logs_owner_scope_filters_for_viewer(client, created_user) -> None:
@@ -129,6 +136,33 @@ def test_logs_event_filter(client, admin_headers) -> None:
     assert resp.status_code == 200
     items = resp.json()["items"]
     assert all(item["event"] == "inference.human_timeout" for item in items)
+
+
+def test_logs_category_level_and_context_filters(client, admin_headers) -> None:
+    """分类按事件前缀筛选，等级只返回应用日志，context 可直接读取。"""
+    _seed_applog(
+        "llm.upstream.response",
+        "info",
+        "upstream ok",
+        context={"endpoint": "https://api.example.com/v1/chat/completions", "usage": {"total": 3}},
+    )
+    _seed_applog("llm.upstream.error", "warning", "upstream failed")
+
+    resp = client.get("/api/logs?category=llm&level=info", headers=admin_headers)
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 1
+    assert items[0]["kind"] == "app"
+    assert items[0]["category"] == "llm"
+    assert items[0]["event"] == "llm.upstream.response"
+    assert items[0]["context"]["usage"] == {"total": 3}
+
+    fuzzy = client.get("/api/logs?event=upstream", headers=admin_headers)
+    assert fuzzy.status_code == 200
+    assert {item["event"] for item in fuzzy.json()["items"]} >= {
+        "llm.upstream.response",
+        "llm.upstream.error",
+    }
 
 
 def test_logs_hours_filter(client, admin_headers) -> None:

@@ -781,6 +781,20 @@ def test_websocket_rejects_oversized_message(client, admin_headers, monkeypatch)
             websocket.receive_text()
         assert disconnected.value.code == 1009
 
+    logs = client.get(
+        "/api/logs?category=http&event=http.access",
+        headers=admin_headers,
+    )
+    assert logs.status_code == 200
+    websocket_log = next(
+        item
+        for item in logs.json()["items"]
+        if item["context"]
+        and item["context"].get("kind") == "ws"
+        and item["context"].get("path", "").startswith("/connectors/ws/")
+    )
+    assert websocket_log["request_id"]
+
 
 def test_watchdog_check_disables_abnormal_enabled_connection(client, admin_headers) -> None:
     from app.domain.enums import ConnectionState

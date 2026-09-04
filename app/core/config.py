@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     llm_allow_private_upstream: bool = False
     # 本网关对外的公网主机名/IP（逗号分隔，可带端口）。SSRF 按 IP 网档判断，
     # 无法识别"这就是本服务"：公网域名部署时必须填写，防止用户把 LLM 上游
-    # 指回本网关 /v1 形成自指转发链（绕过人工回复的工具沙箱约束）。
+    # 指回本网关 /v1 形成自指转发链，绕过人工回复流程。
     gateway_public_hosts: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")

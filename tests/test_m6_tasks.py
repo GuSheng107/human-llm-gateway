@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 import app.core.db as database
+from app.core.logging import bind_trace_id, reset_request_id
 from app.domain.dsl import (
     extract_task_target,
     is_empty_draft,
@@ -125,6 +126,7 @@ def test_task_detail_owner_sees_full_fields(client, created_user, created_key) -
     assert body["tool_names"] == []
     assert body["public_error_code"] is None
     assert body["cancel_reason_code"] is None
+    assert "origin_trace_id" in body
     assert len(body["events"]) >= 1
     assert body["events"][0]["event_type"] == "created"
     # 按需端点：所有者取回完整原始请求。
@@ -133,6 +135,18 @@ def test_task_detail_owner_sees_full_fields(client, created_user, created_key) -
     raw_body = raw_resp.json()
     assert raw_body["task_id"] == str(task_id)
     assert raw_body["raw_request"]["messages"][0]["content"] == "hello"
+
+
+def test_task_origin_trace_is_saved_and_returned(client, created_user, created_key) -> None:
+    token = bind_trace_id("req_origin_test")
+    try:
+        task_id = _make_waiting_task(created_key.id, created_user.user_id)
+    finally:
+        reset_request_id(token)
+
+    detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers)
+    assert detail.status_code == 200
+    assert detail.json()["origin_trace_id"] == "req_origin_test"
 
 
 def test_task_detail_admin_sees_owner_but_cannot_edit(

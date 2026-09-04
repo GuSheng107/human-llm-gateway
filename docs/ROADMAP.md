@@ -46,7 +46,7 @@ flowchart LR
     M9[M9 完整后台]
     M10[M10 部署与运维]
     M11[M11 发布验收]
-    M12[M12 工具调用透传（沙箱已移除）]
+    M12[M12 工具调用透传]
 
     M2 --> M3
     M2 --> M4
@@ -240,7 +240,7 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [x] 控制台实质化：`/api/dashboard` 统一全站统计 + 当前用户最近任务；可用模型按启用系统模型与当前用户私有模型计算，前端缺省显�?`0`�?
 - [x] 日志页（LogsPage，`logs.manage`）：审计日志（动�?资源类型/时间窗筛选，只展示操作�?动作/资源/字段�?结果——不泄露字段值）与应用日志（级别/事件/时间�?+ request/task/user 关联展示）双 tab 分页�?
 - [x] 管理员页面展示资源所有者，普通用户不显示越权操作（M3-M8 已交付，M9 复核保持：列�?owner\_username 仅管理员视图、日志页仅管理员路由）�?
-- [x] 日志支持按时间、级别、用户、任务、Key 和连接筛选（`/api/app-logs` 全参数已实现，前端提供级�?事件/时间窗入口）�?
+- [x] 日志支持按时间、级别、用户、任务、Key 和连接筛选（`/api/logs` 支持等级、分类、事件、trace 和时间窗，前端支持详情查看）。
 - [x] 刷新、前进和后退保持当前页面（React Router 路由表既有，M9 复核保持）�?
 - [ ] 验证 1440px�?024px�?90px 布局和键盘操作（表格 min-w + overflow-x-auto 已按既有模式覆盖；三档实测由 M11 用户验收统一执行）�?
 ***
@@ -282,14 +282,14 @@ M9 定义为体验收口期，不重新实现 M3-M8 已交付的业务领域逻�
 - [ ] `master` 已推送且远端提交可验证�?
 ***
 
-## M12：工具调用透传（沙箱已移除）
+## M12：工具调用透传
 
-M12 最初交付管理员白名单 + OCI 隔离沙箱的工具执行体系；后续重构中已彻底移除。网关不再执行任何工具、不再有白名单/沙箱概念，tool call 只做数据与伪造输出转发。
+用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
 - [x] 删除工具沙箱全部后端（app/services/tools/、app/api/tools.py、app/repositories/tools.py、ToolWhitelist/ToolExecution 表、平台工具 seed、docker/tool-sandbox/、docs/SANDBOX.md）与前端工具页。
 - [x] 人工回复写回的 tool call 名称必须命中调用方在请求中声明的工具名，否则返回协议兼容的 400（保存草稿、更新草稿、提交回复与 LLM 草稿生成统一校验）。
 - [x] IM 提交路径对携带 tool call 的回复一律拒绝（event REPLY_REJECTED_POLICY，reason=tool_call_not_supported），IM/连接器侧细化留待后续迭代。
 - [x] 工作台首次触碰工具相关操作弹一次风险警告（sessionStorage 记忆）；生成草稿支持 guidance 引导提示词注入上游系统指令。
-- [x] 免责声明进入产品文档：工具由调用方声明并自行执行，网关不执行、不担保结果，后果由使用者自负。
+- [x] 免责声明进入产品文档：用户可以使用调用方声明的 tool；危险指令的风险和后果由用户自行承担，开发者不承担责任。
 ***
 
 ## M13：traceId 日志体系、IM 连接收口与数据保留（已完成）
@@ -299,7 +299,8 @@ M12 最初交付管理员白名单 + OCI 隔离沙箱的工具执行体系；后
 - [x] /api/\* JSON 成功/失败响应顶层追加 	race\_id 并回�?X-Trace-Id�?v1/\* 只加头不改协议正文�?
 - [x] 日志落库改为异步批量队列（专用线�?+ 批量 INSERT），事件循环内调用不再阻�?SQLite 写锁�?
 - [x] 普�?logging 告警/异常（看门狗、连接器、IM 后台任务、sweeper）经 root handler 落入 app\_logs，不再只有显�?log\_event() 可查�?
-- [x] app\_logs 增加 logger 列与 request\_id/event 索引�?api/app-logs?with\_context=true 返回脱敏上下文与异常详情，前端日志页点击消息查看详情�?
+- [x] `app_logs` 增加 logger、request_id/event 索引；`GET /api/logs` 返回脱敏 context，前端日志页支持详情查看。
+- [x] RequestTask 保存 `origin_trace_id`，任务详情可跳转日志页；IM、LLM 转发和 Web 小助手补齐链路事件。
 - [x] 删除连接时阻止任�?API Key 引用（含停用 Key），提示引用数量�?Key 前缀�?
 - [x] 网关自签 IM Token 统一由服务端生成 `hllm-` 前缀，创�?轮换时仅一次性展示；全部平台使用统一弹窗，同屏展示配置、完�?URL �?curl 接入指引�?
 - [x] 关闭扫码/绑定弹窗不删除连接与凭据；新�?inding/cancel（取消本次绑定监听）�?
@@ -309,7 +310,7 @@ M12 最初交付管理员白名单 + OCI 隔离沙箱的工具执行体系；后
 - [x] Anthropic：修正事件顺序与 usage；人工路径不返回 thinking block（无法伪�?signature）�?
 - [x] 统一确定�?token 估算器（pp/domain/tokens.py）：三协议共用同一份快照，流式与非流式数值一致�?
 - [x] 任务详情页：所有者完整提示词无截断；原始请求 JSON 按需加载（独立端�?+ 懒加载）�?
-- [x] 高频数据保留：后台每七天清理七天前的应用/审计日志、助手会话、过期登录态、任务事件、工具执行与 IM 运行记录；请求任务和正式草稿保留�?
+- [x] 高频数据保留：后台每七天清理七天前的应用/审计日志、助手会话、过期登录态、任务事件和 IM 运行记录；请求任务和正式草稿保留�?
 - [x] 修复 RequestIdMiddleware trace\_id 注入�?content-length 过期、生产环�?`/api/*` JSON 响应被截断的缺陷（ASGI body 消息不带 headers，改为缓�?start+body 后重�?content-length）�?
 - [x] 生产部署上线�?https://newapi.rjgjx.top（部署相关问题优先以线上表现为准核对）�?
 

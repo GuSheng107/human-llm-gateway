@@ -120,12 +120,14 @@ def create_app() -> FastAPI:
 
     @app.get("/healthz")
     def health() -> dict[str, Any]:
+        """进程存活探针；不依赖数据库、连接器或工具执行状态。"""
         from ..core.config import get_settings
 
         return {"status": "ok", "service": get_settings().app_name}
 
     @app.get("/readyz")
     def readiness() -> Any:
+        """启动就绪探针；只读取启动缓存，不检查工具执行状态。"""
         from fastapi.responses import JSONResponse
 
         from ..core.config import get_settings

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.constants import MAX_CONTEXT_CHAIN_DEPTH
-from ..core.logging import log_event
+from ..core.logging import get_request_id, log_event
 from ..core.time import utc_now
 from ..domain import capabilities as _capabilities
 from ..domain.enums import (
@@ -98,6 +98,7 @@ class InferenceService:
                 else None
             ),
             previous_task_id=previous_task.id if previous_task else None,
+            origin_trace_id=get_request_id(),
             owner_user_id=owner.id,
             api_key_id=key.id,
             api_key_prefix_snapshot=key.key_prefix,
