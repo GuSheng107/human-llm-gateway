@@ -299,6 +299,45 @@ def test_llm_strategy_upstream_failure_returns_500(client, created_user) -> None
     assert row.slot_released_at is not None
 
 
+def test_llm_strategy_disabled_config_rejected_at_forward_time(client, created_user) -> None:
+    """转发时 LLM 配置必须仍在启用状态（禁用后不再发上游请求）。"""
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    key = _create_strategy_key(
+        client,
+        created_user.headers,
+        strategy="llm",
+        llm_config_id=int(cfg["id"]),
+    )
+    disabled = client.patch(
+        f"/api/llm-configs/{cfg['id']}",
+        headers=created_user.headers,
+        json={"enabled": False},
+    )
+    assert disabled.status_code == 200, disabled.text
+
+    called = False
+
+    async def fake_post(**kwargs: Any) -> dict[str, Any]:
+        nonlocal called
+        called = True
+        return _chat_upstream_ok(**kwargs)
+
+    with patch(_UPSTREAM_CHAT, side_effect=fake_post):
+        resp = client.post(
+            "/v1/chat/completions",
+            headers=_bearer(key["plaintext"]),
+            json={
+                "model": "deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+    assert resp.status_code == 500
+    assert called is False
+    row = _latest_task(int(key["id"]))
+    assert row.state is TaskState.FAILED
+    assert row.slot_released_at is not None
+
+
 def test_llm_strategy_task_state_transitions(client, created_user) -> None:
     """llm 策略任务最终 COMPLETED。"""
     cfg = _create_llm_config(client, created_user.headers, _llm_body())

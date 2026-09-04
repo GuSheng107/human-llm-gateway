@@ -13,7 +13,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..core.db import begin_immediate_if_sqlite
-from ..core.logging import get_request_id
+from ..core.logging import get_request_id, log_event
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -29,6 +29,17 @@ from ..repositories.catalog import FakeModelRepository
 from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, User
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
+from .tools.sandbox import sandbox_available
+from .tools.service import assert_reply_tool_calls_allowed
+
+
+def fake_tool_calls_allowed() -> bool:
+    """伪造 tool_call 前置条件：本机沙箱可用（含运行时与镜像探测）。
+
+    单独成函数便于测试与前端能力探测复用；无沙箱时三类人工写入口
+    （草稿保存 / 更新 / 提交）一律拒绝携带 tool_calls。
+    """
+    return sandbox_available()
 
 
 class TaskService:
@@ -109,6 +120,8 @@ class TaskService:
     ) -> TaskDraft:
         """新建或更新活动草稿（upsert 语义：已有 EDITING 则覆盖字段）。"""
         self._assert_writable(task, owner)
+        assert_reply_tool_calls_allowed(session, draft.tool_calls)
+        self._assert_fake_tool_calls_allowed(draft)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_active_draft(session, task_id=task.id)
         payload = self._draft_payload(draft)
@@ -154,6 +167,8 @@ class TaskService:
         "刷新 / 强制覆盖"。不再兼容不带 expected_version 的旧语义。
         """
         self._assert_writable(task, owner)
+        assert_reply_tool_calls_allowed(session, draft.tool_calls)
+        self._assert_fake_tool_calls_allowed(draft)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_draft(session, draft_id)
         if row is None or row.task_id != task.id or row.owner_user_id != owner.id:
@@ -208,6 +223,8 @@ class TaskService:
     ) -> bool:
         """首个有效提交获胜；晚到返回 False（调用方需记录晚到事件后抛 409）。"""
         self._assert_writable(task, owner)
+        assert_reply_tool_calls_allowed(session, draft.tool_calls)
+        self._assert_fake_tool_calls_allowed(draft)
         begin_immediate_if_sqlite(session)
         accepted = self.repo.first_reply_wins(
             session,
@@ -238,6 +255,14 @@ class TaskService:
                 owner_user_id=task.owner_user_id,
                 metadata={"fields": ["response_payload"], "source": "web"},
             )
+            log_event(
+                "info",
+                "task.reply_submitted",
+                "收到首个有效回复",
+                task_id=task.id,
+                owner_user_id=task.owner_user_id,
+                source_draft_id=source_draft_id,
+            )
             return True
         self._add_event(
             session,
@@ -256,10 +281,29 @@ class TaskService:
             owner_user_id=task.owner_user_id,
             metadata={"fields": ["response_payload"], "source": "web", "result": "late"},
         )
+        log_event(
+            "warning",
+            "task.reply_rejected_late",
+            "晚到回复被拒",
+            task_id=task.id,
+            owner_user_id=task.owner_user_id,
+            source_draft_id=source_draft_id,
+        )
         return False
 
     # ------------------------------------------------------------------
     # 内部
+
+    @staticmethod
+    def _assert_fake_tool_calls_allowed(draft: ReplyDraft) -> None:
+        """无沙箱环境禁止伪造 tool_call（假调用拿不到真实执行结果，会坑调用方）。"""
+        if draft.tool_calls and not fake_tool_calls_allowed():
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "当前环境工具沙箱不可用，暂不支持伪造工具调用；请仅使用思考链与正文回复",
+                status_code=400,
+                public_code="sandbox_unavailable",
+            )
 
     @staticmethod
     def _assert_owner(task: RequestTask, user: User) -> None:

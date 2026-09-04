@@ -220,9 +220,7 @@ class RequestIdMiddleware:
             # 统一访问事件：除日志查询接口与 /healthz 外，任何请求都能按
             # traceId 在日志中回溯到这条记录；用户身份由鉴权依赖写入
             # scope.state（跨线程池 Context 不可靠，必须显式传递）。
-            if not path.startswith("/healthz") and not path.startswith(
-                ("/api/app-logs", "/api/audit-logs")
-            ):
+            if not path.startswith("/healthz") and not path.startswith("/api/logs"):
                 from ..core.logging import log_event
 
                 state = scope.get("state") or {}

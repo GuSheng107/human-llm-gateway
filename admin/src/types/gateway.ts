@@ -298,7 +298,7 @@ export interface LlmConfigTestResult {
 // Web 小助手（docs/API_CONTRACT.md §10）
 // ---------------------------------------------------------------------------
 
-export type AssistantRole = "system" | "user" | "assistant";
+export type AssistantRole = "system" | "user" | "assistant" | "summary";
 
 export interface AssistantToolCall {
   id: string;
@@ -320,12 +320,17 @@ export interface AssistantPageContext {
   context_version: number;
 }
 
+export type AssistantMessageKind = "normal" | "summary";
+
 export interface AssistantMessage {
   id: string;
   role: AssistantRole;
+  kind: AssistantMessageKind;
   text: string;
   page_context: AssistantPageContext | null;
   upstream_metadata: Record<string, unknown> | null;
+  trace_id?: string | null;
+  error_code?: string | null;
   created_at: string;
 }
 
@@ -337,6 +342,15 @@ export interface AssistantSession {
   created_at: string;
 }
 
+export interface AssistantSessionUsage {
+  estimated_tokens: number;
+  limit_tokens: number;
+  ratio: number;
+  message_count: number;
+  compressing: boolean;
+}
+
 export interface AssistantSessionDetail extends AssistantSession {
   messages: AssistantMessage[];
+  usage: AssistantSessionUsage;
 }

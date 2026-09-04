@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import shlex
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import func, select
@@ -27,6 +28,7 @@ from ...core.constants import (
     TOOL_MIN_TIMEOUT_SECONDS,
 )
 from ...core.db import begin_immediate_if_sqlite
+from ...core.logging import log_event
 from ...domain.enums import (
     AuditAction,
     AuditResult,
@@ -34,6 +36,7 @@ from ...domain.enums import (
     UserRole,
 )
 from ...domain.errors import DomainError, DomainErrorCode
+from ...domain.values import ReplyToolCall
 from ...repositories.models import ToolExecution, ToolWhitelist, User
 from ...repositories.system import AuditRepository
 from .sandbox import render_command, run_sandboxed, validate_command_template
@@ -137,6 +140,27 @@ def _validate_stdin_parameter(
         raise DomainError(
             DomainErrorCode.VALIDATION_FAILED,
             f"stdin 参数 {stdin_parameter} 不能同时出现在命令模板中",
+            status_code=400,
+        )
+
+
+def assert_reply_tool_calls_allowed(session: Session, tool_calls: Sequence[ReplyToolCall]) -> None:
+    """人工回复的 tool_call 只允许引用沙箱白名单中已启用的工具。
+
+    本系统不复述外部执行语义：人工写回的 tool_call 只是伪造输出，但若不
+    约束工具名来源，经"用户把 LLM 上游指回本网关"的自指链路，外部调用方
+    声明的 tools 会被人工当作真实工具调用伪造回传，绕过沙箱边界。统一
+    收敛：人工（Web 草稿/提交、IM DSL 提交）写回的 tool_call 名称必须
+    命中管理员维护且已启用的沙箱白名单工具。
+    """
+    if not tool_calls:
+        return
+    allowed = {row.name for row in ToolService().list_enabled_for_user(session)}
+    unknown = sorted({call.name for call in tool_calls if call.name not in allowed})
+    if unknown:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            f"工具 {'、'.join(unknown)} 不在沙箱白名单内，人工回复的 tool_call 只能使用沙箱提供的工具",
             status_code=400,
         )
 
@@ -425,6 +449,18 @@ class ToolService:
         row.error_code = result.error_code
         row.duration_ms = result.duration_ms
         session.flush()
+        if result.state != "succeeded":
+            log_event(
+                "warning",
+                "tool.sandbox_execution_failed",
+                "工具沙箱执行未成功",
+                tool_id=tool.id,
+                tool_name=tool.name,
+                state=result.state,
+                error_code=result.error_code,
+                duration_ms=result.duration_ms,
+                exit_code=result.exit_code,
+            )
         audit_result = AuditResult.SUCCESS if result.state == "succeeded" else AuditResult.FAILED
         self.audit.add(
             session,

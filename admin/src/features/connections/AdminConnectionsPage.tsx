@@ -237,7 +237,9 @@ export function AdminConnectionsPage() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} total={total} pageSize={pageSize} onChange={setPage} onPageSizeChange={changePageSize} />
+        <div className="flex justify-end border-t border-slate-100 px-4 py-3">
+          <Pagination page={page} total={total} pageSize={pageSize} onChange={setPage} onPageSizeChange={changePageSize} />
+        </div>
       </Card>
     </div>
   );

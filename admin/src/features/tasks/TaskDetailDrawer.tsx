@@ -109,7 +109,7 @@ export function TaskDetailDrawer({
     setGenerating(true);
     setGenerateError("");
     try {
-      const draft = await generateDraft(taskId, llmConfigId);
+      const draft = await generateDraft(taskId, { llm_config_id: llmConfigId });
       notify("已生成草稿，请继续编辑");
       setGeneratedDraftId(draft.id);
       setShowGenerateModal(false);

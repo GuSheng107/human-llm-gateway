@@ -144,6 +144,19 @@ def test_delivery_mode_and_strategy_validation(client, admin_headers) -> None:
     )
     assert human_with_llm.status_code == 400
 
+    # 已停用的 LLM 配置不能绑定到 Key。
+    disabled_config_id = _llm_config_id(user_id, enabled=False)
+    disabled_binding = client.post(
+        "/api/api-keys",
+        headers=headers,
+        json={
+            "name": "disabled-llm-key",
+            "reply_strategy": "llm",
+            "llm_config_id": disabled_config_id,
+        },
+    )
+    assert disabled_binding.status_code == 400
+
     # 别人的连接/配置不能引用。
     other_headers = _create_user(client, admin_headers, "key-user-3")
     other_id = int(client.get("/api/auth/me", headers=other_headers).json()["id"])
@@ -248,7 +261,7 @@ def _connection_id(owner_user_id: int) -> int:
         return row.id
 
 
-def _llm_config_id(owner_user_id: int) -> int:
+def _llm_config_id(owner_user_id: int, *, enabled: bool = True) -> int:
     from app.core.config import get_settings
     from app.core.security import encrypt_secret
 
@@ -256,13 +269,14 @@ def _llm_config_id(owner_user_id: int) -> int:
         secret = encrypt_secret("sk-test", get_settings().app_secret, "llm-secret")
         config = LlmConfig(
             owner_user_id=owner_user_id,
-            name=f"upstream-{owner_user_id}",
+            name=f"upstream-{owner_user_id}-{'on' if enabled else 'off'}",
             protocol="openai_chat",
             base_url="https://example.test/v1",
             real_model="gpt-test",
             secret_ciphertext=secret,
             encryption_key_version=1,
             timeout_seconds=60,
+            is_enabled=enabled,
         )
         session.add(config)
         session.commit()

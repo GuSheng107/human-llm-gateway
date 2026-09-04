@@ -140,6 +140,18 @@ class AssistantRole(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    SUMMARY = "summary"
+
+
+class AssistantMessageKind(StrEnum):
+    """消息种类：normal = 普通对话；summary = 由压缩流程生成的早期总结。
+
+    SUMMARY 不属于常规 user/assistant 对话角色，只是上下文压缩时插入的
+    历史摘要标记；统计用量与历史窗口时纳入计算，但渲染为“历史已压缩”提示。
+    """
+
+    NORMAL = "normal"
+    SUMMARY = "summary"
 
 
 class OutboxDeliveryState(StrEnum):
@@ -158,6 +170,7 @@ class InboundResult(StrEnum):
     UNBOUND = "unbound"
     UNHANDLED = "unhandled"
     BOUND = "bound"
+    REJECTED = "rejected"  # 业务规则拒绝（如无沙箱时伪造 tool_call）
 
 
 class TaskEventType(StrEnum):
@@ -165,6 +178,7 @@ class TaskEventType(StrEnum):
     DELIVERED = "delivered"
     REPLY_SUBMITTED = "reply_submitted"
     REPLY_REJECTED_LATE = "reply_rejected_late"
+    REPLY_REJECTED_POLICY = "reply_rejected_policy"  # 策略拒绝（如无沙箱时伪造 tool_call）
     FALLBACK = "fallback"
     STREAM = "stream"
     COMPLETED = "completed"

@@ -554,6 +554,50 @@ def test_protocol_tool_calls_never_execute(client, created_user, created_key) ->
 
 
 # ----------------------------------------------------------------------
+# 人工回复 tool_call 白名单约束（防自指转发链绕过沙箱边界）
+# ----------------------------------------------------------------------
+
+
+def test_reply_tool_calls_guard_allows_whitelisted_only(client, admin_headers) -> None:
+    from app.domain.values import ReplyToolCall
+    from app.services.tools.service import assert_reply_tool_calls_allowed
+
+    _create_tool(client, admin_headers, _tool_body(name="sandbox-echo"))
+    with database.SessionLocal() as session:
+        # 白名单内启用工具放行
+        assert_reply_tool_calls_allowed(
+            session, [ReplyToolCall(id="c1", name="sandbox-echo", arguments={})]
+        )
+        # 白名单外（如调用方声明的外部工具）拒绝
+        with pytest.raises(DomainError):
+            assert_reply_tool_calls_allowed(
+                session, [ReplyToolCall(id="c2", name="get_weather", arguments={})]
+            )
+
+
+def test_reply_tool_calls_guard_rejects_disabled_tool(client, admin_headers) -> None:
+    from app.domain.values import ReplyToolCall
+    from app.services.tools.service import assert_reply_tool_calls_allowed
+
+    created = _create_tool(client, admin_headers, _tool_body(name="disabled-tool"))
+    disabled = client.patch(
+        f"/api/tools/{created['id']}", headers=admin_headers, json={"is_enabled": False}
+    )
+    assert disabled.status_code == 200, disabled.text
+    with database.SessionLocal() as session, pytest.raises(DomainError):
+        assert_reply_tool_calls_allowed(
+            session, [ReplyToolCall(id="c1", name="disabled-tool", arguments={})]
+        )
+
+
+def test_reply_tool_calls_guard_empty_is_noop(client) -> None:
+    from app.services.tools.service import assert_reply_tool_calls_allowed
+
+    with database.SessionLocal() as session:
+        assert_reply_tool_calls_allowed(session, [])
+
+
+# ----------------------------------------------------------------------
 # 真实容器端到端（需要本机 Docker/Podman + 已构建沙箱镜像）
 # ----------------------------------------------------------------------
 

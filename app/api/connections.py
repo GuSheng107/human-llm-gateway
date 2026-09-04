@@ -264,6 +264,9 @@ def create_connection(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> ConnectionView:
+    # 契约：管理员只能监管既有连接（启停/删除/检查），不能创建或绑定真实 IM 连接。
+    if user.role is UserRole.ADMIN:
+        raise DomainError(DomainErrorCode.FORBIDDEN, "管理员不能创建 IM 连接", status_code=403)
     row, generated_tokens = _service.create(
         db, owner=user, name=payload.name, platform=payload.platform, config=payload.config
     )

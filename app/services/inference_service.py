@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.constants import MAX_CONTEXT_CHAIN_DEPTH
+from ..core.logging import log_event
 from ..core.time import utc_now
 from ..domain import capabilities as _capabilities
 from ..domain.enums import (
@@ -123,6 +124,17 @@ class InferenceService:
             TaskEventType.CREATED,
             ActorType.SYSTEM,
             {"protocol": protocol.value, "stream": parsed.stream},
+        )
+        log_event(
+            "info",
+            "inference.task_created",
+            "任务已入库并进入人工等待",
+            task_id=task.id,
+            api_key_id=key.id,
+            owner_user_id=owner.id,
+            protocol=protocol.value,
+            requested_model=parsed.model,
+            stream=parsed.stream,
         )
         self._deliver(session, task)
         return task

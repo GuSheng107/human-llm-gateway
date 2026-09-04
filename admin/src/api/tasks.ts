@@ -52,13 +52,24 @@ export function saveDraft(taskId: string, draft: ReplyDraft): Promise<TaskDraft>
   });
 }
 
+export type DraftGenerateMode = "reasoning" | "reply" | "both";
+
+export interface DraftGeneratePayload {
+  llm_config_id: number;
+  mode?: DraftGenerateMode;
+  /** 被排除的上下文下标（normalized context；对应 conversation 消息的 context_index）。 */
+  exclude_context_indices?: number[];
+  /** mode=reply 时可携带人工已确认的思考链作为生成依据。 */
+  reasoning_seed?: string | null;
+}
+
 export function generateDraft(
   taskId: string,
-  llmConfigId: number,
+  payload: DraftGeneratePayload,
 ): Promise<TaskDraft> {
   return api<TaskDraft>(`/api/tasks/${taskId}/drafts/generate`, {
     method: "POST",
-    body: JSON.stringify({ llm_config_id: llmConfigId }),
+    body: JSON.stringify(payload),
   });
 }
 
@@ -142,6 +153,8 @@ export interface ConversationMessage {
   preview: string;
   length: number;
   has_more: boolean;
+  /** 对应 normalized context 下标；系统指令块为 null。用于生成时的消息级勾选。 */
+  context_index: number | null;
 }
 
 export interface ConversationPage {

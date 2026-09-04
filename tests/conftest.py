@@ -55,6 +55,36 @@ def bypass_captcha(monkeypatch):
     monkeypatch.setattr("app.api.auth.verify_captcha", lambda token, code: True)
 
 
+@pytest.fixture(autouse=True)
+def stub_llm_save_gate(monkeypatch):
+    """「启用 LLM 配置前必须连通性测试通过」的默认存根：一律视为成功。
+
+    需要失败语义的用例（tests/test_m7_llm_configs.py）自行 patch 同名函数覆盖。
+    """
+    from app.services.llm_test_service import ConnTestOutcome
+
+    async def _ok(**kwargs):
+        return ConnTestOutcome(True, "ok", "ok", 200)
+
+    monkeypatch.setattr("app.api.llm_configs.run_connectivity_test", _ok)
+
+
+@pytest.fixture(autouse=True)
+def stub_sandbox_available(monkeypatch):
+    """默认假定工具沙箱可用且人工 tool_call 白名单校验放行。
+
+    伪造 tool_call 禁止策略的用例自行 patch 同名函数为 False；
+    白名单拦截语义由 test_m12_tools.py 的针对性用例覆盖。
+    """
+    monkeypatch.setattr("app.services.task_service.fake_tool_calls_allowed", lambda: True)
+    monkeypatch.setattr(
+        "app.services.task_service.assert_reply_tool_calls_allowed", lambda *a, **k: None
+    )
+    monkeypatch.setattr(
+        "app.services.connection_service.assert_reply_tool_calls_allowed", lambda *a, **k: None
+    )
+
+
 @pytest.fixture()
 def client():
     engine = create_engine(

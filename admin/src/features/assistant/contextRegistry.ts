@@ -30,8 +30,21 @@ const FEATURES: Record<string, FeatureSpec> = {
     match: (p) => p === "/console" || p === "/",
     resource: () => ({}),
   },
+  task_detail: {
+    // 任务详情/回复：仅匹配 /tasks/:id/reply。
+    match: (p) => /^\/tasks\/[^/]+\/reply$/.test(p),
+    resource: (p, search): Record<string, string> => {
+      const out: Record<string, string> = {};
+      const taskId = p.match(/^\/tasks\/([^/]+)\/reply$/)?.[1];
+      if (taskId) out.task_id = taskId;
+      const q = params(search);
+      if (q["task_id"] && !out.task_id) out.task_id = q["task_id"];
+      return out;
+    },
+  },
   task_list: {
-    match: (p) => p === "/tasks",
+    // 任务列表：/tasks 及子路径（非 reply）。
+    match: (p) => p.startsWith("/tasks"),
     resource: (_p, search) => {
       const q = params(search);
       const out: Record<string, string> = {};
@@ -40,13 +53,14 @@ const FEATURES: Record<string, FeatureSpec> = {
       return out;
     },
   },
-  task_detail: {
-    // 详情由 drawer 打开，回复统一进入工作台。
-    match: (p) => p === "/tasks" || /^\/tasks\/[^/]+\/reply$/.test(p),
-    resource: (p): Record<string, string> => {
+  replies: {
+    // 回复工作台（replies 列表/单条编辑）。
+    match: (p) => p === "/replies" || p.startsWith("/replies/"),
+    resource: (_p, search) => {
       const out: Record<string, string> = {};
-      const taskId = p.match(/^\/tasks\/([^/]+)\/reply$/)?.[1];
-      if (taskId) out.task_id = taskId;
+      const q = params(search);
+      if (q["task_id"]) out.task_id = q["task_id"];
+      if (q["state"]) out.state_filter = q["state"];
       return out;
     },
   },
@@ -78,6 +92,25 @@ const FEATURES: Record<string, FeatureSpec> = {
     match: (p) => p === "/settings/account",
     resource: () => ({}),
   },
+  tools: {
+    match: (p) => p === "/tools" || p.startsWith("/tools/"),
+    resource: () => ({}),
+  },
+  logs: {
+    match: (p) => p === "/settings/logs" || p.startsWith("/settings/logs"),
+    resource: (_p, search) => {
+      const q = params(search);
+      const out: Record<string, string> = {};
+      if (q["trace_id"]) out.trace_id = q["trace_id"].slice(0, 128);
+      if (q["search"]) out.search = q["search"].slice(0, 64);
+      return out;
+    },
+  },
+  adminConnections: {
+    match: (p) =>
+      p === "/settings/im-connections" || p.startsWith("/settings/im-connections"),
+    resource: () => ({}),
+  },
 };
 
 /** feature -> context_version（结构变更时 bump，后端按版本解释）。 */
@@ -85,6 +118,7 @@ export const CONTEXT_VERSIONS: Record<string, number> = {
   console: 1,
   task_list: 1,
   task_detail: 1,
+  replies: 1,
   api_keys: 1,
   llm_configs: 1,
   connections: 1,
@@ -92,6 +126,9 @@ export const CONTEXT_VERSIONS: Record<string, number> = {
   invitations: 1,
   users: 1,
   account: 1,
+  tools: 1,
+  logs: 1,
+  adminConnections: 1,
 };
 
 /** 当前路由对应的 feature；未注册路由返回 null（不发送上下文）。 */

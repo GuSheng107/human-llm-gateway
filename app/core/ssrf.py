@@ -126,6 +126,11 @@ def validate_base_url(base_url: str) -> None:
     host = (parsed.hostname or "").strip("[]")
     if not host:
         raise SsrfViolation("base_url 缺少主机地址")
+    # 自指拦截：上游不允许指向本网关自身（公网部署时 IP 分档识别不了
+    # "这就是本服务"，A Key 转发到本网关 B Key 可绕过人工回复工具约束）。
+    if host.lower() in get_settings().gateway_host_set():
+        log_event("warning", "ssrf.blocked", "上游指向本网关自身被拒绝", host=host)
+        raise SsrfViolation("不允许把本网关自身配置为 LLM 上游")
     # 已知云元数据主机名（如 metadata.google.internal）按名拒绝。
     if host.lower() in {h.lower() for h in _CLOUD_METADATA_HOSTS}:
         raise SsrfViolation("不允许访问云元数据或链路本地地址")

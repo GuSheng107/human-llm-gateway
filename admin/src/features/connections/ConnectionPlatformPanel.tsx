@@ -22,16 +22,14 @@ function RunningSwitch({
   connection,
   busy,
   onToggle,
-  readOnly = false,
 }: {
   platform: PlatformSpec;
   connection: ImConnection | null;
   busy: boolean;
   onToggle: () => void;
-  readOnly?: boolean;
 }) {
   const running = Boolean(connection?.desired_running);
-  const disabled = !connection || busy || readOnly;
+  const disabled = !connection || busy;
   return (
     <label className="inline-flex shrink-0 items-center gap-2 text-xs text-slate-500">
       <button
@@ -157,25 +155,33 @@ export function ConnectionPlatformPanel({
         </div>
 
         <div className="flex flex-wrap items-center justify-end gap-1 border-t border-slate-200/70 pt-3 lg:border-0 lg:pt-0">
-          <RunningSwitch
-            platform={platform}
-            connection={connection}
-            busy={busy}
-            readOnly={readOnly}
-            onToggle={onToggle}
-          />
-          <ActionButton disabled={busy} onClick={onPrimaryAction}>
-            {isWechat ? "绑定（扫码）" : "配置"}
-          </ActionButton>
-          {connection && !readOnly && (
-            <ActionButton
-              danger
-              disabled={busy || connection.desired_running}
-              title={connection.desired_running ? "请先关闭连接后再删除" : undefined}
-              onClick={onDelete}
-            >
-              删除
-           </ActionButton>
+          {!readOnly && (
+            <>
+              <RunningSwitch
+                platform={platform}
+                connection={connection}
+                busy={busy}
+                onToggle={onToggle}
+              />
+              <ActionButton disabled={busy} onClick={onPrimaryAction}>
+                {isWechat ? "绑定（扫码）" : "配置"}
+              </ActionButton>
+              {connection && (
+                <ActionButton
+                  danger
+                  disabled={busy || connection.desired_running}
+                  title={connection.desired_running ? "请先关闭连接后再删除" : undefined}
+                  onClick={onDelete}
+                >
+                  删除
+                </ActionButton>
+              )}
+            </>
+          )}
+          {readOnly && (
+            <span className="px-2 py-1 text-xs text-slate-400" title="管理员账号不具备 IM 连接创建与配置权限">
+              管理员只读
+            </span>
           )}
         </div>
       </div>

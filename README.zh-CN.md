@@ -20,6 +20,8 @@
 
 一次部署，把「你在 IM 里敲的字」变成「标准 LLM API 响应」。
 
+> **项目状态：已结项。** 全部规划里程碑（M0–M14）均已交付并完成部署，仓库进入维护阶段；路线图见下文。
+
 </div>
 
 ---
@@ -68,6 +70,8 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 - IM 投递：微信 iLink / 企微 / Webhook / WebSocket / HTTP 轮询
 - IM DSL：`::: reasoning` / `::: tool` 围栏，与 Web 编辑器共享结构
 - 首个有效提交获胜，不可撤销
+
+> ⚠️ 人工回复时，tool call **只能引用管理员沙箱白名单中已启用的工具**（在默认拒绝的 OCI 隔离沙箱中执行）；绝不在网关宿主机上运行任何工具，调用方声明的工具也无法通过人工回复被调用。
 
 </td><td width="50%" valign="top">
 
@@ -135,6 +139,8 @@ cd human-llm-gateway
 python -c "import secrets; print(f'APP_SECRET={secrets.token_urlsafe(32)}')" >> .env
 echo "ADMIN_USERNAME=admin" >> .env
 echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
+# 公网部署必须声明本网关的对公域名/公网 IP，防止用户把 LLM 上游指回本平台自身：
+echo "GATEWAY_PUBLIC_HOSTS=gateway.example.com" >> .env
 
 # 3. 构建前端静态资源，然后启动后端（后端直接托管 SPA，单端口访问）
 uv sync --locked
@@ -198,7 +204,7 @@ for chunk in stream:
 | M8 | 全局 Web 小助手（上下文脱敏） | ✅ |
 | M9 | 控制台统计 · 日志审计 · 体验收口 | ✅ |
 | M10 | 部署运维基础能力 | ✅ |
-| M11 | 发布验收 | 🟡 |
+| M11 | 发布验收 | ✅ |
 | M12 | 隔离工具沙箱 | ✅ |
 | M13 | trace 关联日志、IM 归属隔离、数据保留 | ✅ |
 | M14 | 统一回复工作台 | ✅ |

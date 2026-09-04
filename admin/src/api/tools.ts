@@ -28,6 +28,8 @@ export interface ToolPage {
   page: number;
   page_size: number;
   total: number;
+  /** 本机沙箱可用时才能伪造 tool_call；false 时工作台应禁用工具调用编辑。 */
+  sandbox_available: boolean;
 }
 
 export interface ToolExecutionItem {

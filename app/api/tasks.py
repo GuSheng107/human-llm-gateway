@@ -7,7 +7,7 @@ LLM 草稿生成（POST /api/tasks/{id}/drafts/generate）属于 M7，本阶段�
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
@@ -64,6 +64,12 @@ class ReplySubmitInput(StrictModel):
 
 class DraftGenerateInput(StrictModel):
     llm_config_id: int = Field(ge=1)
+    mode: Literal["reasoning", "reply", "both"] = "both"
+    # 消息级勾选：被排除的上下文下标（normalized context；与
+    # GET /tasks/{id}/conversation 返回的 context_index 一致）。
+    exclude_context_indices: list[int] | None = Field(default=None, max_length=200)
+    # mode=reply 时可携带人工已确认的思考链作为生成依据。
+    reasoning_seed: str | None = Field(default=None, max_length=20000)
 
 
 # ------------------------------------------------------------------
@@ -208,6 +214,8 @@ class ConversationMessage(BaseModel):
     preview: str
     length: int
     has_more: bool
+    # 对应的 normalized context 下标；系统指令块为 None。
+    context_index: int | None = None
 
 
 class ConversationPage(BaseModel):
@@ -589,25 +597,40 @@ def delete_draft(
     return Response(status_code=204)
 
 
-@router.post("/{task_id}/drafts/generate", response_model=DraftView, status_code=201)
+@router.post("/{task_id}/drafts/generate", response_model=DraftView)
 async def generate_draft(
     task_id: int,
     payload: DraftGenerateInput,
+    response: Response,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> DraftView:
-    """调用用户选定 LLM 配置生成持久化草稿（M7-B）。
+    """调用用户选定 LLM 生成草稿（M7-B+）。
 
-    仅同协议：Chat/Responses 任务必须选 openai_chat；Anthropic 任务
-    必须选 anthropic。跨协议生成在后续阶段（字段矩阵）开放。
+    mode=reasoning/reply/both 分别只生成思考链、只生成回复（可携带
+    reasoning_seed 作为人工已确认的思考依据）或两者。已存在未提交的
+    LLM 草稿时按模式合并更新（此时返回 200）；否则新建（201）。
     """
     from ..services.llm_draft_service import LlmDraftService
 
     task = _get_task(db, task_id, user)
+    merging = any(
+        draft.source == "llm" and draft.state == "editing"
+        for draft in _service.drafts(db, task=task)
+    )
     generator = LlmDraftService()
-    row = await generator.generate(db, task=task, owner=user, llm_config_id=payload.llm_config_id)
+    row = await generator.generate(
+        db,
+        task=task,
+        owner=user,
+        llm_config_id=payload.llm_config_id,
+        mode=payload.mode,
+        exclude_context_indices=payload.exclude_context_indices,
+        reasoning_seed=payload.reasoning_seed,
+    )
     db.commit()
     db.refresh(row)
+    response.status_code = 200 if merging else 201
     return _draft_view(row)
 
 
@@ -727,6 +750,7 @@ def _conversation_message_view(msg: dict[str, Any]) -> ConversationMessage:
         preview=str(msg.get("preview", "")),
         length=int(msg.get("length", 0)),
         has_more=bool(msg.get("has_more", False)),
+        context_index=msg.get("context_index"),
     )
 
 

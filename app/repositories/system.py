@@ -84,9 +84,10 @@ class AuditRepository:
         resource_type: str | None = None,
         action: str | None = None,
         owner_user_id: int | None = None,
+        request_id: str | None = None,
         hours: int | None = None,
     ) -> tuple[list[AuditLog], int]:
-        """管理员审计检索：按操作者/资源/动作/所有者/时间窗筛选。"""
+        """管理员审计检索：按操作者/资源/动作/所有者/traceId/时间窗筛选。"""
         from sqlalchemy import func, select
 
         filters: list[Any] = []
@@ -98,6 +99,8 @@ class AuditRepository:
             filters.append(AuditLog.action == action)
         if owner_user_id is not None:
             filters.append(AuditLog.owner_user_id == owner_user_id)
+        if request_id:
+            filters.append(AuditLog.request_id == request_id)
         if hours is not None and hours > 0:
             from datetime import timedelta
 
@@ -113,6 +116,40 @@ class AuditRepository:
             )
         )
         return rows, total
+
+    def list_for_subject(
+        self,
+        session: Session,
+        *,
+        subject_user_id: int,
+        limit: int,
+        hours: int | None = None,
+        request_id: str | None = None,
+        action: str | None = None,
+    ) -> list[AuditLog]:
+        """本人可见审计：actor 或 owner 是自己。仅返回用于合并视图的条数。"""
+        from datetime import timedelta
+
+        from sqlalchemy import or_, select
+
+        filters: list[Any] = [
+            or_(
+                AuditLog.actor_user_id == subject_user_id,
+                AuditLog.owner_user_id == subject_user_id,
+            )
+        ]
+        if hours is not None and hours > 0:
+            filters.append(AuditLog.created_at >= _now() - timedelta(hours=hours))
+        if request_id:
+            filters.append(AuditLog.request_id == request_id)
+        if action:
+            filters.append(AuditLog.action == action)
+        rows = list(
+            session.scalars(
+                select(AuditLog).where(*filters).order_by(AuditLog.id.desc()).limit(limit)
+            )
+        )
+        return rows
 
 
 class AppLogRepository:

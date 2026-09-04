@@ -22,6 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.constants import LLM_DEFAULT_MAX_TOKENS
+from ..core.logging import log_event
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -131,6 +132,12 @@ class LlmForwardService:
                 "LLM 配置已删除，无法转发",
                 status_code=500,
             )
+        if not cfg.is_enabled:
+            raise DomainError(
+                DomainErrorCode.UPSTREAM_ERROR,
+                "LLM 配置已停用，无法转发",
+                status_code=500,
+            )
         fake_model = session.get(FakeModel, task.fake_model_id) if task.fake_model_id else None
         return cfg, fake_model
 
@@ -166,6 +173,13 @@ class LlmForwardService:
         """转发内核：声明 -> 上游（流式/非流式）-> 原子接受。"""
         # 原子声明转发权：WAITING_HUMAN -> FORWARDING_LLM（唯一入口）。
         if not self.tasks.claim_fallback(session, task.id):
+            log_event(
+                "warning",
+                "llm.forward_claim_lost",
+                "LLM 转发声明拒绝（任务已被他人裁决）",
+                task_id=task.id,
+                reason=reason,
+            )
             return False, None, "claim_lost"
         session.commit()
         self._event(
@@ -176,6 +190,14 @@ class LlmForwardService:
             {"reason": reason},
         )
         session.commit()
+        log_event(
+            "info",
+            "llm.forward_claimed",
+            "LLM 转发已声明（任务切换到 FORWARDING_LLM）",
+            task_id=task.id,
+            reason=reason,
+            stream=stream,
+        )
 
         try:
             cfg, fake_model = self.resolve_config(session, task)
@@ -184,6 +206,14 @@ class LlmForwardService:
             else:
                 draft = await self._call_upstream(session, task, cfg, fake_model)
         except DomainError as exc:
+            log_event(
+                "warning",
+                "llm.forward_failed",
+                "LLM 转发期间失败",
+                task_id=task.id,
+                reason=reason,
+                error_code=exc.code.value,
+            )
             return False, None, exc.code.value
 
         if stream:
@@ -212,6 +242,13 @@ class LlmForwardService:
             response_payload_json=payload,
         )
         if not accepted:
+            log_event(
+                "warning",
+                "llm.forward_reply_lost",
+                "LLM 转发完成后人工已获胜，回复被丢弃",
+                task_id=task.id,
+                reason=reason,
+            )
             return False, None, "reply_lost"
         self._event(
             session,
@@ -228,6 +265,13 @@ class LlmForwardService:
             actor_user_id=task.owner_user_id,
             owner_user_id=task.owner_user_id,
             metadata={"reason": reason, "fields": ["response_payload"]},
+        )
+        log_event(
+            "info",
+            "llm.forward_completed",
+            "LLM 转发完成并被接受",
+            task_id=task.id,
+            reason=reason,
         )
         session.commit()
         return True, draft, None

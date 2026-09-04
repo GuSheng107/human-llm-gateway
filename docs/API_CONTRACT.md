@@ -270,11 +270,11 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/llm-configs` | 用户查看自己的配置；管理员只能查看所有者和脱敏元数据。 |
-| POST | `/api/llm-configs` | 用户创建配置。 |
+| POST | `/api/llm-configs` | 用户创建配置；`enabled=true` 时会先执行真实生成连通性测试，失败返回 400 不落库。 |
 | GET | `/api/llm-configs/{id}` | 查看自己的非敏感详情。 |
-| PATCH | `/api/llm-configs/{id}` | 修改配置；省略 Secret 表示保留。 |
+| PATCH | `/api/llm-configs/{id}` | 修改配置；省略 Secret 表示保留。连接相关字段（协议/地址/模型/密钥/超时）变化或重新启用时必须通过连通性测试，否则回滚；仅修改高级参数不触发测试。 |
 | DELETE | `/api/llm-configs/{id}` | 被有效 API Key 或活动任务引用时返回 409，否则清空 Secret 后物理删除。 |
-| POST | `/api/llm-configs/{id}/test` | 使用最小请求测试连通性，不回显 Secret。 |
+| POST | `/api/llm-configs/{id}/test` | 真实生成连通性测试（要求模型返回非空回复），不回显 Secret。 |
 
 主要字段：
 

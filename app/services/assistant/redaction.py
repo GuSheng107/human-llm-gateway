@@ -37,6 +37,7 @@ _FEATURE_RESOURCE_KEYS: dict[str, frozenset[str]] = {
         {"task_id", "public_id", "state", "model", "protocol", "strategy", "delivery"}
     ),
     "task_list": frozenset({"state_filter", "search"}),
+    "replies": frozenset({"task_id", "state_filter"}),
     "api_keys": frozenset({"api_key_id", "name", "strategy", "delivery"}),
     "llm_configs": frozenset({"llm_config_id", "name", "protocol", "real_model"}),
     "connections": frozenset({"connection_id", "name", "platform", "state"}),
@@ -45,6 +46,9 @@ _FEATURE_RESOURCE_KEYS: dict[str, frozenset[str]] = {
     "users": frozenset({"user_id", "username", "is_active"}),
     "console": frozenset({"section"}),
     "account": frozenset({"section"}),
+    "tools": frozenset({"tool_id", "name"}),
+    "logs": frozenset({"trace_id", "search"}),
+    "adminConnections": frozenset({"connection_id", "platform"}),
 }
 
 _REDACTED = "[REDACTED]"

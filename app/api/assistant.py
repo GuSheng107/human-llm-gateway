@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -23,6 +23,7 @@ from ..repositories.models import AssistantMessage, AssistantSession, User
 from ..services.assistant.service import AssistantService
 from .common import StrictModel
 from .deps import require_current_user
+from .errors import get_request_id
 
 router = APIRouter(prefix="/api/assistant", tags=["assistant"])
 
@@ -61,6 +62,10 @@ class SessionCreate(StrictModel):
     llm_config_id: int | None = None
 
 
+class SessionPatch(StrictModel):
+    title: str | None = Field(default=None, max_length=255)
+
+
 class MessageSend(StrictModel):
     text: str = Field(min_length=1, max_length=20000)
     page_context: PageContextSnapshot | None = None
@@ -94,9 +99,12 @@ class ContextView(BaseModel):
 class MessageView(BaseModel):
     id: str
     role: str
+    kind: str
     text: str
     page_context: ContextView | None
     upstream_metadata: dict[str, Any] | None
+    trace_id: str | None = None
+    error_code: str | None = None
     created_at: str
 
 
@@ -108,8 +116,17 @@ class SessionView(BaseModel):
     created_at: str
 
 
+class SessionUsageView(BaseModel):
+    estimated_tokens: int
+    limit_tokens: int
+    ratio: float
+    message_count: int
+    compressing: bool = False
+
+
 class SessionDetailView(SessionView):
     messages: list[MessageView]
+    usage: SessionUsageView
 
 
 # ----------------------------------------------------------------------
@@ -154,24 +171,46 @@ def _message_view(row: AssistantMessage) -> MessageView:
     except (ValueError, TypeError):
         text = ""
     metadata = None
+    trace_id: str | None = None
+    error_code: str | None = None
     if row.upstream_metadata_json:
         try:
             parsed = json.loads(row.upstream_metadata_json)
             if isinstance(parsed, dict):
                 metadata = parsed
+                tid = parsed.get("trace_id")
+                if isinstance(tid, str) and tid:
+                    trace_id = tid
+                err = parsed.get("error_code")
+                if isinstance(err, str) and err:
+                    error_code = err
         except (ValueError, TypeError):
             metadata = None
+    role_value = row.role.value if hasattr(row.role, "value") else str(row.role)
+    kind_value = (
+        (row.kind.value if hasattr(row.kind, "value") else str(row.kind))
+        if row.kind is not None
+        else "normal"
+    )
     return MessageView(
         id=str(row.id),
-        role=row.role.value,
+        role=role_value,
+        kind=kind_value,
         text=text,
         page_context=_context_view(row),
         upstream_metadata=metadata,
+        trace_id=trace_id,
+        error_code=error_code,
         created_at=iso_utc(row.created_at) or "",
     )
 
 
-def _session_view(row: AssistantSession, *, messages: list[MessageView] | None = None) -> Any:
+def _session_view(
+    row: AssistantSession,
+    *,
+    messages: list[MessageView] | None = None,
+    usage: SessionUsageView | None = None,
+) -> Any:
     base = SessionView(
         id=str(row.id),
         title=row.title,
@@ -179,9 +218,14 @@ def _session_view(row: AssistantSession, *, messages: list[MessageView] | None =
         last_message_at=iso_utc(row.last_message_at),
         created_at=iso_utc(row.created_at) or "",
     )
-    if messages is None:
+    if messages is None and usage is None:
         return base
-    return SessionDetailView(**base.model_dump(), messages=messages)
+    payload = base.model_dump()
+    if messages is not None:
+        payload["messages"] = messages
+    if usage is not None:
+        payload["usage"] = usage
+    return SessionDetailView(**payload)
 
 
 # ----------------------------------------------------------------------
@@ -212,6 +256,20 @@ def create_session(
     return _session_view(row)
 
 
+@router.patch("/sessions/{session_id}", response_model=SessionView)
+def patch_session(
+    session_id: int,
+    payload: SessionPatch,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> SessionView:
+    """局部更新会话：仅支持标题。"""
+    row = _service.update_session(db, user=user, session_id=session_id, title=payload.title)
+    db.commit()
+    db.refresh(row)
+    return _session_view(row)
+
+
 @router.get("/sessions/{session_id}", response_model=SessionDetailView)
 def get_session(
     session_id: int,
@@ -220,7 +278,12 @@ def get_session(
 ) -> SessionDetailView:
     session_row = _service.get_session(db, user=user, session_id=session_id)
     messages = _service.list_messages(db, session_row=session_row)
-    return _session_view(session_row, messages=[_message_view(m) for m in messages])
+    usage = _service.compute_usage(db, session_row=session_row, messages=messages)
+    return _session_view(
+        session_row,
+        messages=[_message_view(m) for m in messages],
+        usage=usage,
+    )
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
@@ -252,6 +315,7 @@ def _context_raw_from_payload(payload: MessageSend) -> dict[str, Any] | None:
 async def send_message(
     session_id: int,
     payload: MessageSend,
+    request: Request,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> MessageView:
@@ -263,6 +327,7 @@ async def send_message(
         session_row=session_row,
         text=payload.text,
         page_context_raw=context_raw,
+        trace_id=get_request_id(request),
     )
     db.commit()
     db.refresh(reply)
@@ -273,6 +338,7 @@ async def send_message(
 async def send_message_stream(
     session_id: int,
     payload: MessageSend,
+    request: Request,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
@@ -280,7 +346,9 @@ async def send_message_stream(
 
     会话与上下文校验在响应开始前完成（404/400 走统一错误结构）；
     流中的 DomainError 转为 error 事件（HTTP 已 200，无法改状态码）。
+    每个事件都携带 ``trace_id``（来自中间件注入），便于用户与后端日志对账。
     """
+    trace_id = get_request_id(request)
     session_row = _service.get_session(db, user=user, session_id=session_id)
     context_raw = _context_raw_from_payload(payload)
 
@@ -292,13 +360,17 @@ async def send_message_stream(
                 session_row=session_row,
                 text=payload.text,
                 page_context_raw=context_raw,
+                trace_id=trace_id,
             ):
-                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                payload_obj = dict(event)
+                payload_obj["trace_id"] = trace_id
+                yield f"data: {json.dumps(payload_obj, ensure_ascii=False)}\n\n"
         except DomainError as exc:
             error_event = {
                 "type": "error",
                 "code": str(exc.code),
                 "message": exc.message or str(exc.code),
+                "trace_id": trace_id,
             }
             yield f"data: {json.dumps(error_event, ensure_ascii=False)}\n\n"
 

@@ -108,6 +108,45 @@ def resolve_oci_runtime(requested: str) -> str | None:
     return None
 
 
+_AVAILABILITY_TTL_SECONDS = 30.0
+_availability_cache: tuple[float, bool] | None = None
+
+
+def sandbox_available() -> bool:
+    """沙箱可用性：OCI 运行时存在且沙箱镜像已就绪（`runtime image inspect`）。
+
+    结果缓存 30 秒，避免每个草稿保存/回复提交都 fork 一次 docker inspect。
+    探测失败一律返回 False（失败关闭），调用方据此禁用“伪造 tool_call”。
+    """
+    global _availability_cache
+    now = time.monotonic()
+    if _availability_cache is not None and now - _availability_cache[0] < _AVAILABILITY_TTL_SECONDS:
+        return _availability_cache[1]
+    ok = False
+    try:
+        settings = get_settings()
+        runtime = resolve_oci_runtime(settings.tool_sandbox_runtime)
+        if runtime is not None:
+            probe = subprocess.run(
+                [runtime, "image", "inspect", settings.tool_sandbox_image],
+                capture_output=True,
+                check=False,
+                timeout=5,
+                env=_runtime_environment("."),
+            )
+            ok = probe.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        ok = False
+    _availability_cache = (now, ok)
+    return ok
+
+
+def reset_sandbox_availability_cache() -> None:
+    """仅测试使用：立即让下一次 sandbox_available() 重新探测。"""
+    global _availability_cache
+    _availability_cache = None
+
+
 def build_oci_command(
     runtime: str,
     image: str,
@@ -368,6 +407,7 @@ def run_sandboxed(
             process.returncode, stdout, stderr, "limit_exceeded", duration, "output_truncated"
         )
     if stop_reason == "runtime_stuck":
+        log_event("error", "tool.sandbox_runtime_stuck", "工具沙箱运行时挂起")
         return SandboxResult(
             process.returncode, stdout, stderr, "failed", duration, "sandbox_runtime_error"
         )
@@ -375,6 +415,12 @@ def run_sandboxed(
     if state == "succeeded":
         error_code = None
     elif process.returncode in {125, 126, 127}:
+        log_event(
+            "error",
+            "tool.sandbox_runtime_error",
+            "工具沙箱运行时失败",
+            returncode=process.returncode,
+        )
         error_code = "sandbox_runtime_error"
     else:
         error_code = "nonzero_exit"

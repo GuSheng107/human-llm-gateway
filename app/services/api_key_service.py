@@ -303,6 +303,12 @@ class ApiKeyService:
                     "LLM 配置必须是自己的有效配置",
                     status_code=400,
                 )
+            if not config.is_enabled:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    "LLM 配置已停用，不能绑定到 API Key",
+                    status_code=400,
+                )
             fields["llm_config_id"] = llm_config_id
         elif llm_config_id is not None:
             raise DomainError(

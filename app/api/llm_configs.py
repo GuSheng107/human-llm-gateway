@@ -22,13 +22,25 @@ from ..domain.enums import LLMProtocol, ThinkingLevel, ThinkingMode, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.models import LlmConfig, User
 from ..services.llm_config_service import LlmConfigService
-from ..services.llm_test_service import run_connectivity_test
+from ..services.llm_test_service import ConnTestOutcome, run_connectivity_test
 from .common import StrictModel
 from .deps import require_current_user
 
 router = APIRouter(prefix="/api/llm-configs", tags=["llm-configs"])
 
 _service = LlmConfigService()
+
+
+def _raise_if_test_failed(outcome: ConnTestOutcome) -> None:
+    """连通性测试失败 -> 拒绝启用/保存为启用状态（真实生成且回复非空才算通过）。"""
+    if outcome.success:
+        return
+    raise DomainError(
+        DomainErrorCode.VALIDATION_FAILED,
+        f"连通性测试未通过（{outcome.reason_code}: {outcome.detail}），无法启用该配置；"
+        "如需先保存，请取消勾选「启用」",
+        status_code=400,
+    )
 
 
 def _assert_not_admin_llm_manager(user: User) -> None:
@@ -232,12 +244,22 @@ def list_llm_configs(
 
 
 @router.post("", response_model=LlmConfigView, status_code=201)
-def create_llm_config(
+async def create_llm_config(
     payload: LlmConfigCreate,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> LlmConfigView:
     _assert_not_admin_llm_manager(user)
+    outcome = None
+    if payload.enabled:
+        # 启用必须先通过真实生成连通性测试（要求模型返回非空回复）。
+        outcome = await run_connectivity_test(
+            protocol=payload.protocol,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+            real_model=payload.model,
+        )
+        _raise_if_test_failed(outcome)
     row = _service.create(
         db,
         owner=user,
@@ -266,6 +288,8 @@ def create_llm_config(
         thinking_level=_thinking_level(payload.thinking_level),
         extra_body=payload.extra_body,
     )
+    if outcome is not None:
+        _service.repo.record_test_result(db, config_id=row.id, result="success")
     db.commit()
     db.refresh(row)
     return _view(db, row)
@@ -286,7 +310,7 @@ def get_llm_config(
 
 
 @router.patch("/{config_id}", response_model=LlmConfigView)
-def update_llm_config(
+async def update_llm_config(
     config_id: int,
     payload: LlmConfigUpdate,
     user: User = Depends(require_current_user),
@@ -295,7 +319,43 @@ def update_llm_config(
     _assert_not_admin_llm_manager(user)
     row = _get_config(db, config_id, user)
     fields = payload.model_dump(include=payload.model_fields_set)
+    # 仅修改高级参数（采样/思考/extra_body 等）不重新触发连通性测试；
+    # 连接相关字段（协议/地址/模型/密钥/超时）实际变化或重新启用时才测试。
+    was_enabled = row.is_enabled
+    before = (
+        row.protocol,
+        row.base_url,
+        row.real_model,
+        row.timeout_seconds,
+        row.secret_ciphertext,
+    )
     _service.update(db, row=row, actor=user, fields=fields)
+    after = (
+        row.protocol,
+        row.base_url,
+        row.real_model,
+        row.timeout_seconds,
+        row.secret_ciphertext,
+    )
+    need_test = row.is_enabled and (after != before or not was_enabled)
+    if need_test:
+        # 启用态的保存必须通过真实生成连通性测试，否则整体回滚。
+        submitted_key = fields.get("api_key")
+        secret = (
+            submitted_key.strip()
+            if isinstance(submitted_key, str) and submitted_key.strip()
+            else _service.get_secret(db, row)
+        )
+        outcome = await run_connectivity_test(
+            protocol=row.protocol,
+            base_url=row.base_url,
+            api_key=secret,
+            real_model=row.real_model,
+        )
+        if not outcome.success:
+            db.rollback()
+            _raise_if_test_failed(outcome)
+        _service.repo.record_test_result(db, config_id=row.id, result="success")
     db.commit()
     db.refresh(row)
     return _view(db, row)

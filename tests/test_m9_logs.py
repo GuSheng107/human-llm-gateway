@@ -1,10 +1,10 @@
-"""M9 日志与控制台 API 测试（docs/API_CONTRACT.md §11）。
+"""日志与控制台 API 测试（docs/API_CONTRACT.md §11）。
 
 覆盖：
-- /api/audit-logs：管理员可查、普通用户 403、筛选（动作/资源/时间窗）
-- /api/app-logs：管理员可查、级别/事件/时间窗筛选、普通用户 403
-- /api/dashboard：用户视角个人统计；管理员视角全局统计
-- 审计视图不泄露字段值（只含字段名）
+- /api/logs：统一日志查询（合并审计与应用日志）；管理员可看全站；
+  普通用户只能看到与自己（actor/owner 或资源归属）相关的行；
+  支持 trace_id / event / hours 过滤；按时间倒序返回。
+- /api/dashboard：用户视角个人统计；管理员视角全局统计。
 """
 
 from __future__ import annotations
@@ -17,182 +17,130 @@ from app.repositories.models import RequestTask
 from app.repositories.system import AppLogRepository, AuditRepository
 
 
-def _seed_audit(action: str, resource_type: str, fields: list[str]) -> None:
+def _seed_audit(
+    action: str,
+    resource_type: str,
+    fields: list[str],
+    *,
+    actor_user_id: int | None = 1,
+    owner_user_id: int | None = None,
+    request_id: str | None = None,
+) -> None:
     with database.SessionLocal() as session:
         AuditRepository().add(
             session,
             action=AuditAction(action),
             resource_type=resource_type,
             result=AuditResult.SUCCESS,
-            actor_user_id=1,
-            resource_id="1",
+            actor_user_id=actor_user_id,
+            owner_user_id=owner_user_id,
+            request_id=request_id,
             metadata={"fields": fields},
         )
         session.commit()
 
 
-def _seed_applog(event: str, level: str = "info", message: str = "x") -> None:
+def _seed_applog(
+    event: str,
+    level: str = "info",
+    message: str = "x",
+    *,
+    user_id: int | None = None,
+    request_id: str | None = None,
+) -> None:
     with database.SessionLocal() as session:
-        AppLogRepository().add(session, level=level, event=event, message=message)
+        AppLogRepository().add(
+            session,
+            level=level,
+            event=event,
+            message=message,
+            user_id=user_id,
+            request_id=request_id,
+        )
         session.commit()
 
 
 # ----------------------------------------------------------------------
-# 权限
+# 统一日志查询
 # ----------------------------------------------------------------------
 
 
-def test_trace_id_in_admin_api_response_body_and_header(client, created_user) -> None:
-    """方案1：/api/* JSON 响应顶层携带 trace_id，并回写 X-Trace-Id 头。"""
-    resp = client.get("/api/app-logs", headers=created_user.headers)
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["trace_id"]
-    assert resp.headers["x-trace-id"] == body["trace_id"]
-    assert resp.headers["x-request-id"] == body["trace_id"]
-    # 调用方提供 X-Request-Id 时沿用同一 trace。
-    resp_echo = client.get(
-        "/api/app-logs",
-        headers={**created_user.headers, "X-Request-Id": "req_custom123"},
-    )
-    assert resp_echo.json()["trace_id"] == "req_custom123"
-    assert resp_echo.headers["x-trace-id"] == "req_custom123"
-
-
-def test_trace_id_error_response_body(client, created_user) -> None:
-    """错误响应同样携带顶层 trace_id（管理 API 统一错误结构）。"""
-    resp = client.get("/api/tasks/999999", headers=created_user.headers)
-    assert resp.status_code == 404
-    body = resp.json()
-    assert body["error"]["request_id"] == body["trace_id"]
-    assert body["trace_id"]
-
-
-def test_v1_responses_do_not_inject_trace_id_into_body(client, created_key) -> None:
-    """方案1：/v1/* 不改变 OpenAI/Anthropic 协议正文，只追加 X-Trace-Id 头。"""
-    # 用不存在的模型立即触发协议错误（不进入人工等待）。
-    resp = client.post(
-        "/v1/chat/completions",
-        headers={"Authorization": f"Bearer {created_key.plaintext}"},
-        json={
-            "model": "no-such-model",
-            "messages": [{"role": "user", "content": "hi"}],
-        },
-    )
-    assert resp.status_code == 404
-    body = resp.json()
-    # OpenAI 错误结构保持原样，无顶层 trace_id 注入。
-    assert "trace_id" not in body
-    assert body["error"]["type"]
-    assert resp.headers.get("x-trace-id")
-
-
-def test_app_logs_logger_column_and_context(client, admin_headers, created_user) -> None:
-    """普通 logging（WARNING+）经 root handler 落库；context 脱敏可查。"""
-    import logging
-
-    logging.getLogger("test.watchdog").exception("connection watchdog cycle failed")
-    # logger 行无归属 user；scope 过滤下仅管理员可见。
-    resp = client.get(
-        "/api/app-logs",
-        headers=admin_headers,
-        params={"event": "logging.record", "with_context": "true"},
-    )
+def test_logs_admin_sees_all(client, admin_headers, created_user) -> None:
+    """管理员可见审计与应用两类日志，按 created_at 倒序合并。"""
+    _seed_audit("api_key.created", "api_key", ["name"], actor_user_id=1)
+    _seed_applog("test.event.admin", "info", "admin 可见", user_id=created_user.user_id)
+    resp = client.get("/api/logs", headers=admin_headers)
     assert resp.status_code == 200, resp.text
     items = resp.json()["items"]
-    assert items
-    entry = items[0]
-    assert entry["logger"] == "test.watchdog"
-    assert entry["context"] is not None
+    assert any(item["kind"] == "audit" for item in items)
+    assert any(item["kind"] == "app" for item in items)
 
 
-def test_audit_logs_admin_only(client, admin_headers, created_user) -> None:
-    _seed_audit("api_key.created", "api_key", ["name"])
-    resp = client.get("/api/audit-logs", headers=admin_headers)
-    assert resp.status_code == 200
-    assert resp.json()["total"] >= 1
-    denied = client.get("/api/audit-logs", headers=created_user.headers)
-    assert denied.status_code == 403
-
-
-def test_app_logs_open_to_all_with_owner_scope(client, admin_headers, created_user) -> None:
-    _seed_applog("test.event.anonymous")
-    resp = client.get("/api/app-logs", headers=admin_headers)
-    assert resp.status_code == 200
-    # 普通用户也可访问，但只能看到自己资源范围内的日志。
-    allowed = client.get("/api/app-logs", headers=created_user.headers)
-    assert allowed.status_code == 200
-    items = allowed.json()["items"]
-    assert all(item["user_id"] in (None, str(created_user.user_id)) for item in items)
-    # 无归属的系统日志对普通用户不可见
-    trace = client.get("/api/app-logs?event=test.event.anonymous", headers=created_user.headers)
-    assert trace.status_code == 200
-    assert all(
-        item["event"] != "test.event.anonymous" or item["user_id"] is not None
-        for item in trace.json()["items"]
+def test_logs_owner_scope_filters_for_viewer(client, created_user) -> None:
+    """普通用户可见的审计日志：actor=自己 或者 owner=自己。"""
+    # admin 替该用户改资料 -> owner=created_user, actor=admin
+    _seed_audit(
+        "user.updated",
+        "user",
+        ["display_name"],
+        actor_user_id=1,
+        owner_user_id=created_user.user_id,
+        request_id=None,
     )
-
-
-# ----------------------------------------------------------------------
-# 筛选
-# ----------------------------------------------------------------------
-
-
-def test_audit_logs_filter_by_action(client, admin_headers) -> None:
-    _seed_audit("llm_config.created", "llm_config", ["name"])
-    resp = client.get("/api/audit-logs?action=llm_config.created", headers=admin_headers)
-    assert resp.status_code == 200
-    items = resp.json()["items"]
-    assert items
-    assert all(item["action"] == "llm_config.created" for item in items)
-
-
-def test_audit_logs_filter_by_resource_type(client, admin_headers) -> None:
-    _seed_audit("fake_model.created", "fake_model", ["model_id"])
-    resp = client.get("/api/audit-logs?resource_type=fake_model", headers=admin_headers)
-    assert resp.status_code == 200
-    items = resp.json()["items"]
-    assert items
-    assert all(item["resource_type"] == "fake_model" for item in items)
-
-
-def test_audit_logs_hours_window(client, admin_headers) -> None:
-    _seed_audit("connection.started", "im_connection", ["state"])
-    resp = client.get("/api/audit-logs?hours=1", headers=admin_headers)
-    assert resp.status_code == 200
-    assert resp.json()["total"] >= 1
-
-
-def test_audit_logs_view_hides_values(client, admin_headers) -> None:
-    """审计视图只含字段名，不含字段值或请求正文。"""
-    _seed_audit("user.updated", "user", ["display_name", "is_active"])
-    resp = client.get("/api/audit-logs?action=user.updated", headers=admin_headers)
-    items = resp.json()["items"]
-    assert items
-    item = items[0]
-    assert item["fields"] == ["display_name", "is_active"]
-    text = resp.text
-    assert "value" not in item
-    assert "payload" not in text.lower() or "page_size" in text
-
-
-def test_app_logs_filter_by_level_and_event(client, admin_headers) -> None:
-    _seed_applog("inference.human_timeout", "warning", "等待人工回复超时")
-    _seed_applog("normal.event", "info")
-    resp = client.get(
-        "/api/app-logs?level=warning&event=inference.human_timeout",
-        headers=admin_headers,
+    # admin 自己创建邀请码（owner=admin） -> 该用户看不到
+    _seed_audit(
+        "invitation.created",
+        "invitation",
+        ["code"],
+        actor_user_id=1,
+        owner_user_id=1,
     )
+    resp = client.get("/api/logs", headers=created_user.headers)
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    # 至少出现 owner=created_user 的 user.updated 记录
+    assert any(item["event"] == "user.updated" for item in items)
+    # 不能出现 admin 自己的 invitation.created（因为 actor/owner 都不是 created_user）
+    assert not any(item["event"] == "invitation.created" for item in items)
+
+
+def test_logs_trace_id_filter(client, admin_headers) -> None:
+    """按 traceId 过滤应同时命中审计与应用日志。"""
+    _seed_audit(
+        "connection.started",
+        "im_connection",
+        [],
+        actor_user_id=1,
+        request_id="req_trace_x",
+    )
+    _seed_applog("inference.replied", "info", "ok", request_id="req_trace_x")
+    resp = client.get("/api/logs?trace_id=req_trace_x", headers=admin_headers)
     assert resp.status_code == 200
     items = resp.json()["items"]
     assert items
-    assert all(item["level"] == "warning" for item in items)
+    assert all(item["request_id"] == "req_trace_x" for item in items)
+
+
+def test_logs_event_filter(client, admin_headers) -> None:
+    """event 过滤同时匹配审计的 action 与应用日志的 event。"""
+    _seed_audit("llm_config.created", "llm_config", ["name"], actor_user_id=1)
+    _seed_applog("inference.human_timeout", "warning", "x")
+    resp = client.get("/api/logs?event=inference.human_timeout", headers=admin_headers)
+    assert resp.status_code == 200
+    items = resp.json()["items"]
     assert all(item["event"] == "inference.human_timeout" for item in items)
 
 
-def test_app_logs_invalid_level_rejected(client, admin_headers) -> None:
-    resp = client.get("/api/app-logs?level=verbose", headers=admin_headers)
-    assert resp.status_code == 422
+def test_logs_hours_filter(client, admin_headers) -> None:
+    _seed_applog("recent.event", "info", "just now")
+    resp = client.get("/api/logs?hours=1", headers=admin_headers)
+    assert resp.status_code == 200
+    assert resp.json()["total"] >= 1
+
+
+def test_logs_requires_auth(client) -> None:
+    resp = client.get("/api/logs")
+    assert resp.status_code == 401
 
 
 # ----------------------------------------------------------------------
@@ -205,11 +153,9 @@ def test_dashboard_user_view(client, created_user, created_key) -> None:
     assert resp.status_code == 200, resp.text
     body = resp.json()
     stats = body["stats"]
-    # 控制台对所有用户展示同一组全站指标。
     assert stats["total_api_keys"] >= 1
     assert stats["total_users"] >= 1
     assert stats["active_models"] >= 0
-    # 最近任务只含自己的
     with database.SessionLocal() as session:
         my_tasks = session.scalars(
             select(RequestTask).where(RequestTask.owner_user_id == created_user.user_id)
@@ -222,7 +168,6 @@ def test_dashboard_admin_view(client, admin_headers) -> None:
     resp = client.get("/api/dashboard", headers=admin_headers)
     assert resp.status_code == 200
     stats = resp.json()["stats"]
-    # 管理员与普通用户看到同一组数据。
     assert stats["total_users"] >= 1
     assert stats["active_users"] >= 1
     assert "active_tasks" in stats

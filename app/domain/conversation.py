@@ -65,13 +65,18 @@ def project_messages(normalized: dict[str, Any]) -> list[dict[str, Any]]:
             if isinstance(block, dict):
                 messages.append({"role": "system", "blocks": [_block_from_mapping(block)]})
 
-    def add(role: str, content: Any, extra: dict[str, Any] | None = None) -> None:
+    def add(
+        role: str,
+        content: Any,
+        extra: dict[str, Any] | None = None,
+        context_index: int | None = None,
+    ) -> None:
         blocks = _blocks_from_content(content)
         if not blocks and extra:
             blocks = [extra]
         if not blocks:
             return
-        messages.append({"role": role, "blocks": blocks})
+        messages.append({"role": role, "blocks": blocks, "context_index": context_index})
 
     raw_messages = normalized.get("messages")
     if isinstance(raw_messages, list):
@@ -83,16 +88,22 @@ def project_messages(normalized: dict[str, Any]) -> list[dict[str, Any]]:
 
     context = normalized.get("context")
     if isinstance(context, list):
-        for item in context:
+        for ctx_index, item in enumerate(context):
             if not isinstance(item, dict):
                 continue
             if "role" in item:
-                add(str(item.get("role") or "user"), item.get("content"), item)
+                add(
+                    str(item.get("role") or "user"),
+                    item.get("content"),
+                    item,
+                    context_index=ctx_index,
+                )
             elif item.get("type") == "function_call_output":
                 add(
                     "tool",
                     item.get("output"),
                     {"type": "tool_result", "tool_call_id": item.get("call_id")},
+                    context_index=ctx_index,
                 )
 
     raw_input = normalized.get("input")

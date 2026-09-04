@@ -20,6 +20,8 @@
 
 Drop it in, and what you type in your chat becomes a standard LLM API response.
 
+> **Project status: COMPLETE.** All planned milestones (M0–M14) are delivered and deployed. The repository is now in maintenance mode; see the roadmap below.
+
 </div>
 
 ---
@@ -67,6 +69,8 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 - IM delivery: WeCom, webhook, WebSocket, HTTP polling
 - IM DSL: `::: reasoning` / `::: tool` fences, shared structure with the web editor
 - First valid submission wins — irrevocable
+
+> ⚠️ When replying manually, tool calls may **only reference admin-whitelisted sandbox tools** (in an enabled state, executed inside the fail-closed OCI sandbox). Tool calls are never run on the gateway host, and caller-declared tools can never be invoked through human replies.
 
 </td><td width="50%" valign="top">
 
@@ -134,6 +138,9 @@ cd human-llm-gateway
 python -c "import secrets; print(f'APP_SECRET={secrets.token_urlsafe(32)}')" >> .env
 echo "ADMIN_USERNAME=admin" >> .env
 echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
+# Public deployments must declare the gateway's own public host(s) so a user's
+# LLM upstream can never point back at the gateway itself:
+echo "GATEWAY_PUBLIC_HOSTS=gateway.example.com" >> .env
 
 # 3. Build the frontend, then run the server (single port —
 #    the backend serves the built SPA itself)
@@ -199,7 +206,7 @@ for chunk in stream:
 | M8 | Global web assistant (context redaction) | ✅ |
 | M9 | Dashboard stats · log auditing · UX polish | ✅ |
 | M10 | Deployment & ops baseline | ✅ |
-| M11 | Release acceptance | 🟡 |
+| M11 | Release acceptance | ✅ |
 | M12 | Isolated tool sandbox | ✅ |
 | M13 | Trace-linked logs, IM ownership isolation, retention | ✅ |
 | M14 | Unified reply workbench | ✅ |

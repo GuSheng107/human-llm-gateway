@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     # 私有/回环上游默认拒绝；自建网关连本机 Ollama/内网 vLLM 时显式开启
     # （云元数据段无论开关一律拒绝，见 app/core/ssrf.py）。
     llm_allow_private_upstream: bool = False
+    # 本网关对外的公网主机名/IP（逗号分隔，可带端口）。SSRF 按 IP 网档判断，
+    # 无法识别"这就是本服务"：公网域名部署时必须填写，防止用户把 LLM 上游
+    # 指回本网关 /v1 形成自指转发链（绕过人工回复的工具沙箱约束）。
+    gateway_public_hosts: str = ""
     # 工具只在本机 Docker/Podman 的 Linux OCI 容器中执行；运行时缺失时失败关闭。
     tool_sandbox_runtime: str = "auto"
     tool_sandbox_image: str = "human-llm-gateway-tool-sandbox:latest"
@@ -89,6 +93,20 @@ class Settings(BaseSettings):
         if self.database_url.startswith("sqlite:///"):
             path = Path(self.database_url.removeprefix("sqlite:///"))
             path.parent.mkdir(parents=True, exist_ok=True)
+
+    def gateway_host_set(self) -> frozenset[str]:
+        """解析 gateway_public_hosts 为小写主机名集合（剥离端口与空白）。"""
+        hosts: set[str] = set()
+        for item in self.gateway_public_hosts.split(","):
+            entry = item.strip().lower()
+            if not entry:
+                continue
+            if ":" in entry and not entry.startswith("["):
+                entry = entry.split(":", 1)[0]
+            entry = entry.strip("[]")
+            if entry:
+                hosts.add(entry)
+        return frozenset(hosts)
 
     @property
     def human_timeout_in_range(self) -> bool:

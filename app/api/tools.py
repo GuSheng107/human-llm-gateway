@@ -20,6 +20,7 @@ from ..core.time import iso_utc
 from ..domain.enums import UserRole
 from ..domain.errors import DomainError, DomainErrorCode
 from ..repositories.models import ToolExecution, ToolWhitelist, User
+from ..services.task_service import fake_tool_calls_allowed
 from ..services.tools.service import ToolService
 from .common import StrictModel
 from .deps import require_admin, require_current_user
@@ -100,6 +101,8 @@ class ToolPage(BaseModel):
     page: int
     page_size: int
     total: int
+    # 本机沙箱是否可用（运行时 + 镜像探测）；不可用时前端禁用伪造 tool_call 入口。
+    sandbox_available: bool
 
 
 class ExecutionView(BaseModel):
@@ -156,6 +159,7 @@ def list_tools(
         page=page,
         page_size=page_size,
         total=total,
+        sandbox_available=fake_tool_calls_allowed(),
     )
 
 

@@ -1,33 +1,48 @@
 import { api } from "./client";
 
-export interface AuditLogItem {
+/**
+ * 统一日志查询：合并审计与应用日志，按 trace_id 串联。
+ * 后端按调用者角色做数据可见性裁剪；普通用户只能看到自己相关的行。
+ */
+export interface LogItem {
   id: string;
-  action: string;
-  resource_type: string;
-  resource_id: string | null;
-  actor_user_id: string | null;
-  actor_username: string | null;
-  owner_user_id: string | null;
-  result: string;
-  request_id: string | null;
-  fields: string[];
-  created_at: string;
-}
-
-export interface AppLogItem {
-  id: string;
+  kind: "audit" | "app";
   level: string;
   event: string;
   message: string;
-  request_id: string | null;
-  logger?: string | null;
-  user_id: string | null;
   username: string | null;
+  user_id: string | null;
+  request_id: string | null;
   task_id: string | null;
   api_key_id: string | null;
   connection_id: string | null;
   created_at: string;
-  context?: Record<string, unknown> | null;
+}
+
+export interface LogPage {
+  items: LogItem[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface LogQuery {
+  page: number;
+  page_size?: number;
+  trace_id?: string;
+  event?: string;
+  hours?: number;
+}
+
+export function listLogs(query: LogQuery): Promise<LogPage> {
+  const params = new URLSearchParams({
+    page: String(query.page),
+    page_size: String(query.page_size ?? 20),
+  });
+  if (query.trace_id) params.set("trace_id", query.trace_id);
+  if (query.event) params.set("event", query.event);
+  if (query.hours) params.set("hours", String(query.hours));
+  return api(`/api/logs?${params}`);
 }
 
 export interface DashboardStats {
@@ -64,70 +79,6 @@ export interface DashboardData {
   recent_tasks: DashboardRecentTask[];
   daily_tasks: DashboardDailyTask[];
   protocol_counts: DashboardProtocolCount[];
-}
-
-export interface AuditLogQuery {
-  page: number;
-  page_size?: number;
-  actor_user_id?: number;
-  resource_type?: string;
-  action?: string;
-  owner_user_id?: number;
-  hours?: number;
-}
-
-export interface AppLogQuery {
-  page: number;
-  page_size?: number;
-  level?: string;
-  event?: string;
-  user_id?: number;
-  task_id?: number;
-  api_key_id?: number;
-  connection_id?: number;
-  request_id?: string;
-  hours?: number;
-  with_context?: boolean;
-}
-
-export function listAuditLogs(query: AuditLogQuery): Promise<{
-  items: AuditLogItem[];
-  page: number;
-  page_size: number;
-  total: number;
-}> {
-  const params = new URLSearchParams({
-    page: String(query.page),
-    page_size: String(query.page_size ?? 20),
-  });
-  if (query.actor_user_id) params.set("actor_user_id", String(query.actor_user_id));
-  if (query.resource_type) params.set("resource_type", query.resource_type);
-  if (query.action) params.set("action", query.action);
-  if (query.owner_user_id) params.set("owner_user_id", String(query.owner_user_id));
-  if (query.hours) params.set("hours", String(query.hours));
-  return api(`/api/audit-logs?${params}`);
-}
-
-export function listAppLogs(query: AppLogQuery): Promise<{
-  items: AppLogItem[];
-  page: number;
-  page_size: number;
-  total: number;
-}> {
-  const params = new URLSearchParams({
-    page: String(query.page),
-    page_size: String(query.page_size ?? 20),
-  });
-  if (query.level) params.set("level", query.level);
-  if (query.event) params.set("event", query.event);
-  if (query.user_id) params.set("user_id", String(query.user_id));
-  if (query.task_id) params.set("task_id", String(query.task_id));
-  if (query.api_key_id) params.set("api_key_id", String(query.api_key_id));
-  if (query.connection_id) params.set("connection_id", String(query.connection_id));
-  if (query.request_id) params.set("request_id", query.request_id);
-  if (query.hours) params.set("hours", String(query.hours));
-  if (query.with_context) params.set("with_context", "true");
-  return api(`/api/app-logs?${params}`);
 }
 
 export function getDashboard(): Promise<DashboardData> {

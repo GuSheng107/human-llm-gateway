@@ -86,7 +86,8 @@ export function ConnectionsPage() {
   const [checking, setChecking] = useState(false);
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
-  // /api/im-connections 后端已限定为当前用户自己，因此管理员与普通用户都只看本人连接。
+  // /api/im-connections 后端已限定为当前用户自己，而管理员无权限创建连接/扫码。
+  const showAdminPanel = isAdmin;
   const displayPlatforms = useMemo(
     () => orderPlatforms(platforms, items),
     [items, platforms],
@@ -128,8 +129,13 @@ export function ConnectionsPage() {
   useEffect(() => void load(), [load]);
 
   const openConnection = async (platform: PlatformSpec, current: ImConnection | null) => {
+    // 管理员不可创建或编辑连接；直接走监管页
+    if (isAdmin) {
+      notify("管理员账号不支持创建或配置 IM 连接，请前往「IM 连接监管」管理已有连接", "info");
+      return;
+    }
     const key = current?.id ?? platform.code;
-    const needsConnection = !current && platform.supports_login && !isAdmin;
+    const needsConnection = !current && platform.supports_login;
     // 先展示弹窗，再处理扫码连接的创建请求。网络较慢时用户也能立即看到反馈，
     // 不会因为等待请求而误以为点击未生效并反复点击。
     setConfigTarget({ platform, connection: current, loading: needsConnection });
@@ -288,15 +294,16 @@ export function ConnectionsPage() {
               displayPlatforms.map((platform) => {
                 const connection = connectionMap.get(platform.code) ?? null;
                 const key = connection?.id ?? platform.code;
+                const adminMode = isAdmin;
                 return (
                   <ConnectionPlatformPanel
                     key={platform.code}
                     platform={platform}
                     connection={connection}
                     busy={busyKey === key}
-                    readOnly={isAdmin}
-                    onToggle={() => void toggle(platform, connection)}
-                    onPrimaryAction={() => void openConnection(platform, connection)}
+                    readOnly={adminMode}
+                    onToggle={adminMode ? () => {} : () => void toggle(platform, connection)}
+                    onPrimaryAction={adminMode ? () => {} : () => void openConnection(platform, connection)}
                     onDelete={() => connection && void remove(connection)}
                   />
                 );
@@ -320,7 +327,6 @@ export function ConnectionsPage() {
           platform={configTarget.platform}
           connection={configTarget.connection}
           loadingConnection={configTarget.loading}
-          readOnly={isAdmin}
           onClose={() => {
             setConfigTarget(null);
             void load();

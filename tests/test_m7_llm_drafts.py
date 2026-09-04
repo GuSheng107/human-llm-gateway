@@ -159,7 +159,11 @@ def test_generate_draft_uses_active_draft_slot(client, created_user, created_key
 
 
 def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key) -> None:
-    """已存在未提交 LLM 草稿时拒绝重复生成（幂等防护，避免连点多条草稿）。"""
+    """已存在未提交 LLM 草稿时重复生成 == 合并更新同一草稿（不再 409）。
+
+    三模式生成需要「先生成思考链、再按它生成回复」的序列，因此同任务
+    只允许一条 LLM 编辑态草稿，重复生成按模式合并并递增 version。
+    """
     task_id = _make_waiting_task(client, created_key.id, created_user.user_id)
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
 
@@ -167,7 +171,9 @@ def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key)
 
     async def fake(**kwargs: Any) -> Any:
         call_count["n"] += 1
-        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        return {
+            "choices": [{"message": {"role": "assistant", "content": f"回复-{call_count['n']}"}}]
+        }
 
     with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         first = client.post(
@@ -176,17 +182,20 @@ def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key)
             json={"llm_config_id": int(cfg["id"])},
         )
         assert first.status_code == 201
+        first_id = first.json()["id"]
+        assert first.json()["version"] == 1
 
         second = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
             json={"llm_config_id": int(cfg["id"])},
         )
-        assert second.status_code == 409
-        assert "LLM 草稿" in second.json()["error"]["message"]
+        assert second.status_code == 200
+        assert second.json()["id"] == first_id
+        assert second.json()["final_text"] == "回复-2"
+        assert second.json()["version"] == 2
 
-    # 上游只被调用一次
-    assert call_count["n"] == 1
+    assert call_count["n"] == 2
 
     # 删除草稿后可重新生成
     draft_id = first.json()["id"]
@@ -202,7 +211,7 @@ def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key)
             json={"llm_config_id": int(cfg["id"])},
         )
         assert third.status_code == 201
-    assert call_count["n"] == 2
+    assert call_count["n"] == 3
 
 
 def test_generate_draft_then_edit_then_submit(client, created_user, created_key) -> None:
@@ -869,3 +878,262 @@ def test_generate_draft_requires_owner_to_be_active(
         json={"llm_config_id": int(cfg["id"])},
     )
     assert resp.status_code in (401, 403)
+
+
+# ----------------------------------------------------------------------
+# M14+ 生成模式：reasoning / reply / both  + 上下文消息级勾选
+# ----------------------------------------------------------------------
+
+
+def _make_waiting_task_multi(
+    client, key_id: int, user_id: int, *, messages: list[dict[str, Any]]
+) -> int:
+    """直接经编排服务创建一个 WAITING_HUMAN 任务，支持传入多条历史消息。"""
+    import app.core.db as database
+    from app.domain.enums import InferenceProtocol
+    from app.protocols import chat_completions as chat_protocol
+    from app.repositories.models import ApiKey, User
+    from app.services.inference_service import InferenceService
+
+    payload = {"model": "deepseek-v4-pro", "messages": messages}
+    raw = json.dumps(payload).encode()
+    parsed = chat_protocol.parse_request(raw)
+    with database.SessionLocal() as session:
+        key = session.get(ApiKey, key_id)
+        owner = session.get(User, user_id)
+        task = InferenceService().create_task(
+            session,
+            key=key,
+            owner=owner,
+            protocol=InferenceProtocol.OPENAI_CHAT,
+            parsed=parsed,
+            raw_body=raw,
+            headers={},
+        )
+        session.commit()
+        assert task.id is not None
+        return task.id
+
+
+def test_generate_mode_reasoning_only_writes_into_reasoning(
+    client, created_user, created_key
+) -> None:
+    """mode=reasoning：上游返回正文与推理，归入草稿 reasoning；final_text=None。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "用户问题的详细推理",
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "reasoning"},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["final_text"] is None
+    assert "推理" in (body["reasoning"] or "")
+    assert body["tool_calls"] == []
+
+
+def test_generate_mode_reply_preserves_user_reasoning_seed(
+    client, created_user, created_key
+) -> None:
+    """mode=reply + reasoning_seed：上游只看种子写回复，草稿保留种子作为 reasoning。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {"choices": [{"message": {"role": "assistant", "content": "已写好的回复"}}]}
+
+    seed = "用户手写的思考链：先确认输入再展开"
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={
+                "llm_config_id": int(cfg["id"]),
+                "mode": "reply",
+                "reasoning_seed": seed,
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["final_text"] == "已写好的回复"
+    assert body["reasoning"] == seed
+    # 种子被拼入上游 system 消息
+    sys_msg = captured["body"]["messages"][0]
+    assert sys_msg["role"] == "system"
+    assert seed in sys_msg["content"]
+
+
+def test_generate_exclude_context_indices_omits_history(client, created_user, created_key) -> None:
+    """消息级勾选：被排除的 normalized context 下标不会送入上游。"""
+    messages = [
+        {"role": "system", "content": "你是助手"},
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答"},
+        {"role": "user", "content": "第二问"},
+    ]
+    task_id = _make_waiting_task_multi(
+        client, created_key.id, created_user.user_id, messages=messages
+    )
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={
+                "llm_config_id": int(cfg["id"]),
+                "mode": "reply",
+                "exclude_context_indices": [1],  # 排除 normalized context[1]（第一问）
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    sent = captured["body"]["messages"]
+    # 第一问（被排除）不应出现；其他上下文仍存在。
+    joined = "\n".join(str(m.get("content", "")) for m in sent)
+    assert "第一问" not in joined
+    assert "第一答" in joined
+    assert "第二问" in joined
+
+
+def test_generate_exclude_invalid_index_returns_400(client, created_user, created_key) -> None:
+    """exclude_context_indices 越界直接 400，避免静默丢弃过滤。"""
+    task_id = _make_waiting_task_multi(
+        client,
+        created_key.id,
+        created_user.user_id,
+        messages=[
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+        ],
+    )
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts/generate",
+        headers=created_user.headers,
+        json={
+            "llm_config_id": int(cfg["id"]),
+            "exclude_context_indices": [99],
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "下标越界" in resp.json()["error"]["message"]
+
+
+def test_save_draft_with_tool_calls_blocked_when_sandbox_unavailable(
+    client, created_user, created_key, monkeypatch
+) -> None:
+    """无沙箱环境：草稿保存拒绝携带 tool_calls（public_code=sandbox_unavailable）。"""
+    monkeypatch.setattr("app.services.task_service.fake_tool_calls_allowed", lambda: False)
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "x", "arguments": {}}],
+            "final_text": "ok",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "validation_failed"
+    assert "沙箱不可用" in body["error"]["message"]
+
+
+def test_submit_reply_with_tool_calls_blocked_when_sandbox_unavailable(
+    client, created_user, created_key, monkeypatch
+) -> None:
+    """无沙箱环境：直接回复提交同样拒绝携带 tool_calls。"""
+    monkeypatch.setattr("app.services.task_service.fake_tool_calls_allowed", lambda: False)
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    resp = client.post(
+        f"/api/tasks/{task_id}/reply",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "x", "arguments": {}}],
+            "final_text": "ok",
+            "source_draft_id": None,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "沙箱不可用" in resp.json()["error"]["message"]
+
+
+def test_generate_strips_tool_calls_when_sandbox_unavailable(
+    client, created_user, created_key, monkeypatch
+) -> None:
+    """无沙箱环境：LLM 草稿生成也会丢弃上游返回的 tool_calls。"""
+    monkeypatch.setattr("app.services.task_service.fake_tool_calls_allowed", lambda: False)
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                        "tool_calls": [
+                            {
+                                "id": "call_01",
+                                "type": "function",
+                                "function": {"name": "x", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "both"},
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["tool_calls"] == []
+
+
+def test_conversation_includes_context_index(client, created_user, created_key) -> None:
+    """GET /conversation 返回的每条消息携带 context_index（系统指令为 None）。"""
+    task_id = _make_waiting_task_multi(
+        client,
+        created_key.id,
+        created_user.user_id,
+        messages=[
+            {"role": "user", "content": "第一问"},
+            {"role": "assistant", "content": "第一答"},
+        ],
+    )
+    resp = client.get(f"/api/tasks/{task_id}/conversation", headers=created_user.headers)
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["messages"]
+    assert items, "project_messages 应至少返回 2 条历史消息"
+    indexes = [item["context_index"] for item in items]
+    # 系统指令块 context_index 为 None；normalized context 条目按 0..n 标记。
+    assert [i for i in indexes if i is not None] == [0, 1]

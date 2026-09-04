@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from ..connectors.base import Connector, DeliveryEnvelope
 from ..connectors.manager import ConnectionManager
+from ..core.logging import log_event
 from ..core.time import iso_utc
 from ..domain.connections import ERROR_CONFIG
 from ..domain.enums import ActorType, TaskEventType
@@ -59,6 +60,15 @@ class DeliveryService:
             )
         connector = self._manager().get_instance(connection.id)
         if connector is None:
+            log_event(
+                "warning",
+                "delivery.offline",
+                "投递时连接离线",
+                connection_id=connection.id,
+                task_id=task.id,
+                platform=connection.platform,
+                via_outbox=via_outbox,
+            )
             return DeliveryOutcome(
                 connection_id=connection.id,
                 platform=connection.platform,
@@ -110,6 +120,16 @@ class DeliveryService:
             if via_outbox:
                 self.repo.mark_outbox_failed(session, connection.id, task.id, str(error_code))
             self._add_event(session, task, connection, delivered=False, error_code=str(error_code))
+            log_event(
+                "warning",
+                "delivery.failed",
+                "IM 投递失败",
+                connection_id=connection.id,
+                task_id=task.id,
+                platform=connection.platform,
+                error_code=str(error_code),
+                via_outbox=via_outbox,
+            )
             return DeliveryOutcome(
                 connection_id=connection.id,
                 platform=connection.platform,
@@ -120,6 +140,15 @@ class DeliveryService:
         if via_outbox:
             self.repo.mark_outbox_delivered(session, connection.id, task.id)
         self._add_event(session, task, connection, delivered=True)
+        log_event(
+            "info",
+            "delivery.delivered",
+            "IM 投递成功",
+            connection_id=connection.id,
+            task_id=task.id,
+            platform=connection.platform,
+            via_outbox=via_outbox,
+        )
         return DeliveryOutcome(
             connection_id=connection.id,
             platform=connection.platform,
@@ -144,8 +173,25 @@ class DeliveryService:
         try:
             await connector.deliver(envelope)
             delivered = True
+            log_event(
+                "info",
+                "delivery.delivered",
+                "IM 投递成功（异步推送）",
+                connection_id=connection_id,
+                task_id=task_id,
+                via_outbox=via_outbox,
+            )
         except Exception as exc:  # noqa: BLE001
             error_code = str(getattr(exc, "code", ERROR_CONFIG))
+            log_event(
+                "warning",
+                "delivery.failed",
+                "IM 投递失败（异步推送）",
+                connection_id=connection_id,
+                task_id=task_id,
+                error_code=error_code,
+                via_outbox=via_outbox,
+            )
         with SessionLocal() as session:
             task = session.get(TaskRow, task_id)
             connection = session.get(ImConnection, connection_id)

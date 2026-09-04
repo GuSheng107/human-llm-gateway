@@ -16,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ...core.db import Base
-from ...domain.enums import AssistantRole
+from ...domain.enums import AssistantMessageKind, AssistantRole
 from .base import TimestampMixin, sa_enum, utc_now
 
 
@@ -48,6 +48,11 @@ class AssistantMessage(Base):
         ForeignKey("assistant_sessions.id", ondelete="CASCADE"), nullable=False
     )
     role: Mapped[AssistantRole] = mapped_column(sa_enum(AssistantRole), nullable=False)
+    kind: Mapped[AssistantMessageKind] = mapped_column(
+        sa_enum(AssistantMessageKind),
+        nullable=False,
+        default=AssistantMessageKind.NORMAL,
+    )
     content_json: Mapped[str] = mapped_column(Text, nullable=False)
     page_context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     page_route: Mapped[str | None] = mapped_column(String(255), nullable=True)
