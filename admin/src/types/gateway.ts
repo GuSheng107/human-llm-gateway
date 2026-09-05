@@ -153,8 +153,6 @@ export interface ApiKey {
   created_at: string;
   owner_user_id: string | null;
   owner_username: string | null;
-  /** 完整明文，仅 owner 本人视角返回；admin 监管他人 Key 时为 null。 */
-  key?: string | null;
 }
 
 export interface ApiKeyCreated extends ApiKey {

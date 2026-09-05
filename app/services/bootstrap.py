@@ -14,41 +14,6 @@ from ..repositories.catalog import FakeModelRepository
 from ..repositories.system import SystemSettingRepository
 from ..repositories.users import UserRepository
 
-# 旧库可幂等补齐的列：idempotent ALTER，避免小字段新增阻塞现有用户。
-# 顺序敏感：先加新列再写回 sentinel。
-_IDEMPOTENT_COLUMN_PATCHES: list[tuple[str, str, str]] = [
-    (
-        "assistant_messages",
-        "kind",
-        "VARCHAR(20) NOT NULL DEFAULT 'normal'",
-    ),
-]
-
-
-def _apply_idempotent_column_patches(session: Session) -> None:
-    """对老库执行幂等的 ADD COLUMN；新库由 create_all 建出，PRAGMA 检测不到。
-
-    若旧库连目标表都未建出，直接跳过：列补齐只发生在已具备该表的老库上。
-    shape 校验会在 _validate_schema_shape 阶段统一拒绝增量/不匹配的表结构。
-    """
-    connection = session.connection()
-    if connection.dialect.name != "sqlite":
-        return
-    existing_tables = {
-        row[1]
-        for row in connection.exec_driver_sql(
-            "SELECT name, name FROM sqlite_master WHERE type='table'"
-        ).all()
-    }
-    for table, column, decl in _IDEMPOTENT_COLUMN_PATCHES:
-        if table not in existing_tables:
-            continue
-        rows = connection.exec_driver_sql(f"PRAGMA table_info({table})").all()
-        if any(row[1] == column for row in rows):
-            continue
-        connection.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-
-
 _SENTINEL_PLAINTEXT = "human-llm-gateway-sentinel"
 _SENTINEL_PURPOSE = "sentinel"
 
@@ -70,12 +35,6 @@ class BootstrapService:
             Base.metadata.create_all(bind=bind)
             self._seed(session, settings)
             return
-
-        # 老库先做幂等补列，再走严格的 shape 校验。
-        _apply_idempotent_column_patches(session)
-        session.commit()
-        inspector = inspect(bind)
-        existing_tables = set(inspector.get_table_names())
 
         self._validate_schema_shape(inspector, existing_tables)
 

@@ -84,3 +84,17 @@ def test_legacy_schema_fails_without_mutation(engine, settings) -> None:
         BootstrapService().initialize(session, settings)
 
     assert set(inspect(engine).get_table_names()) == before == {"system_settings"}
+
+
+def test_missing_column_is_rejected_without_repair(engine, settings) -> None:
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+    with SessionLocal() as session:
+        BootstrapService().initialize(session, settings)
+    with engine.begin() as connection:
+        connection.exec_driver_sql("ALTER TABLE assistant_messages DROP COLUMN kind")
+    before = {column["name"] for column in inspect(engine).get_columns("assistant_messages")}
+    with SessionLocal() as session, pytest.raises(SchemaVersionMismatch, match="缺少列"):
+        BootstrapService().initialize(session, settings)
+    after = {column["name"] for column in inspect(engine).get_columns("assistant_messages")}
+    assert before == after
+    assert "kind" not in after

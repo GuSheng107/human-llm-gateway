@@ -5,7 +5,7 @@
 - human_fallback_llm：人工超时后触发一次 fallback；人工先到则不触发。
 - fallback 转发失败（上游错误/声明丢失）走终态，不重试。
 - 身份 system 指令：description 派生 + 兜底；追加在调用方 system 之后。
-- 跨协议转发按矩阵返回 unsupported（对外通用 500，不暴露细节）。
+- 跨协议不能等价的参数返回协议兼容 400，不暴露内部转发细节。
 - 上游 tool call 只写入 ReplyDraft，不被执行。
 """
 
@@ -15,6 +15,8 @@ import asyncio
 import json
 from typing import Any
 from unittest.mock import patch
+
+import pytest
 
 import app.core.db as database
 from app.domain.enums import InferenceProtocol, TaskState
@@ -392,6 +394,11 @@ def _make_task(api_key_id: int, user_id: int) -> int:
 
 
 def test_fallback_triggers_once_after_human_timeout(client, created_user) -> None:
+    from datetime import timedelta
+
+    from app.core.time import utc_now
+    from app.services.task_sweeper import TaskSweeper
+
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     key = _create_strategy_key(
         client,
@@ -400,11 +407,17 @@ def test_fallback_triggers_once_after_human_timeout(client, created_user) -> Non
         llm_config_id=int(cfg["id"]),
     )
     task_id = _make_task(int(key["id"]), created_user.user_id)
+    with database.SessionLocal() as session:
+        session.get(RequestTask, task_id).human_deadline_at = utc_now() - timedelta(seconds=5)
+        session.commit()
 
     call_count = {"n": 0}
 
     async def fake_post(**kwargs: Any) -> dict[str, Any]:
         call_count["n"] += 1
+        # 在真实转发声明之后运行后台扫描，模拟慢上游遇到扫描 tick。
+        with database.SessionLocal() as session:
+            assert TaskSweeper().sweep_once(session)["timed_out"] == 0
         return _chat_upstream_ok(**kwargs)
 
     def run_forward() -> Any:
@@ -538,37 +551,95 @@ def test_cross_protocol_forward_chat_to_anthropic(client, created_user) -> None:
     assert row.state is TaskState.COMPLETED
 
 
-def test_cross_protocol_forward_rejects_unequivalent_field(client, created_user) -> None:
-    """跨协议不可等价字段（response_format 转 Anthropic）整请求拒绝。"""
+@pytest.mark.parametrize("strategy", ["llm", "human_fallback_llm"])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    ("path", "protocol", "payload"),
+    [
+        (
+            "/v1/chat/completions",
+            "anthropic_messages",
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "response_format": {"type": "json_object"},
+            },
+        ),
+        (
+            "/v1/responses",
+            "anthropic_messages",
+            {"input": "hi", "text": {"format": {"type": "json_object"}}},
+        ),
+        (
+            "/v1/messages",
+            "openai_chat",
+            {
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 2048,
+                "thinking": {"type": "enabled", "budget_tokens": 1024},
+            },
+        ),
+    ],
+)
+def test_cross_protocol_forward_rejects_unequivalent_field(
+    client, created_user, monkeypatch, strategy, stream, path, protocol, payload
+) -> None:
+    """三协议与两种策略均返回 400，释放名额且不访问真实上游。"""
+    from datetime import timedelta
+
+    from app.core.time import utc_now
+    from app.services import llm_upstream
+
     cfg = _create_llm_config(
         client,
         created_user.headers,
-        _llm_body(name="anthro-strict", protocol="anthropic_messages"),
+        _llm_body(name="cross-strict", protocol=protocol),
     )
     key = _create_strategy_key(
         client,
         created_user.headers,
-        strategy="llm",
+        strategy=strategy,
         llm_config_id=int(cfg["id"]),
     )
 
-    async def fake_post(**kwargs: Any) -> dict[str, Any]:
+    def forbidden_upstream(**kwargs: Any) -> Any:
         raise AssertionError("不可等价字段不应调用上游")
 
-    with patch(_UPSTREAM_ANTHROPIC, side_effect=fake_post):
-        resp = client.post(
-            "/v1/chat/completions",
-            headers=_bearer(key["plaintext"]),
-            json={
-                "model": "deepseek-v4-pro",
-                "messages": [{"role": "user", "content": "hi"}],
-                "response_format": {"type": "json_object"},
-            },
-        )
-    # 上游不可达 -> 转发失败 -> 对外通用 500（不暴露 matrix 细节）
-    assert resp.status_code == 500
+    for method in (
+        "post_chat_completions",
+        "post_responses",
+        "post_anthropic_messages",
+        "stream_chat_completions",
+        "stream_responses",
+        "stream_anthropic_messages",
+    ):
+        monkeypatch.setattr(llm_upstream, method, forbidden_upstream)
+    monkeypatch.setattr("app.api.inference._now", lambda: utc_now() + timedelta(hours=1))
+    resp = client.post(
+        path,
+        headers=_bearer(key["plaintext"]),
+        json={"model": "deepseek-v4-pro", "stream": stream, **payload},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["type"] == "invalid_request_error"
+    if path != "/v1/messages":
+        assert resp.json()["error"]["code"] == "unsupported_parameter"
+    assert not any(word in resp.text.lower() for word in ("fallback", "upstream", "protocols"))
     row = _latest_task(int(key["id"]))
     assert row.state is TaskState.FAILED
+    assert row.public_error_code == "unsupported_parameter"
+    assert row.slot_released_at is not None
+    with database.SessionLocal() as session:
+        assert session.get(User, created_user.user_id).active_task_count == 0
+
+
+def test_identity_preserves_chat_system_content_blocks() -> None:
+    body = {"messages": [{"role": "system", "content": [{"type": "text", "text": "规则"}]}]}
+    result = _inject_identity_chat(body, "[fake] identity")
+    assert body["messages"][0]["content"] == [{"type": "text", "text": "规则"}]
+    assert result["messages"][0]["content"] == [
+        {"type": "text", "text": "规则"},
+        {"type": "text", "text": "[fake] identity"},
+    ]
 
 
 def test_inference_to_llm_protocol_mapping() -> None:

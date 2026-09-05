@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { OverlayHeader, useEscapeKey } from "./Overlay";
+import { OverlayHeader, useDialogFocus } from "./Overlay";
 
 interface DrawerProps {
   title: string;
@@ -18,7 +18,7 @@ export function Drawer({
   width = "max-w-2xl",
   side = "right",
 }: DrawerProps) {
-  useEscapeKey(onClose);
+  const dialogRef = useDialogFocus(onClose);
 
   return (
     <div
@@ -26,6 +26,8 @@ export function Drawer({
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <aside
+        ref={dialogRef}
+        tabIndex={-1}
         className={`absolute inset-y-0 flex w-full ${width} flex-col bg-white shadow-drawer ${
           side === "left"
             ? "left-0 border-r border-slate-200 animate-slide-in-left"

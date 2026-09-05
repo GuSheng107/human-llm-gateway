@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import delete, or_
 
+from ..core.background import run_blocking_to_completion
 from ..core.constants import DATA_RETENTION_DAYS, DATA_RETENTION_INTERVAL_SECONDS
 from ..core.logging import bind_trace_id, log_event, new_trace_id, reset_request_id
 from ..core.time import utc_now
@@ -126,7 +127,7 @@ class DataRetentionService:
         """启动时先清理一次，之后每七天执行一轮。"""
         while True:
             try:
-                await asyncio.get_running_loop().run_in_executor(None, self._cleanup)
+                await run_blocking_to_completion(self._cleanup)
             except asyncio.CancelledError:
                 raise
             except Exception:

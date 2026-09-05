@@ -49,10 +49,12 @@ def create_app() -> FastAPI:
         from ..services.connection_service import ConnectionService
         from ..services.connection_watchdog import connection_watchdog
         from ..services.data_retention import data_retention
+        from ..services.task_lifecycle import cancel_active_tasks
         from ..services.task_sweeper import task_sweeper
 
         with SessionLocal() as db:
             BootstrapService().initialize(db, get_settings())
+        await asyncio.to_thread(cancel_active_tasks, "server_restart")
         readiness = application.state.readiness
         readiness.mark_bootstrap_complete()
         # 结构化日志异步落库线程 + 普通 logging 告警接入 app_logs。
@@ -88,15 +90,20 @@ def create_app() -> FastAPI:
                     pass
             # 优雅关闭：停止全部连接器实例，并刷完日志队列。
             await manager.stop_all()
+            await asyncio.to_thread(cancel_active_tasks, "server_shutdown")
             stop_log_persistence()
 
     app = FastAPI(title="Human LLM Gateway", version="0.6.0", lifespan=lifespan)
     from ..core.readiness import ReadinessState
 
     app.state.readiness = ReadinessState()
+    from ..core.metrics import MetricsMiddleware, MetricsState
+
+    app.state.metrics = MetricsState()
     app.add_middleware(RequestIdMiddleware)
     # 请求体大小上限必须在鉴权与解析之前生效，因此注册在最外层。
     app.add_middleware(BodySizeLimitMiddleware)
+    app.add_middleware(MetricsMiddleware, state=app.state.metrics)
     install_error_handlers(app)
 
     app.include_router(auth_router)
@@ -124,6 +131,15 @@ def create_app() -> FastAPI:
         from ..core.config import get_settings
 
         return {"status": "ok", "service": get_settings().app_name}
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Any:
+        from fastapi.responses import Response
+
+        return Response(
+            app.state.metrics.render(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
 
     @app.get("/readyz")
     def readiness() -> Any:

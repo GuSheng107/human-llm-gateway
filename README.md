@@ -20,7 +20,7 @@
 
 Drop it in, and what you type in your chat becomes a standard LLM API response.
 
-> **Project status: COMPLETE.** All planned milestones (M0–M14) are delivered and deployed. The repository is now in maintenance mode; see the roadmap below.
+> **Project status: invitation-only beta.** Core features are implemented for a single-instance deployment. Verify real IM accounts, LLM upstreams and the public proxy using the [deployment checklist](docs/DEPLOYMENT.md) before inviting users. The roadmap records remaining acceptance work.
 
 </div>
 
@@ -122,8 +122,8 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
 ### Prerequisites
 
-- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
-- Node.js 18+
+- Python 3.12 with [uv](https://docs.astral.sh/uv/) (pinned by `.python-version`)
+- Node.js 24; minimum compatible range: `^20.19.0 || >=22.12.0`
 
 ### Three Steps
 
@@ -144,19 +144,19 @@ echo "GATEWAY_PUBLIC_HOSTS=gateway.example.com" >> .env
 #    the backend serves the built SPA itself)
 uv sync --locked
 (cd admin && npm ci && npm run build)
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+uv run --locked uvicorn app.api:app --host 127.0.0.1 --port 8000 --ws-max-size 1048576 --timeout-graceful-shutdown 30
 ```
 
 Open **http://127.0.0.1:8000** — the console and the API share one port. The first run auto-creates the database and seeds default system models. Log in with your admin account, change the password, and start issuing invitations.
 
 ### 🚀 Deployment status
 
-The current release has been deployed and is intended to run as a single FastAPI process serving the built React console. Keep `.env`, the database, logs, and the container runtime configuration outside version control. Before starting a new instance, build the frontend and verify `GET /healthz`:
+Run one FastAPI process serving the built React console; multiple workers or replicas are unsupported. Keep `.env`, the database and logs outside version control. See [Deployment and operations](docs/DEPLOYMENT.md) for TLS, long request timeouts, service management, online backup and restore. Verify both probes after startup:
 
 ```bash
 cd admin && npm ci && npm run build
 cd ..
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+uv run --locked uvicorn app.api:app --host 127.0.0.1 --port 8000 --ws-max-size 1048576 --timeout-graceful-shutdown 30
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8000/readyz
 ```
@@ -169,15 +169,15 @@ High-frequency records are retained for seven days. The service cleans records o
 ### Five-Minute Tour
 
 ```bash
-# ① Create an API key in the console, pick a Fake Model (e.g. deepseek-v4-pro)
+# ① Sign in as a regular user and create an API key (e.g. select deepseek-v4-pro)
 
 # ② Call it just like OpenAI
 export OPENAI_API_KEY="sk-xxxx"    # gateway-issued key
 export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 
-python -c "
+uv run --locked python -c "
 from openai import OpenAI
-client = OpenAI()
+client = OpenAI(timeout=3600, max_retries=0)
 stream = client.chat.completions.create(
     model='deepseek-v4-pro',          # a Fake Model
     messages=[{'role': 'user', 'content': 'Hello!'}],
@@ -203,8 +203,8 @@ for chunk in stream:
 | M7 | LLM configs · draft generation · auto-forwarding · cross-protocol matrix · streaming | ✅ |
 | M8 | Global web assistant (context redaction) | ✅ |
 | M9 | Dashboard stats · log auditing · UX polish | ✅ |
-| M10 | Deployment & ops baseline | ✅ |
-| M11 | Release acceptance | ✅ |
+| M10 | Deployment & ops baseline | Baseline delivered; online key rotation remains |
+| M11 | Release acceptance | Local quality gates; real integration checks required |
 | M12 | Tool-call passthrough (sandbox removed) | ✅ |
 | M13 | Trace-linked logs, IM ownership isolation, retention | ✅ |
 | M14 | Unified reply workbench | ✅ |

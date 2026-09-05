@@ -236,3 +236,76 @@ def test_im_reply_events_carry_owner_user_id(client, created_user, created_key) 
         late = _events(task_id, TaskEventType.REPLY_REJECTED_LATE)
         assert late, "晚到应有 reply_rejected_late 事件"
         assert all(e.actor_user_id == created_user.user_id for e in late)
+
+
+def test_im_tools_share_web_validation_and_first_reply_wins(
+    client, created_user, created_key
+) -> None:
+    from types import SimpleNamespace
+
+    from app.connectors.base import InboundMessage
+    from app.domain.values import ReplyDraft
+    from app.services.connection_service import ConnectionService
+    from app.services.task_service import TaskService
+
+    conn_id = _make_connection(client, created_user.headers, "tool-conn")
+    task_id = _make_task(created_key.id, created_user.user_id, delivery="web", strategy="human")
+    with database.SessionLocal() as session:
+        task = session.get(RequestTask, task_id)
+        normalized = json.loads(task.normalized_request_json)
+        normalized["tools"] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"query": {"type": "string"}},
+                        "required": ["query"],
+                    },
+                },
+            }
+        ]
+        task.normalized_request_json = json.dumps(normalized)
+        session.commit()
+        row = session.get(ImConnection, conn_id)
+        service = ConnectionService()
+        for index, (name, arguments) in enumerate(
+            [
+                ("undeclared", '{"query":"hi"}'),
+                ("search", '{"query":1}'),
+            ]
+        ):
+            result = service._submit_task_reply(
+                session,
+                row=row,
+                message=InboundMessage(
+                    external_message_id=f"bad-{index}",
+                    sender_external_id="sender",
+                    reply_to_public_id=task.public_id,
+                    text=f"::: tool caller-id {name}\n{arguments}\n:::",
+                ),
+                receipt=SimpleNamespace(task_id=None),
+            )
+            session.commit()
+            assert result.value == "rejected"
+            assert task.response_payload_json is None
+        result = service._submit_task_reply(
+            session,
+            row=row,
+            message=InboundMessage(
+                external_message_id="valid",
+                sender_external_id="sender",
+                reply_to_public_id=task.public_id,
+                text='::: tool caller-id search\n{"query":"hi"}\n:::',
+            ),
+            receipt=SimpleNamespace(task_id=None),
+        )
+        session.commit()
+        assert result.value == "accepted"
+        session.refresh(task)
+        actual = ReplyDraft.model_validate_json(task.response_payload_json)
+        expected = TaskService.normalize_reply_draft(task, actual)
+        assert actual == expected
+        assert actual.tool_calls[0].id == "call_01"
+        assert actual.tool_calls[0].arguments == {"query": "hi"}

@@ -4,8 +4,9 @@
 未被检测时循环消失，任务会永远停在等待/转发/输出态并占用活动名额
 （上限 10 个，会被卡满）。本服务周期性扫描收敛两类残留：
 
-- WAITING_HUMAN / FORWARDING_LLM 且人工截止已过 -> TIMED_OUT；
-  与等待循环超时路径同一语义（allowed_sources 防人工先到覆盖）。
+- WAITING_HUMAN 人工截止已过 -> TIMED_OUT；自动转发策略留出声明宽限。
+- FORWARDING_LLM 超过独立的上游总时长预算与收敛宽限 -> TIMED_OUT；
+  人工截止时间不再限制正在生成的 LLM 回复。
 - RESPONSE_READY / RESPONDING 长时间无推进 -> CANCELLED
   （结果已落库但调用方已消失，宽限期后按断开取消释放名额）。
 
@@ -19,12 +20,13 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from ..core.constants import LLM_MAX_STREAM_SECONDS
 from ..core.logging import log_event
 from ..core.time import utc_now
-from ..domain.enums import TaskState
+from ..domain.enums import ReplyStrategy, TaskState
 from ..repositories.models import RequestTask
 from .inference_service import InferenceService
 
@@ -32,6 +34,9 @@ logger = logging.getLogger(__name__)
 
 # 扫描周期（秒）
 SWEEP_INTERVAL_SECONDS = 15.0
+# 等待循环每 0.5 秒声明 fallback；收敛器不能在截止时抢走正常转发权。
+FALLBACK_CLAIM_GRACE_SECONDS = 2 * SWEEP_INTERVAL_SECONDS
+STALE_FORWARD_GRACE_SECONDS = LLM_MAX_STREAM_SECONDS + FALLBACK_CLAIM_GRACE_SECONDS
 # 输出态（response_ready / responding）无推进视为调用方已消失的宽限（秒）。
 STALE_OUTPUT_GRACE_SECONDS = 600
 # 单轮单路径最大处理数（防御长事务）。
@@ -52,9 +57,22 @@ class TaskSweeper:
             session.scalars(
                 select(RequestTask)
                 .where(
-                    RequestTask.state.in_([TaskState.WAITING_HUMAN, TaskState.FORWARDING_LLM]),
-                    RequestTask.human_deadline_at.is_not(None),
-                    RequestTask.human_deadline_at <= now,
+                    or_(
+                        and_(
+                            RequestTask.state == TaskState.WAITING_HUMAN,
+                            RequestTask.human_deadline_at <= now,
+                            or_(
+                                RequestTask.reply_strategy_snapshot == ReplyStrategy.HUMAN,
+                                RequestTask.human_deadline_at
+                                <= now - timedelta(seconds=FALLBACK_CLAIM_GRACE_SECONDS),
+                            ),
+                        ),
+                        and_(
+                            RequestTask.state == TaskState.FORWARDING_LLM,
+                            RequestTask.updated_at
+                            <= now - timedelta(seconds=STALE_FORWARD_GRACE_SECONDS),
+                        ),
+                    ),
                     RequestTask.slot_released_at.is_(None),
                 )
                 .order_by(RequestTask.id.asc())
@@ -107,7 +125,9 @@ class TaskSweeper:
         while True:
             await asyncio.sleep(SWEEP_INTERVAL_SECONDS)
             try:
-                await asyncio.get_running_loop().run_in_executor(None, self._sweep)
+                from ..core.background import run_blocking_to_completion
+
+                await run_blocking_to_completion(self._sweep)
             except asyncio.CancelledError:
                 raise
             except Exception:

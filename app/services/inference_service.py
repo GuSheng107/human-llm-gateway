@@ -238,6 +238,7 @@ class InferenceService:
         state: TaskState,
         *,
         allowed_sources: frozenset[TaskState] | set[TaskState] | None = None,
+        public_error: DomainErrorCode | None = None,
     ) -> bool:
         """推进到终态并幂等释放名额（只有裁决成功方才扣减用户计数）。
 
@@ -256,7 +257,9 @@ class InferenceService:
                 TaskState.TIMED_OUT: TaskEventType.TIMED_OUT,
                 TaskState.CANCELLED: TaskEventType.CANCELLED,
             }[state]
-            public_code = _TERMINAL_PUBLIC_ERROR_CODE.get(state)
+            public_code = (
+                public_error.value if public_error else _TERMINAL_PUBLIC_ERROR_CODE.get(state)
+            )
             if public_code is not None:
                 # release_slot_to_terminal 走 Core UPDATE 不回填 ORM 对象，
                 # 需显式 set，使同一 session 后续视图/事件读取一致。

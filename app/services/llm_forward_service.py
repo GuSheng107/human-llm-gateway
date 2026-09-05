@@ -5,9 +5,8 @@
 - `human_fallback_llm` 策略：人工等待超时后通过 claim_fallback 原子声明
   一次转发权（WAITING_HUMAN -> FORWARDING_LLM），失败即终态 TIMED_OUT，
   不重试。
-- 仅同协议转发（Chat/Responses -> openai_chat；Anthropic -> anthropic）；
-  跨协议返回 400 `unsupported_parameter`（完整字段矩阵见 docs/API_CONTRACT.md
-  §12.6，跨协议转换在后续阶段逐项开放）。
+- 同协议保留原始字段；跨协议按字段矩阵等价转换，不能等价的参数返回
+  400 `unsupported_parameter`（docs/API_CONTRACT.md §12.6）。
 - 身份 system 指令：从 Fake Model description 派生，追加在调用方已有
   system 内容之后（§12.4 请求保真）。
 - 上游响应解析为统一 ReplyDraft；响应 model 由既有渲染器改写为 Fake Model。
@@ -94,9 +93,14 @@ def _inject_identity_chat(body: dict[str, Any], identity: str) -> dict[str, Any]
     messages = list(body.get("messages") or [])
     for index, message in enumerate(messages):
         if message.get("role") == "system":
+            content = message.get("content")
             merged = {
                 **message,
-                "content": f"{message.get('content') or ''}\n\n{identity}",
+                "content": (
+                    [*content, {"type": "text", "text": identity}]
+                    if isinstance(content, list)
+                    else f"{content or ''}\n\n{identity}"
+                ),
             }
             messages[index] = merged
             return {**body, "messages": messages}
@@ -216,11 +220,20 @@ class LlmForwardService:
         )
 
         try:
-            cfg, fake_model = self.resolve_config(session, task)
-            if stream:
-                chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
-            else:
-                draft = await self._call_upstream(session, task, cfg, fake_model)
+            import asyncio
+
+            from ..core.constants import LLM_MAX_STREAM_SECONDS
+
+            # httpx 的 timeout 只限制单次 I/O；流式和非流式都须有总预算。
+            async with asyncio.timeout(LLM_MAX_STREAM_SECONDS):
+                cfg, fake_model = self.resolve_config(session, task)
+                if stream:
+                    chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
+                else:
+                    draft = await self._call_upstream(session, task, cfg, fake_model)
+        except TimeoutError:
+            log_event("warning", "llm.forward_timeout", "LLM 转发总时长超限", task_id=task.id)
+            return False, None, DomainErrorCode.REQUEST_TIMEOUT.value
         except DomainError as exc:
             log_event(
                 "warning",

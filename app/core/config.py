@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     # 指回本网关 /v1 形成自指转发链，绕过人工回复流程。
     gateway_public_hosts: str = ""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("app_secret")
     @classmethod

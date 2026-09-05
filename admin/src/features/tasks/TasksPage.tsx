@@ -144,11 +144,12 @@ export function TasksPage() {
               </button>
             ))}
           </div>
-          <form onSubmit={submitSearch} className="flex min-w-0 flex-1 gap-2">
+          <form onSubmit={submitSearch} className="flex w-full min-w-0 flex-col gap-2 sm:flex-row xl:w-auto xl:flex-1">
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
               className="field-input min-w-0 flex-1 sm:max-w-sm"
+              aria-label="搜索任务编号或模型"
               placeholder="搜索任务编号或模型"
             />
             <select
@@ -158,6 +159,7 @@ export function TasksPage() {
                 setPage(1);
               }}
               className="field-input sm:w-44"
+              aria-label="任务状态"
             >
               <option value="">全部状态</option>
               {STATE_FILTER_OPTIONS.map((option) => (

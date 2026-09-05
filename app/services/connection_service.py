@@ -1107,8 +1107,11 @@ class ConnectionService:
         draft = parse_reply(text)
         if is_empty_draft(draft):
             return InboundResult.UNHANDLED
-        # IM 入口本期不允许携带 tool_call（连接器改造在下一迭代）；带调用直接拒绝。
-        if draft.tool_calls:
+        from .task_service import TaskService
+
+        try:
+            draft = TaskService.normalize_reply_draft(task, draft, source="IM 回复")
+        except DomainError:
             self._add_task_event(
                 session,
                 task_id=task.id,
@@ -1118,7 +1121,7 @@ class ConnectionService:
                 payload={
                     "source": "im",
                     "connection_id": row.id,
-                    "reason": "tool_call_not_supported",
+                    "reason": "invalid_tool_call",
                 },
             )
             log_event(
@@ -1128,7 +1131,7 @@ class ConnectionService:
                 task_id=task.id,
                 connection_id=row.id,
                 source="im",
-                reason="tool_call_not_supported",
+                reason="invalid_tool_call",
             )
             return InboundResult.REJECTED
         accepted = self.tasks.first_reply_wins(
