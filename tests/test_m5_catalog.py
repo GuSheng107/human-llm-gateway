@@ -53,9 +53,9 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
     assert pro["context_window"] == 1_000_000
     assert "tools" in pro["capabilities"]
     assert pro["billing_tier"] == "pay_as_you_go"
-    assert pro["endpoint_type"] == "openai_chat"
+    assert pro["endpoint_types"] == ["openai_chat"]
     claude = seeded["claude-fable-5"]
-    assert claude["endpoint_type"] == "anthropic_messages"
+    assert claude["endpoint_types"] == ["anthropic_messages"]
     for model_id in (
         "gpt-6-astra",
         "gpt-5.6-sol",
@@ -65,11 +65,11 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
         "gpt-5.4",
     ):
         gpt = seeded[model_id]
-        assert gpt["endpoint_type"] == "openai_responses"
+        assert gpt["endpoint_types"] == ["openai_chat", "openai_responses"]
         assert gpt["context_window"] == 1_050_000
         assert gpt["max_output_tokens"] == 128_000
 
-    # 单一原生端点筛选。
+    # 多值原生端点按包含关系筛选。
     anthropic_only = client.get(
         "/api/fake-models", headers=admin_headers, params={"endpoint_type": "anthropic_messages"}
     ).json()
@@ -80,7 +80,7 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
         "claude-sonnet-5",
         "claude-haiku-4-5",
     } <= anthropic_ids
-    # OpenAI 种子的原生端点不是 Anthropic，不应出现在筛选中。
+    # OpenAI 种子不包含 Anthropic，不应出现在筛选中。
     assert "gpt-5.5" not in anthropic_ids
     openai_only = client.get(
         "/api/fake-models", headers=admin_headers, params={"endpoint_type": "openai_responses"}
@@ -115,13 +115,13 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
             "max_output_tokens": 32_000,
             "capabilities": ["tools", "vision"],
             "billing_tier": "subscription",
-            "endpoint_type": "openai_responses",
+            "endpoint_types": ["openai_chat", "openai_responses"],
             "tags": ["测试", "多模态"],
         },
     ).json()
     assert created["input_price_per_million"] == 1.5
     assert created["billing_tier"] == "subscription"
-    assert created["endpoint_type"] == "openai_responses"
+    assert created["endpoint_types"] == ["openai_chat", "openai_responses"]
     assert created["tags"] == ["测试", "多模态"]
 
     updated = client.patch(
@@ -360,35 +360,48 @@ def test_group_ownership_isolation(client, admin_headers) -> None:
     assert any(item["id"] == group["id"] for item in admin_groups)
 
 
-def test_endpoint_type_validation(client, admin_headers) -> None:
-    """原生端点是单值枚举，创建与更新均拒绝未知协议。"""
+def test_endpoint_types_validation(client, admin_headers) -> None:
+    """原生端点可多选、会去重，且拒绝空列表和未知协议。"""
     unknown = client.post(
         "/api/fake-models",
         headers=admin_headers,
-        json={"model_id": "bad-endpoint", "endpoint_type": "not_a_protocol"},
+        json={"model_id": "bad-endpoint", "endpoint_types": ["not_a_protocol"]},
     )
     assert unknown.status_code == 400
 
     created = client.post(
         "/api/fake-models",
         headers=admin_headers,
-        json={"model_id": "single-endpoint", "endpoint_type": "anthropic_messages"},
+        json={
+            "model_id": "multi-endpoint",
+            "endpoint_types": ["anthropic_messages", "anthropic_messages"],
+        },
     ).json()
-    assert created["endpoint_type"] == "anthropic_messages"
+    assert created["endpoint_types"] == ["anthropic_messages"]
 
     updated = client.patch(
         f"/api/fake-models/{created['id']}",
         headers=admin_headers,
-        json={"endpoint_type": "openai_responses"},
+        json={"endpoint_types": ["openai_chat", "openai_responses"]},
     ).json()
-    assert updated["endpoint_type"] == "openai_responses"
+    assert updated["endpoint_types"] == ["openai_chat", "openai_responses"]
 
     invalid_update = client.patch(
         f"/api/fake-models/{created['id']}",
         headers=admin_headers,
-        json={"endpoint_type": "not_a_protocol"},
+        json={"endpoint_types": ["not_a_protocol"]},
     )
     assert invalid_update.status_code == 400
+
+    empty_update = client.patch(
+        f"/api/fake-models/{created['id']}",
+        headers=admin_headers,
+        json={"endpoint_types": []},
+    )
+    assert empty_update.status_code == 400
+
+    defaulted = _model(client, admin_headers, "default-endpoint")
+    assert defaulted["endpoint_types"] == ["openai_chat"]
 
 
 def test_function_calling_capability_merged_into_tools(client, admin_headers) -> None:

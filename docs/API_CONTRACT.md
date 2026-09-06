@@ -310,7 +310,7 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 
 Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型或回复策略。管理员创建的系统模型对全部用户可见；普通用户创建的私有模型只对所有者可见，其他普通用户即使猜到 ID 也返回 404。管理员治理私有模型时不能把它改绑或转授给其他用户。
 
-每个 Fake Model 暴露一个 `endpoint_type`（`openai_chat`、`openai_responses` 或 `anthropic_messages`），表示模型目录中的原生或代表端点；`capabilities` 是同类展示标签。两者都不参与推理准入。调用方可通过网关支持的任一协议请求当前 API Key 有效集合中的任意 Fake Model，包括 Claude Code 经 `/v1/messages` 调用原生端点为 OpenAI 的模型。模型是否可用只由可见范围、分组、Key 选择和启用状态决定。
+每个 Fake Model 暴露非空的 `endpoint_types` 数组，元素可为 `openai_chat`、`openai_responses` 或 `anthropic_messages`，表示模型目录中的一个或多个原生端点。例如 GPT 同时支持 OpenAI Chat Completions 与 Responses，可返回两个值；Claude 原生模型通常只返回 Anthropic Messages。`capabilities` 是同类展示标签，两者都不参与推理准入。调用方可通过网关支持的任一协议请求当前 API Key 有效集合中的任意 Fake Model，包括 Claude Code 经 `/v1/messages` 调用原生端点为 OpenAI 的模型。模型是否可用只由可见范围、分组、Key 选择和启用状态决定。
 
 ### 7.2 模型分组（M5）
 

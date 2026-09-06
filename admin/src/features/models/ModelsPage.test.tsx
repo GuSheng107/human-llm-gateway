@@ -25,7 +25,7 @@ const models = Array.from({ length: 35 }, (_, index) => ({
   max_output_tokens: 8192,
   capabilities: ["streaming"],
   billing_tier: "free",
-  endpoint_type: "openai_chat",
+  endpoint_types: ["openai_chat"],
   logo_url: null,
   tags: ["通用"],
   created_at: "2026-01-01T00:00:00Z",

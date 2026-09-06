@@ -485,7 +485,7 @@ async def test_anthropic_client_can_call_model_with_openai_native_endpoint(
         headers=admin_headers,
         json={
             "model_id": "openai-native-for-claude-code",
-            "endpoint_type": "openai_chat",
+            "endpoint_types": ["openai_chat"],
             "capabilities": [],
         },
     )

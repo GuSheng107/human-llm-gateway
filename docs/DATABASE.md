@@ -296,7 +296,7 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `description` | text nullable | 非敏感说明 |
 | `sort_order` | integer | 默认 0 |
 | `is_enabled` | boolean | 默认 true |
-| `endpoint_types` | json | 当前物理存储列；管理 API 只暴露单一 `endpoint_type`，新建/更新写入单元素数组，存量多值按供应商原生端点收敛展示。该字段只描述模型目录，不参与推理准入 |
+| `endpoint_types` | json | 非空原生端点数组，可同时包含 OpenAI Chat、OpenAI Responses、Anthropic Messages；未指定时默认仅 `openai_chat`。该字段只描述模型目录，不参与推理准入 |
 | `capabilities` | json | 模型广场能力展示标签（vision/tools/thinking/audio/video/streaming 等），不参与推理准入 |
 | `created_by_user_id` | integer | FK users，用于审计 |
 | `created_at` / `updated_at` | datetime | 非空 |

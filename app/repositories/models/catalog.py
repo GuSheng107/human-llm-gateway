@@ -75,8 +75,8 @@ class FakeModel(TimestampMixin, Base):
     billing_tier: Mapped[BillingTier] = mapped_column(
         sa_enum(BillingTier), default=BillingTier.PAY_AS_YOU_GO, nullable=False
     )
-    # 当前数据库保留 JSON 列以兼容已创建的数据；管理契约只暴露一个原生端点。
-    # 该值只用于目录展示，不限制调用方选择任一受支持的网关推理协议。
+    # 模型原生支持的端点协议（可多选）。该元数据用于目录展示与筛选，
+    # 不限制调用方通过网关支持的其他协议请求该 Fake Model。
     endpoint_types: Mapped[list[str]] = mapped_column(
         JSON,
         default=lambda: [ModelEndpointType.OPENAI_CHAT.value],
@@ -85,27 +85,6 @@ class FakeModel(TimestampMixin, Base):
     logo_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
-
-    @property
-    def endpoint_type(self) -> ModelEndpointType:
-        """返回管理端使用的单一原生端点；存量多值按原目录语义收敛。"""
-        values = self.endpoint_types or []
-        preferred = (
-            ModelEndpointType.OPENAI_RESPONSES.value
-            if self.owned_by == "openai"
-            else (
-                ModelEndpointType.ANTHROPIC_MESSAGES.value
-                if self.owned_by == "claude"
-                else ModelEndpointType.OPENAI_CHAT.value
-            )
-        )
-        candidate = preferred if preferred in values else (values[0] if values else preferred)
-        return ModelEndpointType(candidate)
-
-    @endpoint_type.setter
-    def endpoint_type(self, value: ModelEndpointType | str) -> None:
-        endpoint = value if isinstance(value, ModelEndpointType) else ModelEndpointType(value)
-        self.endpoint_types = [endpoint.value]
 
 
 class ModelGroup(TimestampMixin, Base):

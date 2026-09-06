@@ -540,7 +540,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
               {tab === "tools" && (
                 <div className="space-y-3">
                   <p className="text-xs text-slate-400">
-                    选择调用方声明的 tool 后会自动填充对应 JSON Schema 的最小参数骨架；
+                    选择调用方声明的 tool 后会自动填充对应 JSON Schema 的完整参数骨架；
                     工具调用不是必须的，命令执行及其风险由调用方自行承担。
                   </p>
                   {task.tool_definitions.length === 0 && (
@@ -706,7 +706,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
               )}
             </div>
             <p className="border-t border-slate-100 px-4 py-2.5 text-[11px] leading-relaxed text-slate-400">
-              选中工具后会自动生成参数骨架；提交前请补全必填字段。网关不会执行任何工具。
+              选中工具后会自动生成包含全部声明字段的参数骨架；提交前请填写实际参数。网关不会执行任何工具。
             </p>
           </Card>
         </aside>
