@@ -18,7 +18,6 @@ from sqlalchemy.orm import Session
 from ..core.constants import MAX_CONTEXT_CHAIN_DEPTH
 from ..core.logging import get_request_id, log_event
 from ..core.time import utc_now
-from ..domain import capabilities as _capabilities
 from ..domain.enums import (
     ActorType,
     DeliveryMode,
@@ -68,9 +67,7 @@ class InferenceService:
     ) -> RequestTask:
         """创建任务并投递；调用方负责提交事务（失败整体回滚，名额不留存）。"""
         model_row = self.models.resolve(session, key, parsed.model)
-        if model_row is None or protocol.value not in (model_row.endpoint_types or []):
-            # 模型不存在/不可用，或未向该协议开放端点：对外统一 model_not_found，
-            # 不泄露可推断模型可见范围的差异信息。
+        if model_row is None:
             raise DomainError(
                 DomainErrorCode.MODEL_NOT_FOUND,
                 "The requested model does not exist or is not available.",
@@ -82,12 +79,6 @@ class InferenceService:
             previous_task = self._resolve_previous(session, parsed.previous_response_id, key)
 
         normalized = self._build_normalized(session, parsed, previous_task, protocol)
-        _capabilities.enforce_model_capabilities(
-            model_row.capabilities,
-            normalized=normalized,
-            raw_payload=parsed.raw,
-            stream=parsed.stream,
-        )
         self.admission.acquire_slot(session, key, owner)
 
         task = RequestTask(

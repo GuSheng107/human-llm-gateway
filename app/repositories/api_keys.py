@@ -61,7 +61,7 @@ class ApiKeyRepository:
         return rows, total
 
     def find_by_prefix(self, session: Session, key_prefix: str) -> list[ApiKey]:
-        """按前缀缩小鉴权候选集（明文只存盐化哈希，无法直接反查）。"""
+        """按前缀缩小鉴权候选集；鉴权始终校验盐化哈希，不使用可恢复密文。"""
         return list(
             session.scalars(
                 select(ApiKey).where(

@@ -158,7 +158,7 @@ def _verify_salted_digest(secret: str, encoded: str) -> bool:
 
 
 def generate_api_key() -> tuple[str, str, str]:
-    """返回 (明文, 前缀, 哈希)。明文只在创建响应展示一次。"""
+    """返回 (明文, 前缀, 哈希)；调用方负责加密保存可恢复明文。"""
     secret = f"{API_KEY_PREFIX}{secrets.token_urlsafe(API_KEY_RANDOM_BYTES)}"
     prefix = secret[:API_KEY_PREFIX_LENGTH]
     return secret, prefix, _salted_digest(secret)

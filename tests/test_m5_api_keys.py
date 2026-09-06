@@ -57,8 +57,8 @@ def _create_api_key(client, headers, **payload) -> tuple[dict, str]:
     return response, response.json() if response.status_code == 201 else {}
 
 
-def test_api_key_plaintext_only_in_creation_response(client, admin_headers) -> None:
-    """所有者和管理员的后续响应都不能取回完整 Key。"""
+def test_api_key_plaintext_visible_to_owner_not_admin(client, admin_headers) -> None:
+    """所有者可从列表、详情和更新响应取回完整 Key；管理员只能看前缀。"""
     headers = _create_user(client, admin_headers, "key-user")
     response, body = _create_api_key(client, headers, name="完整明文")
     assert response.status_code == 201, response.text
@@ -66,34 +66,32 @@ def test_api_key_plaintext_only_in_creation_response(client, admin_headers) -> N
     assert plaintext.startswith("sk-")
     assert len(plaintext) == 46
 
-    # Owner 本人：离开创建场景后也只能看到前缀。
+    # Owner 本人：后续管理响应仍带完整明文，可显示和复制。
     listed = client.get("/api/api-keys", headers=headers).json()
     item = listed["items"][0]
     assert "plaintext" not in item
     assert item["key_prefix"] == plaintext[:8]
     assert len(item["key_prefix"]) == 8
-    assert "key" not in item
-    assert plaintext not in response_text(listed)
+    assert item["key"] == plaintext
+    detail = client.get(f"/api/api-keys/{item['id']}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["key"] == plaintext
     updated = client.patch(
         f"/api/api-keys/{item['id']}", headers=headers, json={"name": "完整明文"}
     )
     assert updated.status_code == 200
-    assert plaintext not in updated.text
+    assert updated.json()["key"] == plaintext
     with database.SessionLocal() as session:
-        assert session.get(ApiKey, int(item["id"])).key_ciphertext is None
+        ciphertext = session.get(ApiKey, int(item["id"])).key_ciphertext
+        assert ciphertext
+        assert plaintext not in ciphertext
 
     # Admin 监管：能看到该 Key 记录，但不返回完整明文。
     admin_listed = client.get("/api/api-keys", headers=admin_headers).json()
     admin_items = [i for i in admin_listed["items"] if i["name"] == "完整明文"]
     assert admin_items, "admin 应能看到所有用户的 Key"
-    assert "key" not in admin_items[0]
+    assert admin_items[0]["key"] is None
     assert admin_items[0]["key_prefix"] == plaintext[:8]
-
-
-def response_text(payload) -> str:
-    import json
-
-    return json.dumps(payload, ensure_ascii=False)
 
 
 def test_delivery_mode_and_strategy_validation(client, admin_headers) -> None:

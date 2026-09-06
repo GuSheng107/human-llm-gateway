@@ -124,8 +124,9 @@ class DataRetentionService:
             reset_request_id(token)
 
     async def run(self) -> None:
-        """启动时先清理一次，之后每七天执行一轮。"""
+        """启动清理由 lifespan 串行完成；运行期每七天执行一轮。"""
         while True:
+            await asyncio.sleep(DATA_RETENTION_INTERVAL_SECONDS)
             try:
                 await run_blocking_to_completion(self._cleanup)
             except asyncio.CancelledError:
@@ -133,7 +134,6 @@ class DataRetentionService:
             except Exception:
                 logger.exception("data retention cycle failed")
                 log_event("error", "data_retention.cycle_failed", "高频数据清理失败")
-            await asyncio.sleep(DATA_RETENTION_INTERVAL_SECONDS)
 
 
 data_retention = DataRetentionService()

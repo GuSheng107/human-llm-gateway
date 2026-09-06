@@ -91,7 +91,7 @@ server {
 部署者确需本机或内网模型时设置 `LLM_ALLOW_PRIVATE_UPSTREAM=true`。
 
 SDK 示例：`OpenAI(base_url="https://gateway.example.com/v1", api_key=key,
-timeout=3600, max_retries=0)`。`key` 是网关创建时一次性返回的 Key。
+timeout=3600, max_retries=0)`。`key` 可由所有者在 API 管理页按需显示并复制。
 
 ## 3. 服务管理与退出
 

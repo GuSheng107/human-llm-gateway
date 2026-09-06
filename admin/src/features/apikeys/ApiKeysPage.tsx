@@ -65,6 +65,7 @@ export function ApiKeysPage() {
   const [formError, setFormError] = useState("");
   const [saving, setSaving] = useState(false);
   const [created, setCreated] = useState<ApiKeyCreated | null>(null);
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set());
   const isAdmin = user?.role === "admin";
 
   // 第一层候选集：选了分组就收窄为该组成员；未选分组则为全部可见模型。
@@ -146,6 +147,23 @@ export function ApiKeysPage() {
     return groups.find((g) => g.id === groupId)?.name ?? "-";
   };
 
+  const toggleKeyVisible = (id: string) => {
+    setVisibleKeys((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const maskedKey = (key: ApiKey): string => {
+    if (key.key) {
+      const head = key.key.slice(0, Math.max(key.key_prefix.length, 6));
+      return `${head}${"•".repeat(6)}`;
+    }
+    return `${key.key_prefix}…`;
+  };
+
   const openEdit = (key: ApiKey) => {
     setFormError("");
     setForm({
@@ -215,6 +233,21 @@ export function ApiKeysPage() {
     }
   };
 
+  const copyFullKey = async (key: ApiKey) => {
+    if (!key.key) return;
+    if (key.reply_strategy !== "human") {
+      const confirmed = await confirmAction({
+        title: "复制 API Key",
+        message:
+          "该 Key 会把请求转发到真实 LLM 上游，请勿在公开渠道分享，避免被他人盗用消耗额度。",
+        confirmLabel: "我已知晓，继续复制",
+        variant: "primary",
+      });
+      if (!confirmed) return;
+    }
+    await copyText(key.key, "API Key");
+  };
+
   // 创建弹窗里的复制：同样按策略提示泄露风险。
   const copyCreatedKey = async () => {
     if (!created) return;
@@ -267,6 +300,7 @@ export function ApiKeysPage() {
             </thead>
             <tbody className="divide-y divide-slate-100">
               {items.map((key) => {
+                const visible = visibleKeys.has(key.id);
                 return (
                   <tr key={key.id} className="group hover:bg-slate-50/60">
                     <td className="px-4 py-3 font-medium text-slate-700">{key.name}</td>
@@ -293,9 +327,37 @@ export function ApiKeysPage() {
                     {!isAdmin && (
                       <td className="px-4 py-3 text-slate-500">
                         <span className="inline-flex items-center gap-1.5 font-mono">
-                          <span title="完整 Key 仅在创建时展示，遗失后请创建新 Key">
-                            {key.key_prefix}…
+                          <span
+                            className="max-w-[260px] truncate text-[11px] leading-5"
+                            title={key.key ?? key.key_prefix}
+                          >
+                            {visible && key.key ? key.key : maskedKey(key)}
                           </span>
+                          {key.key && (
+                            <button
+                              type="button"
+                              aria-label={visible ? "隐藏完整 Key" : "显示完整 Key"}
+                              title={visible ? "隐藏完整 Key" : "显示完整 Key"}
+                              onClick={() => toggleKeyVisible(key.id)}
+                              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                            >
+                              <Icon
+                                name={visible ? "eyeOff" : "eye"}
+                                className="h-3.5 w-3.5"
+                              />
+                            </button>
+                          )}
+                          {key.key && (
+                            <button
+                              type="button"
+                              aria-label="复制 API Key"
+                              title="复制"
+                              onClick={() => void copyFullKey(key)}
+                              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-primary"
+                            >
+                              <Icon name="copy" className="h-3.5 w-3.5" />
+                            </button>
+                          )}
                         </span>
                       </td>
                     )}

@@ -71,7 +71,7 @@ Human LLM Gateway 是一个对外兼容真实 LLM API、对内允许用户通过
 | 启停、检查、删除 IM 连接 | 所有用户的 | 仅自己的 | 否 |
 | 查看 IM Secret、Token、二维码 | 否 | 仅在必要交互中查看自己的临时信息 | 否 |
 | 创建 API Key | 否 | 是 | 否 |
-| 查看 API Key 明文 | 否 | 仅创建时一次 | 使用已有 Key |
+| 查看 API Key 明文 | 否 | 可按需查看和复制自己的 Key | 使用已有 Key |
 | 维护 LLM 配置 | 否 | 是 | 否 |
 | 查看 LLM Secret | 否 | 创建/替换时输入，不回显 | 否 |
 | 创建和维护系统 Fake Model | 是 | 否 | 通过 `/v1/models` 查看 Key 可用目录 |
@@ -122,7 +122,7 @@ Human LLM Gateway 是一个对外兼容真实 LLM API、对内允许用户通过
    - 人工超时时间；
    - 可选 Fake Model 分组；
    - 可选一个或多个候选 Fake Model，不选择代表允许候选集中的全部模型。
-4. API Key 明文只显示一次，数据库仅保留可验证哈希和安全前缀。
+4. API Key 默认遮罩；所有者可在 API 管理页按需显示和复制。数据库保留鉴权哈希、安全前缀和使用 APP_SECRET 加密的可恢复密文。
 
 `/v1/models` 与三个推理入口都必须先验证 API Key。系统不提供匿名 Fake Model 目录，因为没有 Key 就无法确定用户私有模型、模型分组和 Key 直接选择结果。
 

@@ -6,7 +6,10 @@ from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from ..core.config import get_settings
 from ..core.db import get_db
+from ..core.exceptions import SecretCryptoError
+from ..core.security import decrypt_secret
 from ..core.time import iso_utc
 from ..domain.enums import DeliveryMode, ReplyStrategy, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
@@ -20,6 +23,8 @@ router = APIRouter(prefix="/api/api-keys", tags=["api-keys"])
 
 _service = ApiKeyService()
 _catalog = FakeModelRepository()
+
+_API_KEY_PURPOSE = "api-key"
 
 
 class ApiKeyCreate(StrictModel):
@@ -63,6 +68,8 @@ class ApiKeyView(BaseModel):
     created_at: str
     owner_user_id: str | None = None
     owner_username: str | None = None
+    # 仅所有者本人可取回；管理员监管他人 Key 时固定为 None。
+    key: str | None = None
 
 
 class ApiKeyCreated(ApiKeyView):
@@ -81,12 +88,21 @@ def _view(
     row: ApiKey,
     *,
     include_owner: bool = False,
+    viewer_id: int | None = None,
 ) -> ApiKeyView:
     owner_username = None
     if include_owner:
         owner = session.get(User, row.owner_user_id)
         owner_username = owner.username if owner else None
     selected = _catalog.key_selected_models(session, row.id)
+    plaintext: str | None = None
+    if viewer_id is not None and row.owner_user_id == viewer_id and row.key_ciphertext:
+        try:
+            plaintext = decrypt_secret(
+                row.key_ciphertext, get_settings().app_secret, _API_KEY_PURPOSE
+            )
+        except SecretCryptoError:
+            plaintext = None
     return ApiKeyView(
         id=str(row.id),
         name=row.name,
@@ -104,6 +120,7 @@ def _view(
         created_at=iso_utc(row.created_at) or "",
         owner_user_id=str(row.owner_user_id) if include_owner else None,
         owner_username=owner_username,
+        key=plaintext,
     )
 
 
@@ -120,7 +137,10 @@ def list_api_keys(
         db, page=page, page_size=page_size, owner_user_id=owner_filter, search=search
     )
     return ApiKeyPage(
-        items=[_view(db, row, include_owner=user.role is UserRole.ADMIN) for row in rows],
+        items=[
+            _view(db, row, include_owner=user.role is UserRole.ADMIN, viewer_id=user.id)
+            for row in rows
+        ],
         page=page,
         page_size=page_size,
         total=total,
@@ -148,7 +168,7 @@ def create_api_key(
     )
     db.commit()
     db.refresh(row)
-    return ApiKeyCreated(**_view(db, row).model_dump(), plaintext=plaintext)
+    return ApiKeyCreated(**_view(db, row, viewer_id=user.id).model_dump(), plaintext=plaintext)
 
 
 def _assert_admin_can_manage(user: User) -> None:
@@ -168,7 +188,7 @@ def get_api_key(
     db: Session = Depends(get_db),
 ) -> ApiKeyView:
     row = _get_key(db, key_id, user)
-    return _view(db, row, include_owner=user.role is UserRole.ADMIN)
+    return _view(db, row, include_owner=user.role is UserRole.ADMIN, viewer_id=user.id)
 
 
 @router.patch("/{key_id}", response_model=ApiKeyView)
@@ -192,7 +212,7 @@ def update_api_key(
     _service.update(db, row=row, actor=user, fields=fields)
     db.commit()
     db.refresh(row)
-    return _view(db, row)
+    return _view(db, row, viewer_id=user.id)
 
 
 @router.delete("/{key_id}", status_code=204)

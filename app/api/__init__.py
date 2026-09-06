@@ -42,6 +42,7 @@ def create_app() -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         from ..connectors import connection_manager as manager
         from ..connectors.registry import default_registry
+        from ..core.background import run_blocking_to_completion
         from ..core.config import get_settings
         from ..core.db import SessionLocal
         from ..core.readiness import protocols_ready
@@ -61,6 +62,13 @@ def create_app() -> FastAPI:
         from ..core.logging import install_persistence, stop_log_persistence
 
         install_persistence()
+        # 启动清理必须在服务就绪前完成，避免后台线程与首批请求争用 SQLite。
+        try:
+            await run_blocking_to_completion(data_retention._cleanup)
+        except Exception:  # noqa: BLE001 - 保留策略失败不阻断核心服务启动
+            from ..core.logging import log_event
+
+            log_event("error", "data_retention.startup_failed", "启动时高频数据清理失败")
         # 连接器运行时装配与启动恢复（desired_running 的连接重新拉起）。
         service = ConnectionService()
         manager.set_state_recorder(service.runtime_state_recorder())

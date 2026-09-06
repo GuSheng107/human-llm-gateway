@@ -1,4 +1,4 @@
-"""API Key 用例：创建（明文只展示一次）、策略配置与生命周期。
+"""API Key 用例：创建、所有者安全取回、策略配置与生命周期。
 
 Key 决定请求归属、回复入口、回复策略和可用模型集合；
 停用或删除立即阻止新请求，已准入任务按创建快照继续完成。
@@ -11,9 +11,10 @@ from typing import Any
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..core.config import get_settings
 from ..core.constants import HUMAN_TIMEOUT_MAX_SECONDS, HUMAN_TIMEOUT_MIN_SECONDS
 from ..core.db import begin_immediate_if_sqlite
-from ..core.security import generate_api_key
+from ..core.security import encrypt_secret, generate_api_key
 from ..domain.enums import (
     AuditAction,
     DeliveryMode,
@@ -26,6 +27,8 @@ from ..repositories.catalog import FakeModelRepository
 from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ApiKey, User
 from ..repositories.system import AuditRepository
+
+_API_KEY_PURPOSE = "api-key"
 
 
 class ApiKeyService:
@@ -63,7 +66,7 @@ class ApiKeyService:
         model_group_id: int | None = None,
         fake_model_ids: list[int] | None = None,
     ) -> tuple[ApiKey, str]:
-        """创建 Key；返回 (行, 明文)。明文只在创建响应展示一次。"""
+        """创建 Key；返回明文，并加密保存供所有者在管理页取回。"""
         begin_immediate_if_sqlite(session)
         name = (name or "").strip()
         if not name or len(name) > 100:
@@ -92,6 +95,7 @@ class ApiKeyService:
         plaintext, prefix, key_hash = generate_api_key()
         row.key_prefix = prefix
         row.key_hash = key_hash
+        row.key_ciphertext = encrypt_secret(plaintext, get_settings().app_secret, _API_KEY_PURPOSE)
         self.repo.add(session, row)
         try:
             session.flush()

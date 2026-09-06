@@ -296,8 +296,8 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `description` | text nullable | 非敏感说明 |
 | `sort_order` | integer | 默认 0 |
 | `is_enabled` | boolean | 默认 true |
-| `endpoint_types` | json | 对外开放的推理端点协议列表（`openai_chat` / `openai_responses` / `anthropic_messages`，可多选、非空；未显式指定默认全开）。调用方只能经列表内协议发起推理，其余入口按 `model_not_found` 处理 |
-| `capabilities` | json | 能力标签白名单（vision/tools/thinking/audio/video/streaming 等）：调用请求触发模型未声明的能力时在准入前返回协议兼容 400 |
+| `endpoint_types` | json | 当前物理存储列；管理 API 只暴露单一 `endpoint_type`，新建/更新写入单元素数组，存量多值按供应商原生端点收敛展示。该字段只描述模型目录，不参与推理准入 |
+| `capabilities` | json | 模型广场能力展示标签（vision/tools/thinking/audio/video/streaming 等），不参与推理准入 |
 | `created_by_user_id` | integer | FK users，用于审计 |
 | `created_at` / `updated_at` | datetime | 非空 |
 
@@ -346,6 +346,7 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `name` | varchar(100) | 非空 |
 | `key_hash` | varchar(255) | 非空，唯一 |
 | `key_prefix` | varchar(8) | 非空、有索引，固定为 `sk-` 加 5 个 base64url 字符，用于鉴权候选查找与列表识别 |
+| `key_ciphertext` | text nullable | 使用 APP_SECRET 和 `api-key` purpose 加密；仅所有者按需取回，历史无密文 Key 允许为空 |
 | `is_enabled` | boolean | 默认 true |
 | `delivery_mode` | enum | web/im |
 | `im_connection_id` | integer nullable | FK im_connections |
@@ -772,7 +773,7 @@ WHERE id = :task_id
 - `previous_response_id` 只能引用同一 API Key 的完成响应，历史链不会因清理产生悬空引用。
 - `previous_response_id` 展开遵守链深、条目数和字节数三重上限，超限整请求 400 且不部分截断。
 - IM DSL 与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
-- Secret、Token、完整 Key 和密码不以明文落库或进入日志。
+- Secret、Token、完整 Key 和密码不以明文落库或进入日志；完整 Key 只以加密密文保存。
 - 初始化环境变量密码不符合策略时启动失败；首个管理员 `must_change_password=true` 且登录后处于受限会话。
 - 当前数据库只使用一套 Schema 和 metadata。
 

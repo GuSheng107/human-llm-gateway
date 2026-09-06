@@ -110,7 +110,7 @@ export interface FakeModel {
   max_output_tokens: number | null;
   capabilities: string[];
   billing_tier: string;
-  endpoint_types: string[];
+  endpoint_type: string;
   logo_url: string | null;
   tags: string[];
   created_at: string;
@@ -153,6 +153,8 @@ export interface ApiKey {
   created_at: string;
   owner_user_id: string | null;
   owner_username: string | null;
+  /** 完整明文，仅所有者本人视角返回；管理员监管他人 Key 时为 null。 */
+  key?: string | null;
 }
 
 export interface ApiKeyCreated extends ApiKey {

@@ -51,7 +51,7 @@ export interface FakeModelPayload {
   max_output_tokens?: number | null;
   capabilities?: string[];
   billing_tier?: string;
-  endpoint_types?: string[];
+  endpoint_type?: string;
   logo_url?: string | null;
   tags?: string[];
   group_ids?: number[];

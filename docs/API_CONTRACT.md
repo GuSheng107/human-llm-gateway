@@ -310,10 +310,7 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 
 Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型或回复策略。管理员创建的系统模型对全部用户可见；普通用户创建的私有模型只对所有者可见，其他普通用户即使猜到 ID 也返回 404。管理员治理私有模型时不能把它改绑或转授给其他用户。
 
-每个 Fake Model 声明 `endpoint_types`（可多选、非空；创建时未提供则默认三种协议全开）与 `capabilities` 能力标签。推理请求在两个维度被强制限制：
-
-- **端点门禁**：请求协议不在模型 `endpoint_types` 内时返回协议兼容的 404 `model_not_found`，与模型不存在/不可用不可区分。
-- **能力门禁**：请求触发模型未声明的能力时在任务创建前返回协议兼容的 400 `invalid_request_error`。判定项：`vision`（Chat `image_url` / Responses `input_image` / Anthropic `image`/`document`、`file`/`input_file` 内容块）、`audio`（`input_audio`）、`tools`（`tools` / `tool_choice`）、`thinking`（Chat `reasoning_effort` / Responses `reasoning` / Anthropic `thinking`）、`streaming`（`stream=true`）。`previous_response_id` 展开的历史上下文同样参与检测，不允许借历史链绕过。纯文本、无工具、非流式请求不依赖任何能力标签。
+每个 Fake Model 暴露一个 `endpoint_type`（`openai_chat`、`openai_responses` 或 `anthropic_messages`），表示模型目录中的原生或代表端点；`capabilities` 是同类展示标签。两者都不参与推理准入。调用方可通过网关支持的任一协议请求当前 API Key 有效集合中的任意 Fake Model，包括 Claude Code 经 `/v1/messages` 调用原生端点为 OpenAI 的模型。模型是否可用只由可见范围、分组、Key 选择和启用状态决定。
 
 ### 7.2 模型分组（M5）
 
@@ -329,9 +326,9 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/api-keys` | 用户看自己的 Key；管理员看脱敏全局列表。 |
-| POST | `/api/api-keys` | 用户创建 Key，明文只返回一次。 |
-| GET | `/api/api-keys/{id}` | 返回配置和 Key 前缀。 |
+| GET | `/api/api-keys` | 用户看自己的 Key 并可取回完整明文；管理员看脱敏全局列表。 |
+| POST | `/api/api-keys` | 用户创建 Key，成功响应返回完整明文。 |
+| GET | `/api/api-keys/{id}` | 所有者返回配置、前缀和完整 Key；管理员只返回前缀。 |
 | PATCH | `/api/api-keys/{id}` | 修改名称、状态、入口和策略。 |
 | DELETE | `/api/api-keys/{id}` | 立即阻止新请求并物理删除 Key；被历史任务引用时 RESTRICT 返回 409，已准入任务按创建快照继续完成。 |
 
@@ -353,8 +350,8 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 规则：
 
-- 新 Key 固定为 `sk-` 加 `secrets.token_urlsafe(32)` 生成的 43 个 base64url 字符；数据库仅保存哈希和前 8 字符 `key_prefix`，不接受其他格式。
-- Key 明文只出现在创建接口的成功响应中；列表和详情只返回 8 字符前缀。
+- 新 Key 固定为 `sk-` 加 `secrets.token_urlsafe(32)` 生成的 43 个 base64url 字符；数据库保存鉴权哈希、前 8 字符 `key_prefix` 和使用 APP_SECRET 加密的可恢复密文，不接受其他格式。
+- Key 所有者的创建、列表、详情和修改响应可返回完整 Key；管理员监管他人 Key 时 `key` 固定为 null。
 - `delivery_mode` 为 `web` 或 `im`；`im` 必须选择当前用户有效连接。
 - 任务无论入口为何都在 Web 可见且可回复。
 - `reply_strategy` 为 `human`、`llm` 或 `human_fallback_llm`。
