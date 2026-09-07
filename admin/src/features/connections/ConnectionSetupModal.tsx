@@ -88,7 +88,7 @@ export function ConnectionSetupSection({
         .then((status) => {
           setBinding(status);
           if (status.bound) {
-            notify("IM 连接绑定成功，现在可以开启连接", "success");
+            notify("消息网关绑定成功，现在可以开启连接", "success");
             onConnectionChange({ ...connection, bound: true, state: "stopped" });
           }
         })

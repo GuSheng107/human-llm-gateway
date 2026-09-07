@@ -39,6 +39,9 @@ class ConnectionCreate(StrictModel):
 class ConnectionUpdate(StrictModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     config: dict[str, Any] | None = None
+    # LLM 总结开关：开启时投递提示条用 LLM 摘要；llm_config_id 指定总结模型。
+    llm_summary_enabled: bool | None = None
+    llm_config_id: str | None = Field(default=None, max_length=20)
 
 
 class ConnectionView(BaseModel):
@@ -52,6 +55,8 @@ class ConnectionView(BaseModel):
     owner_user_id: str | None = None
     owner_username: str | None = None
     config: dict[str, Any]
+    llm_summary_enabled: bool = False
+    llm_config_id: str | None = None
     # 仅创建响应返回的一次性网关自签 Token 明文；列表/详情/监管接口恒为空。
     generated_tokens: dict[str, str] | None = None
     last_error_code: str | None
@@ -165,6 +170,8 @@ def _view(
         owner_user_id=str(row.owner_user_id) if include_owner else None,
         owner_username=owner_username,
         config=config,
+        llm_summary_enabled=row.llm_summary_enabled,
+        llm_config_id=str(row.llm_config_id) if row.llm_config_id else None,
         generated_tokens=generated_tokens,
         last_error_code=row.last_error_code,
         last_error_message=row.last_error_message,
@@ -320,6 +327,8 @@ def update_connection(
         actor_user_id=user.id,
         name=fields.get("name"),
         config_changes=payload.config,
+        llm_summary_enabled=payload.llm_summary_enabled,
+        llm_config_id=payload.llm_config_id,
     )
     db.commit()
     db.refresh(row)

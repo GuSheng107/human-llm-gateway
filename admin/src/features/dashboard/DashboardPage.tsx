@@ -317,7 +317,7 @@ export function DashboardPage() {
               </div>
               <div className="grid grid-cols-2 gap-2 p-4 text-xs">
                 {[
-                  ["连接 IM", "/connections", "link", "bg-cyan-50 text-cyan-600"],
+                  ["消息网关", "/connections", "link", "bg-cyan-50 text-cyan-600"],
                   ["API 管理", "/api-keys", "key", "bg-blue-50 text-blue-600"],
                   ["模型广场", "/models", "cpu", "bg-emerald-50 text-emerald-600"],
                   ["LLM 管理", "/llm-configs", "gateway", "bg-amber-50 text-amber-600"],

@@ -154,10 +154,48 @@ class WeComAibotConnector(Connector):
         target = envelope.reply_to_external_id or ""
         if not target:
             raise ConnectorError(ERROR_DELIVERY, "缺少投递目标")
+        # 两消息投递：逐条发送提示条/内容条（无 messages 时回退单条 prompt）。
+        try:
+            for message in envelope.effective_messages():
+                await client.send_message(
+                    target,
+                    {"msgtype": "markdown", "markdown": {"content": message}},
+                )
+        except Exception as exc:
+            raise _classify(exc) from exc
+
+    async def send_reply_text(
+        self, external_user_id: str, text: str, *, context_token: str | None = None
+    ) -> None:
+        """主动发送文本（/page 外发通路）。"""
+        client = self._client
+        if client is None or not client.is_connected:
+            raise ConnectorError(ERROR_DELIVERY, "企微连接不在线")
+        if not external_user_id:
+            raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
         try:
             await client.send_message(
-                target,
-                {"msgtype": "markdown", "markdown": {"content": envelope.prompt_text}},
+                external_user_id, {"msgtype": "text", "text": {"content": text}}
             )
+        except Exception as exc:
+            raise _classify(exc) from exc
+
+    async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
+        """主动发送文件（/file 外发通路）：三步分片上传后发送 file 消息。"""
+        client = self._client
+        if client is None or not client.is_connected:
+            raise ConnectorError(ERROR_DELIVERY, "企微连接不在线")
+        if not external_user_id:
+            raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
+        try:
+            result = await client.upload_media(
+                content.encode("utf-8"), type="file", filename=filename
+            )
+            media_id = str(result.get("media_id") or "")
+            if not media_id:
+                raise ConnectorError(ERROR_DELIVERY, "企微素材上传未返回 media_id")
+            await client.send_media_message(external_user_id, "file", media_id)
+        except ConnectorError:
+            raise
         except Exception as exc:
             raise _classify(exc) from exc

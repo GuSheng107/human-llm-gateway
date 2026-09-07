@@ -79,6 +79,32 @@ class WebSocketServerConnector(Connector):
         if len(dead) == len(sessions):
             raise ConnectorError(ERROR_DELIVERY, "WebSocket 会话全部推送失败")
 
+    async def send_reply_text(
+        self, external_user_id: str, text: str, *, context_token: str | None = None
+    ) -> None:
+        """推送命令外发内容（/page）：所有在线会话广播 kind=page 消息。"""
+        await self._broadcast({"kind": "page", "task_id": context_token or "", "text": text})
+
+    async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
+        """推送命令外发文件（/file）：所有在线会话广播 kind=file 消息。"""
+        await self._broadcast({"kind": "file", "filename": filename, "content": content})
+
+    async def _broadcast(self, payload: dict[str, Any]) -> None:
+        async with self._lock:
+            sessions = list(self._sessions.items())
+        if not sessions:
+            raise ConnectorError(ERROR_DELIVERY, "没有在线的 WebSocket 会话")
+        dead: list[int] = []
+        for session_id, session in sessions:
+            try:
+                await session.send_json(payload)
+            except Exception:  # noqa: BLE001
+                dead.append(session_id)
+        for session_id in dead:
+            await self.remove_session(session_id)
+        if len(dead) == len(sessions):
+            raise ConnectorError(ERROR_DELIVERY, "WebSocket 会话全部推送失败")
+
     async def health(self) -> dict[str, Any]:
         async with self._lock:
             return {"running": not self._closed.is_set(), "sessions": len(self._sessions)}

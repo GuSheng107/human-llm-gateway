@@ -33,7 +33,7 @@ const STRATEGY_LABEL: Record<string, string> = {
 
 const DELIVERY_LABEL: Record<string, string> = {
   web: "Web 工作台",
-  im: "IM 连接",
+  im: "消息网关",
 };
 
 export function ApiKeysPage() {
@@ -424,13 +424,13 @@ export function ApiKeysPage() {
                   className="field-input"
                 >
                   <option value="web">Web 工作台</option>
-                  <option value="im">IM 连接</option>
+                  <option value="im">消息网关</option>
                 </select>
               </label>
               {form.delivery_mode === "im" && (
                 <label className="block">
                   <span className="mb-1.5 block text-xs font-medium text-slate-600">
-                    IM 连接<span className="ml-0.5 text-danger">*</span>
+                    消息网关<span className="ml-0.5 text-danger">*</span>
                   </span>
                   <select
                     value={form.im_connection_id}

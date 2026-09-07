@@ -15,13 +15,74 @@ IM DSL 解析结果与 Web 编辑器必须生成同一个 ReplyDraft，且往返
 from __future__ import annotations
 
 import json
+import re
 import shlex
+from dataclasses import dataclass
 from typing import Any
 
 from .errors import DomainError, DomainErrorCode
 from .values import ReplyDraft, ReplyToolCall
 
 _FENCE = ":::"
+
+# ---------------------------------------------------------------------------
+# 斜杠命令层
+# ---------------------------------------------------------------------------
+
+_COMMAND_NAMES = ("ans", "res", "page", "file", "commit")
+# `/cmd` 或 `/cmd <args...>`；args 按空白切分，正文取首个换行后的全部内容。
+_COMMAND_RE = re.compile(r"^/(?P<name>[A-Za-z][A-Za-z0-9_]*)(?P<rest>.*)$", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class Command:
+    """IM 消息中的斜杠命令（/ans /res /page /file /commit）。
+
+    - name：命令名（不含斜杠）。
+    - args：命令行参数（如 /page 2 的 "2"、/file md 的 "md"）。
+    - body：命令后的正文（/ans /res 的回复内容；/page /file /commit 为空）。
+    - unknown：True 表示 `/` 开头但不是已知命令（调用方应拒绝而非当正文）。
+    """
+
+    name: str
+    args: str = ""
+    body: str = ""
+    unknown: bool = False
+
+
+def parse_command(text: str) -> Command | None:
+    """识别消息开头的斜杠命令；非 `/` 开头返回 None（纯文本/围栏 DSL）。
+
+    规则：
+    - `/ans` `/res` 后剩余内容为正文（保留原始换行，围栏语法可用）。
+    - `/page` `/file` 的参数取首行按空白切分的第一个 token，其余忽略。
+    - `/commit` 无参数无正文，用于确认暂存草稿。
+    - 其余 `/xxx` 标记为 unknown，避免把命令误当回复正文。
+    """
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    match = _COMMAND_RE.match(stripped)
+    if match is None:
+        return Command(name="", unknown=True)
+    name = match.group("name").lower()
+    rest = match.group("rest")
+    if name not in _COMMAND_NAMES:
+        return Command(name=name, unknown=True)
+    if name in ("ans", "res"):
+        # 正文为命令词后的剩余内容；剥掉紧跟的一个分隔空白。
+        body = rest[1:] if rest.startswith((" ", "\t")) else rest.lstrip("\n")
+        return Command(name=name, body=body.strip())
+    # page / file：参数取首行首个 token。
+    first_line, _, _ = rest.partition("\n")
+    tokens = first_line.split()
+    args = tokens[0] if tokens else ""
+    return Command(name=name, args=args)
+
+
+def is_command_text(text: str) -> bool:
+    """是否为斜杠命令消息（含未知命令），供快速分流判断。"""
+    return parse_command(text) is not None
 
 
 def extract_task_target(text: str) -> tuple[str | None, str]:

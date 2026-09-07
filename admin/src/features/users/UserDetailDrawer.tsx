@@ -3,7 +3,7 @@ import { StatusBadge } from "../../components/data-display/StatusBadge";
 import type { UserDetail } from "../../types/governance";
 
 const RESOURCE_LABELS: Record<string, string> = {
-  im_connections: "IM 连接",
+  im_connections: "消息网关",
   llm_configs: "LLM 配置",
   fake_models: "私有 Fake Model",
   model_groups: "模型分组",

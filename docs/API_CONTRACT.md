@@ -508,6 +508,8 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 每个字段只能采用四种处理：`透传`、`等价转换`、`网关消费`、`拒绝 400`。禁止使用“忽略”“尽量转换”或把未知字段塞进 metadata 冒充等价支持。
 
+本矩阵及后文的「显式提交」指字段以非 `null` 的 JSON 值出现；JSON `null` 一律视同未提交（客户端 SDK 的 nullish 默认值不触发拒绝，如 @ai-sdk/openai 会携带 `store: null`），并原样保留在落库的原始请求中。
+
 | 语义 | OpenAI Chat | OpenAI Responses | Anthropic Messages | 跨协议规则 |
 | --- | --- | --- | --- | --- |
 | 系统指令 | system/developer message | `instructions` 或输入项 | 顶级 `system` | 按原有顺序转换，再在末尾追加 Fake Model 身份指令。 |
@@ -529,9 +531,9 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | Prompt Cache | 供应商扩展 | 供应商扩展 | `cache_control` | 同协议原样透传；跨协议没有明确等价项时返回 400。 |
 | 托管工具和文件能力 | 供应商专有类型 | file search/computer 等 item | 供应商专有 block | 只有目标适配器明确实现同等能力才转换；默认返回 400，系统绝不执行。 |
 | `service_tier` 等计费层参数 | 供应商字段 | 供应商字段 | 供应商字段 | 同协议透传；跨协议未逐项声明等价时返回 400。 |
-| `background`（Responses 后台模式） | 无 | 供应商字段 | 无 | 网关不提供后台响应生命周期接口（无 `GET/cancel` 响应端点），透传会使 RequestTask 无法正确收尾；显式 `background=true` 返回 400 `unsupported_parameter`。 |
-| `conversation`（Responses 服务端会话引用） | 无 | 供应商字段 | 无 | 引用上游服务端持久状态，不能机械转给用户自己的真实上游；显式提交返回 400 `unsupported_parameter`。 |
-| `store`（响应持久化开关） | 供应商字段 | 供应商字段 | 无 | 网关始终完整持久化 RequestTask，`store` 不是网关数据库的存储开关；显式提交任何值（含 `false`）返回 400 `unsupported_parameter`，避免“看似兼容、语义不同”。 |
+| `background`（Responses 后台模式） | 无 | 供应商字段 | 无 | 网关不提供后台响应生命周期接口（无 `GET/cancel` 响应端点），透传会使 RequestTask 无法正确收尾；显式提交非 `null` 值（含 `background=false`）返回 400 `unsupported_parameter`。 |
+| `conversation`（Responses 服务端会话引用） | 无 | 供应商字段 | 无 | 引用上游服务端持久状态，不能机械转给用户自己的真实上游；显式提交非 `null` 值返回 400 `unsupported_parameter`。 |
+| `store`（响应持久化开关） | 供应商字段 | 供应商字段 | 无 | 网关始终完整持久化 RequestTask，`store` 不是网关数据库的存储开关；显式提交 `true`/`false` 返回 400 `unsupported_parameter`，避免“看似兼容、语义不同”；JSON `null` 视同未提交，不返回 400。 |
 | 未知扩展字段 | 原样保留 | 原样保留 | 原样保留 | 同协议原样透传；跨协议返回 400 `unsupported_parameter`。 |
 
 转换适配器必须为每个非透传字段记录字段名、处理类型和结果，不记录字段值。新增支持前先更新此矩阵和契约测试。
@@ -542,7 +544,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 `POST /v1/chat/completions`
 
-最低要求：`model` 为非空字符串，`messages` 为非空数组。其余字段完整保存；人工处理只读取必要的规范化投影。显式提交 `store` 按 12.6 矩阵返回 400 `unsupported_parameter`。
+最低要求：`model` 为非空字符串，`messages` 为非空数组。其余字段完整保存；人工处理只读取必要的规范化投影。显式提交 `store`（非 `null`）按 12.6 矩阵返回 400 `unsupported_parameter`。
 
 ### 13.2 非流式响应
 
@@ -570,7 +572,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 最低要求：`model` 为非空字符串，`input` 为有效字符串或输入项数组。`instructions`、tools 和所有扩展字段完整保存。
 
-`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。显式提交 `background`、`conversation` 或 `store` 按 12.6 矩阵返回 400 `unsupported_parameter`；本网关不提供后台响应 retrieve/cancel 等生命周期端点。
+`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。显式提交 `background`、`conversation` 或 `store`（非 `null`）按 12.6 矩阵返回 400 `unsupported_parameter`；本网关不提供后台响应 retrieve/cancel 等生命周期端点。
 
 ### 14.2 输出项
 

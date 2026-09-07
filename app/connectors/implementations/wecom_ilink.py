@@ -146,8 +146,24 @@ class WeComIlinkConnector(Connector):
         target = envelope.reply_to_external_id or ""
         if not target:
             raise ConnectorError(ERROR_DELIVERY, "缺少投递目标")
+        # 两消息投递：逐条发送提示条/内容条（无 messages 时回退单条 prompt）。
         try:
-            await asyncio.to_thread(client.push, target, envelope.prompt_text)
+            for message in envelope.effective_messages():
+                await asyncio.to_thread(client.push, target, message)
+        except Exception as exc:
+            raise _classify(exc) from exc
+
+    async def send_reply_text(
+        self, external_user_id: str, text: str, *, context_token: str | None = None
+    ) -> None:
+        """主动发送文本（/page 外发通路）。"""
+        client = self._client
+        if client is None or self._thread is None or not self._thread.is_alive():
+            raise ConnectorError(ERROR_DELIVERY, "iLink 连接不在线")
+        if not external_user_id:
+            raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
+        try:
+            await asyncio.to_thread(client.push, external_user_id, text)
         except Exception as exc:
             raise _classify(exc) from exc
 
