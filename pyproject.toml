@@ -24,6 +24,7 @@ dependencies = [
   "argon2-cffi>=23,<26",
   "pillow>=12.3.0",
   "sse-starlette>=3.4.8",
+  "jsonschema>=4.23,<5",
 ]
 
 [tool.pytest.ini_options]

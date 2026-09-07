@@ -18,15 +18,8 @@ from typing import Any
 
 import app.core.db as database
 from app.core.logging import bind_trace_id, reset_request_id
-from app.domain.dsl import (
-    extract_task_target,
-    is_empty_draft,
-    parse_message,
-    parse_reply,
-    serialize_reply,
-)
 from app.domain.enums import InferenceProtocol, TaskState
-from app.domain.values import ReplyDraft, ReplyToolCall
+from app.domain.values import ReplyDraft, ReplyToolCall, is_empty_draft
 from app.protocols import chat_completions as chat_protocol
 from app.repositories.models import ApiKey, RequestTask, User
 from app.services.inference_service import InferenceService
@@ -126,7 +119,7 @@ def test_task_detail_owner_sees_full_fields(client, created_user, created_key) -
     assert body["tool_names"] == []
     assert body["public_error_code"] is None
     assert body["cancel_reason_code"] is None
-    assert "origin_trace_id" in body
+    assert "request_id" in body
     assert len(body["events"]) >= 1
     assert body["events"][0]["event_type"] == "created"
     # 按需端点：所有者取回完整原始请求。
@@ -146,7 +139,7 @@ def test_task_origin_trace_is_saved_and_returned(client, created_user, created_k
 
     detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers)
     assert detail.status_code == 200
-    assert detail.json()["origin_trace_id"] == "req_origin_test"
+    assert detail.json()["request_id"] == "req_origin_test"
 
 
 def test_task_detail_admin_sees_owner_but_cannot_edit(
@@ -344,6 +337,9 @@ def test_draft_update_nonexistent_returns_404(client, created_user, created_key)
 
 def test_submit_reply_first_wins_accepted(client, created_user, created_key) -> None:
     task_id = _make_waiting_task(created_key.id, created_user.user_id, tool_names=["search"])
+    client.post(
+        f"/api/tasks/{task_id}/tool-call-warning/acknowledge", headers=created_user.headers, json={}
+    )
     resp = client.post(
         f"/api/tasks/{task_id}/reply",
         headers=created_user.headers,
@@ -765,110 +761,13 @@ def test_task_list_search_by_model(client, created_user, created_key) -> None:
 
 
 # ======================================================================
-# IM DSL 解析/序列化往返无损
+# 回复草稿判空（Web 提交接口共用）
 # ======================================================================
 
 
-class TestImDslRoundtrip:
-    """IM DSL 与 Web 共享 ReplyDraft，parse(serialize(draft)) == draft。"""
-
-    def test_plain_final_text_no_fence(self) -> None:
-        draft = ReplyDraft(final_text="你好世界")
-        assert serialize_reply(draft) == "你好世界"
-        assert parse_reply("你好世界") == draft
-
-    def test_full_draft_roundtrip(self) -> None:
-        draft = ReplyDraft(
-            reasoning="先想想",
-            tool_calls=[
-                ReplyToolCall(id="call_1", name="search", arguments={"q": "test"}),
-                ReplyToolCall(id="call_2", name="calc", arguments={"x": 1, "y": 2}),
-            ],
-            final_text="最终答案",
-        )
-        text = serialize_reply(draft)
-        assert parse_reply(text) == draft
-
-    def test_reasoning_and_final_only_roundtrip(self) -> None:
-        draft = ReplyDraft(reasoning="只有思考", final_text="只有正文")
-        assert parse_reply(serialize_reply(draft)) == draft
-
-    def test_tool_calls_only_roundtrip(self) -> None:
-        draft = ReplyDraft(
-            tool_calls=[ReplyToolCall(id="t1", name="fn", arguments={"a": [1, 2]})],
-        )
-        assert parse_reply(serialize_reply(draft)) == draft
-
-    def test_empty_draft_serializes_to_empty(self) -> None:
-        assert serialize_reply(ReplyDraft()) == ""
-
-    def test_empty_draft_is_empty(self) -> None:
-        assert is_empty_draft(ReplyDraft()) is True
-        assert is_empty_draft(ReplyDraft(final_text="   ")) is True
-        assert is_empty_draft(ReplyDraft(final_text="x")) is False
-        assert is_empty_draft(ReplyDraft(tool_calls=[ReplyToolCall(id="a", name="b")])) is False
-
-    def test_m4_backward_compat_plain_text(self) -> None:
-        parsed = parse_reply("纯文本回复，无围栏")
-        assert parsed.final_text == "纯文本回复，无围栏"
-        assert parsed.reasoning is None
-        assert parsed.tool_calls == []
-
-    def test_tool_fence_json_arguments_parsed(self) -> None:
-        body = '::: tool call_1 search\n{"q": "天气", "n": 3}\n:::\n\n结果如下'
-        draft = parse_reply(body)
-        assert len(draft.tool_calls) == 1
-        assert draft.tool_calls[0].id == "call_1"
-        assert draft.tool_calls[0].name == "search"
-        assert draft.tool_calls[0].arguments == {"q": "天气", "n": 3}
-        assert draft.final_text == "结果如下"
-
-    def test_tool_fence_empty_arguments(self) -> None:
-        body = "::: tool call_0 noop\n:::\n\n正文"
-        draft = parse_reply(body)
-        assert draft.tool_calls[0].arguments == {}
-        assert draft.final_text == "正文"
-
-
-class TestExtractTaskTarget:
-    def test_with_public_id_prefix(self) -> None:
-        public_id, body = extract_task_target("#TASK001 回复内容")
-        assert public_id == "TASK001"
-        assert body == "回复内容"
-
-    def test_without_prefix(self) -> None:
-        public_id, body = extract_task_target("直接回复")
-        assert public_id is None
-        assert body == "直接回复"
-
-    def test_prefix_no_body(self) -> None:
-        public_id, body = extract_task_target("#TASK001")
-        assert public_id == "TASK001"
-        assert body == ""
-
-    def test_parse_message_combines_target_and_dsl(self) -> None:
-        text = "#TASK001 ::: reasoning\n思考\n:::\n\n最终正文"
-        public_id, draft = parse_message(text)
-        assert public_id == "TASK001"
-        assert draft.reasoning == "思考"
-        assert draft.final_text == "最终正文"
-
-
-# ======================================================================
-# Web 与 IM 提交结果一致性（共享 ReplyDraft）
-# ======================================================================
-
-
-def test_web_and_im_share_same_replydraft_structure() -> None:
-    """Web 编辑器和 IM DSL 解析器必须生成同一个 ReplyDraft 结构。"""
-    web_draft = ReplyDraft(
-        reasoning="分析",
-        tool_calls=[ReplyToolCall(id="c1", name="lookup", arguments={"key": "k"})],
-        final_text="结论",
-    )
-    im_text = serialize_reply(web_draft)
-    im_draft = parse_reply(im_text)
-    assert im_draft == web_draft
-    assert im_draft.model_dump_json(exclude_none=True) == web_draft.model_dump_json(
-        exclude_none=True
-    )
+def test_is_empty_draft() -> None:
+    assert is_empty_draft(ReplyDraft()) is True
+    assert is_empty_draft(ReplyDraft(final_text="   ")) is True
+    assert is_empty_draft(ReplyDraft(final_text="x")) is False
+    assert is_empty_draft(ReplyDraft(reasoning="想")) is False
+    assert is_empty_draft(ReplyDraft(tool_calls=[ReplyToolCall(id="a", name="b")])) is False

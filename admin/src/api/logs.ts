@@ -3,6 +3,7 @@ import { api } from "./client";
 /**
  * 统一日志查询：合并审计与应用日志，按 trace_id 串联。
  * 后端按调用者角色做数据可见性裁剪；普通用户只能看到自己相关的行。
+ * 列表不返回 detail 正文；正文经 GET /api/logs/{entry_id} 懒加载。
  */
 export interface LogItem {
   id: string;
@@ -14,10 +15,15 @@ export interface LogItem {
   username: string | null;
   user_id: string | null;
   request_id: string | null;
-  task_id: string | null;
-  api_key_id: string | null;
-  connection_id: string | null;
+  task_id?: string | null;
+  api_key_id?: string | null;
+  connection_id?: string | null;
   context: Record<string, unknown> | null;
+  has_detail?: boolean;
+  detail_size_bytes?: number;
+  detail_truncated?: boolean;
+  duration_ms?: number | null;
+  status_code?: number | null;
   created_at: string;
 }
 
@@ -31,11 +37,17 @@ export interface LogPage {
 export interface LogQuery {
   page: number;
   page_size?: number;
+  kind?: "audit" | "app";
   trace_id?: string;
   level?: "debug" | "error" | "warning" | "info";
   category?: string;
   event?: string;
   hours?: number;
+  task_id?: string;
+  api_key_id?: string;
+  connection_id?: string;
+  start_at?: string;
+  end_at?: string;
 }
 
 export function listLogs(query: LogQuery): Promise<LogPage> {
@@ -43,12 +55,64 @@ export function listLogs(query: LogQuery): Promise<LogPage> {
     page: String(query.page),
     page_size: String(query.page_size ?? 20),
   });
+  if (query.kind) params.set("kind", query.kind);
   if (query.trace_id) params.set("trace_id", query.trace_id);
   if (query.level) params.set("level", query.level);
   if (query.category) params.set("category", query.category);
   if (query.event) params.set("event", query.event);
   if (query.hours) params.set("hours", String(query.hours));
+  if (query.task_id) params.set("task_id", query.task_id);
+  if (query.api_key_id) params.set("api_key_id", query.api_key_id);
+  if (query.connection_id) params.set("connection_id", query.connection_id);
+  if (query.start_at) params.set("start_at", query.start_at);
+  if (query.end_at) params.set("end_at", query.end_at);
   return api(`/api/logs?${params}`);
+}
+
+/** 详情信封中的单个 section：key/标题/格式/数据。 */
+export interface LogDetailSection {
+  key: string;
+  title: string;
+  format: "json" | "text" | "jsonl" | string;
+  data: unknown;
+  redacted_fields?: string[];
+}
+
+export interface LogDetailLink {
+  kind: string;
+  id: string;
+  label: string;
+}
+
+export interface LogDetailEnvelope {
+  schema_version?: number;
+  category?: string;
+  sections?: LogDetailSection[];
+  links?: LogDetailLink[];
+}
+
+export interface LogDetail {
+  id: string;
+  kind: "audit" | "app";
+  category: string;
+  level: string;
+  event: string;
+  message: string;
+  username: string | null;
+  user_id: string | null;
+  request_id: string | null;
+  task_id?: string | null;
+  api_key_id?: string | null;
+  connection_id?: string | null;
+  context: Record<string, unknown> | null;
+  detail: LogDetailEnvelope | null;
+  detail_size_bytes?: number;
+  detail_truncated?: boolean;
+  created_at: string;
+}
+
+export function getLogDetail(entryId: string): Promise<LogDetail> {
+  return api(`/api/logs/${entryId}`);
 }
 
 export interface DashboardStats {

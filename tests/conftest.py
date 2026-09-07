@@ -102,9 +102,11 @@ def client():
                 session.execute(
                     _text(
                         "INSERT INTO app_logs (level, event, message, request_id, logger,"
-                        " user_id, task_id, api_key_id, connection_id, context_json, created_at)"
+                        " user_id, task_id, api_key_id, connection_id, context_json,"
+                        " detail_json, detail_size_bytes, detail_truncated, created_at)"
                         " VALUES (:level, :event, :message, :request_id, :logger, :user_id,"
-                        " :task_id, :api_key_id, :connection_id, :context, :created_at)"
+                        " :task_id, :api_key_id, :connection_id, :context, :detail_json,"
+                        " :detail_size_bytes, :detail_truncated, :created_at)"
                     ),
                     {
                         "level": entry["level"],
@@ -119,6 +121,9 @@ def client():
                         "context": _json.dumps(
                             entry.get("context") or {}, ensure_ascii=False, default=str
                         ),
+                        "detail_json": entry.get("detail_json"),
+                        "detail_size_bytes": int(entry.get("detail_size_bytes") or 0),
+                        "detail_truncated": bool(entry.get("detail_truncated")),
                         "created_at": datetime.now(tz=UTC),
                     },
                 )

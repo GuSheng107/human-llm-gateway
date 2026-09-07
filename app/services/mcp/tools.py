@@ -381,6 +381,117 @@ def _handle_get_system_status(session: Session, user: User, args: dict[str, Any]
     }
 
 
+def _handle_get_caller_tool_schema(
+    session: Session, user: User, args: dict[str, Any]
+) -> dict[str, Any]:
+    """查看指定任务的 Caller Tool 定义（脱敏：不含原始请求正文与附件数据）。"""
+    from ...domain.errors import DomainError
+    from ...repositories.models import RequestTask
+    from ..caller_tool_service import catalog_for_task
+    from ..request_view_service import RequestViewService
+
+    task_id = int(args.get("task_id") or 0)
+    tool_name = str(args.get("tool_name") or "")
+    task = session.get(RequestTask, task_id)
+    if task is None or (user.role is not UserRole.ADMIN and task.owner_user_id != user.id):
+        return {
+            "content": [{"type": "text", "text": "任务不存在或无权访问"}],
+            "isError": True,
+        }
+    try:
+        catalog = catalog_for_task(task)
+        tool = catalog.get(tool_name)
+        if tool is None:
+            return {
+                "content": [
+                    {"type": "text", "text": f"工具 {tool_name} 不在当前请求声明的 Caller Tool 中"}
+                ],
+                "isError": True,
+            }
+        # 当前输入摘要（脱敏：文本截断预览，附件仅摘要，无 base64）。
+        view = RequestViewService().build_view(session, task)
+        current_summary = ""
+        for item in view.get("current_input") or []:
+            texts = [
+                str(block.get("text") or "")
+                for block in item.get("blocks") or []
+                if block.get("type") == "text"
+            ]
+            current_summary = "\n".join(texts)[:600]
+            if current_summary:
+                break
+        detail = {
+            "task_id": task.id,
+            "task_state": task.state.value if task.state else None,
+            "tool": {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
+                "source_type": tool.source_type,
+                "is_generatable": tool.is_generatable,
+            },
+            "tool_choice": catalog.policy.choice.value,
+            "required_name": catalog.policy.required_name,
+            "parallel_allowed": catalog.policy.parallel_allowed,
+            "current_input_summary": current_summary or None,
+        }
+        return {
+            "content": [{"type": "text", "text": json.dumps(detail, ensure_ascii=False)}],
+            "isError": False,
+        }
+    except DomainError as exc:
+        return {
+            "content": [{"type": "text", "text": exc.message}],
+            "isError": True,
+        }
+
+
+def _handle_validate_caller_tool_arguments(
+    session: Session, user: User, args: dict[str, Any]
+) -> dict[str, Any]:
+    """校验 Caller Tool 参数（只读，不保存草稿、不创建 Tool Call）。"""
+    from ...domain.errors import DomainError
+    from ...repositories.models import RequestTask
+    from ..caller_tool_service import catalog_for_task, validate_tool_arguments
+
+    task_id = int(args.get("task_id") or 0)
+    tool_name = str(args.get("tool_name") or "")
+    arguments = args.get("arguments")
+    task = session.get(RequestTask, task_id)
+    if task is None or (user.role is not UserRole.ADMIN and task.owner_user_id != user.id):
+        return {
+            "content": [{"type": "text", "text": "任务不存在或无权访问"}],
+            "isError": True,
+        }
+    try:
+        validate_tool_arguments(catalog_for_task(task), tool_name, arguments)
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {"valid": True, "tool_name": tool_name, "arguments": arguments},
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            "isError": False,
+        }
+    except DomainError as exc:
+        return {
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {"valid": False, "tool_name": tool_name, "error": exc.message},
+                        ensure_ascii=False,
+                    ),
+                }
+            ],
+            "isError": False,
+        }
+
+
 # ---------------------------------------------------------------------------
 # Tool 注册表
 # ---------------------------------------------------------------------------
@@ -481,6 +592,40 @@ _TOOLS: list[McpToolDef] = [
             "properties": {},
         },
         handler=_handle_get_system_status,
+    ),
+    McpToolDef(
+        name="get_caller_tool_schema",
+        description=(
+            "查看指定任务中调用方声明的某个 Caller Tool 定义（name/description/"
+            "input_schema/tool_choice/并行约束，附脱敏后的当前输入摘要）。"
+            "只读查询；网关不执行调用方工具。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer", "description": "任务ID"},
+                "tool_name": {"type": "string", "description": "调用方声明的工具名"},
+            },
+            "required": ["task_id", "tool_name"],
+        },
+        handler=_handle_get_caller_tool_schema,
+    ),
+    McpToolDef(
+        name="validate_caller_tool_arguments",
+        description=(
+            "校验指定任务的 Caller Tool 参数是否符合其输入 Schema，返回"
+            " valid、结构化错误路径与说明。只读校验，不保存草稿、不创建调用。"
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "integer", "description": "任务ID"},
+                "tool_name": {"type": "string", "description": "调用方声明的工具名"},
+                "arguments": {"type": "object", "description": "待校验的参数对象"},
+            },
+            "required": ["task_id", "tool_name", "arguments"],
+        },
+        handler=_handle_validate_caller_tool_arguments,
     ),
 ]
 

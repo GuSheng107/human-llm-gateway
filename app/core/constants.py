@@ -4,7 +4,7 @@
 """
 
 # 数据库 Schema 版本：与代码不一致时启动失败，不执行迁移。
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # 加密契约（详见 docs/DATABASE.md §2.4）
 SECRET_ENVELOPE_PREFIX = "hlg1"
@@ -74,6 +74,14 @@ SSRF_METADATA_HOSTS = frozenset(
     }
 )
 SSRF_METADATA_NETWORKS = ("169.254.0.0/16",)
+
+# 用户自定义生成引导（generation_instruction）统一上限（Unicode 字符数）。
+GENERATION_INSTRUCTION_MAX_CHARS = 4000
+
+# 日志详情（LogDetailEnvelope）容量控制：用户要求日志完整可见——正常路径
+# 不做任何截断（脱敏后原样落库）；仅保留病态构造的防御上限，防止单条
+# 日志把 app_logs 写爆。触发时显式标记，绝不静默丢内容。
+APP_LOG_DETAIL_GUARD_BYTES = 64 * 1024 * 1024  # 单条详情信封防御上限（64 MiB）
 
 # 外部 API Key：`sk-` + 32 字节随机数的无 padding base64url（43 字符）。
 API_KEY_PREFIX = "sk-"

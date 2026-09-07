@@ -453,7 +453,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 
 `response_public_id` 使用 `resp_` + 32 位小写 hex（CSPRNG，例如 `resp_a10c46f728e24da0970ba9e7189f429d`）。这是网关在自己命名空间内签发的协议兼容 ID，不是冒充真实 OpenAI response ID；任务内部仍以 integer PK 为主键。生成时机是任务创建事务，而不是响应成功之后：发送第一个 Responses 响应事件（包括 `response.created` 和失败终态 `response.failed`）之前该 ID 必须已经持久化，全程沿用同一 ID。数据库条件约束保证 `protocol = openai_responses` 的任务 `response_public_id` 非空，Chat 和 Anthropic 任务保持为空。只有 COMPLETED 状态的响应可被后续 `previous_response_id` 引用；失败或取消的响应保留 ID，但不能成为历史链父节点。
 
-`response_payload_json` 是 IM DSL、Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构：
+`response_payload_json` 是 Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构（IM 纯文本回复的整段正文以 final_text 写入该结构）：
 
 ```json
 {
@@ -772,7 +772,7 @@ WHERE id = :task_id
 - `/v1/models` 和推理准入使用同一有效模型查询。
 - `previous_response_id` 只能引用同一 API Key 的完成响应，历史链不会因清理产生悬空引用。
 - `previous_response_id` 展开遵守链深、条目数和字节数三重上限，超限整请求 400 且不部分截断。
-- IM DSL 与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
+- IM（纯文本）与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
 - Secret、Token、完整 Key 和密码不以明文落库或进入日志；完整 Key 只以加密密文保存。
 - 初始化环境变量密码不符合策略时启动失败；首个管理员 `must_change_password=true` 且登录后处于受限会话。
 - 当前数据库只使用一套 Schema 和 metadata。

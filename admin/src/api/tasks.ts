@@ -57,14 +57,16 @@ export type DraftGenerateMode = "reasoning" | "reply" | "both";
 export interface DraftGeneratePayload {
   llm_config_id: number;
   mode?: DraftGenerateMode;
-  /** 被排除的上下文下标（normalized context；对应 conversation 消息的 context_index）。 */
-  exclude_context_indices?: number[];
+  /** 一次生成操作的短生命周期引导；不落库、不进入最终回复。 */
+  generation_instruction?: string | null;
+  /** 是否携带调用方 system（RequestView 的 caller_system）。 */
+  include_caller_system?: boolean;
+  /** 被排除的附带上下文的稳定 ctx ID（current_input 不可排除）。 */
+  excluded_context_item_ids?: string[];
+  /** 是否携带附件；附件无法承载时后端返回 422 而不是静默降级。 */
+  include_attachments?: boolean;
   /** mode=reply 时可携带人工已确认的思考链作为生成依据。 */
   reasoning_seed?: string | null;
-  /** 引导性提示词：注入为系统指令，引导生成思考链 / 回复 / 工具调用参数。 */
-  guidance?: string | null;
-  /** 当前编辑器选择的工具及顺序；空数组明确表示不提供工具。 */
-  selected_tool_names?: string[];
 }
 
 export function generateDraft(
@@ -144,53 +146,144 @@ export async function markTaskSeen(
   });
 }
 
-export interface ConversationBlock {
-  type: string;
-  display_kind: "content" | "technical";
+// ---------------------------------------------------------------------------
+// 请求视图（RequestView）：工作台与生成弹窗共用的上下文投影
+// ---------------------------------------------------------------------------
+
+export interface RequestViewBlock {
+  id: string;
+  type:
+    | "text"
+    | "image"
+    | "audio"
+    | "file"
+    | "tool_call"
+    | "tool_result"
+    | "technical"
+    | "unknown";
+  /** text/tool_call/tool_result 块的截断预览或完整内容。 */
   text?: string | null;
+  text_length?: number | null;
+  truncated?: boolean | null;
+  /** file/audio 块的文件名。 */
   name?: string | null;
   media_type?: string | null;
-  tool_call_id?: string | null;
-  /** 图片块可直接渲染的 URL（http(s) 或 data URL）。 */
+  filename?: string | null;
+  source?: string | null;
   url?: string | null;
-  width?: number | null;
-  height?: number | null;
-  source_type?: string | null;
+  size_bytes?: number | null;
+  previewable?: boolean | null;
+  call_id?: string | null;
+  arguments?: Record<string, unknown> | null;
+  raw_type?: string | null;
 }
 
-export interface ConversationMessage {
-  index: number;
+export interface RequestViewContextItem {
+  /** 稳定 ctx ID（ctx_ 前缀）；生成弹窗的排除勾选以此为准。 */
+  id: string;
   role: string;
-  blocks: ConversationBlock[];
-  preview: string;
-  length: number;
-  has_more: boolean;
-  /** 对应 normalized context 下标；系统指令块为 null。用于生成时的消息级勾选。 */
-  context_index: number | null;
+  blocks: RequestViewBlock[];
+  text_length: number;
+  block_count: number;
 }
 
-export interface ConversationPage {
-  task_id: string;
-  messages: ConversationMessage[];
-  total: number;
+export interface CallerSystemView {
+  items: RequestViewContextItem[];
+  item_count: number;
+  character_count: number;
+  collapsed_by_default: boolean;
 }
 
-export function getConversation(taskId: string): Promise<ConversationPage> {
-  return api<ConversationPage>(`/api/tasks/${taskId}/conversation`);
+export interface ToolDefinitionView {
+  name: string;
+  description: string | null;
+  input_schema: Record<string, unknown> | null;
+  source_type: string;
+  is_generatable: boolean;
 }
 
-export function getConversationMessage(
+export interface CallerToolsView {
+  definitions: ToolDefinitionView[];
+  choice: "auto" | "none" | "required" | "tool" | string;
+  required_name: string | null;
+  parallel_allowed: boolean;
+}
+
+export interface ToolCallWarningView {
+  required: boolean;
+  acknowledged: boolean;
+  acknowledged_at: string | null;
+}
+
+export interface RequestView {
+  task: {
+    id: string;
+    public_id: string;
+    request_id: string;
+    protocol: string;
+    requested_model: string;
+    state: string;
+    created_at: string | null;
+    deadline_at: string | null;
+  };
+  current_input: RequestViewContextItem[];
+  caller_system: CallerSystemView;
+  attached_context: RequestViewContextItem[];
+  attachments: RequestViewBlock[];
+  caller_tools: CallerToolsView;
+  tool_call_warning: ToolCallWarningView;
+  raw_request_available: boolean;
+}
+
+export function getRequestView(taskId: string): Promise<RequestView> {
+  return api<RequestView>(`/api/tasks/${taskId}/request-view`);
+}
+
+/** 拉取被截断块的完整内容（base64 仅在此端点出现）。 */
+export function getRequestViewBlock(
   taskId: string,
-  index: number,
-): Promise<{
-  task_id: string;
-  index: number;
-  role: string;
-  blocks: ConversationBlock[];
-  full_text: string;
-  length: number;
-}> {
-  return api(`/api/tasks/${taskId}/conversation/messages/${index}`);
+  blockId: string,
+): Promise<Partial<RequestViewBlock>> {
+  return api(`/api/tasks/${taskId}/request-view/blocks/${blockId}`);
+}
+
+/** 首次使用调用方工具的风险告知确认（服务端状态，替代 sessionStorage）。 */
+export function acknowledgeToolCallWarning(
+  taskId: string,
+): Promise<{ task_id: string; acknowledged: boolean; acknowledged_at: string }> {
+  return api(`/api/tasks/${taskId}/tool-call-warning/acknowledge`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}
+
+export interface ToolArgumentsGeneratePayload {
+  llm_config_id: number;
+  generation_instruction?: string | null;
+  include_caller_system?: boolean;
+  excluded_context_item_ids?: string[];
+  include_attachments?: boolean;
+  current_arguments?: Record<string, unknown> | null;
+}
+
+export interface ToolArgumentsGenerateView {
+  tool_name: string;
+  arguments: Record<string, unknown>;
+  llm_config_id: string;
+  schema_valid: boolean;
+  warnings: string[];
+}
+
+/** 小助手按 JSON Schema 与请求上下文生成调用方工具参数。 */
+export function generateToolArguments(
+  taskId: string,
+  toolName: string,
+  payload: ToolArgumentsGeneratePayload,
+): Promise<ToolArgumentsGenerateView> {
+  return api(`/api/tasks/${taskId}/tools/${encodeURIComponent(toolName)}/arguments/generate`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function deleteDraft(taskId: string, draftId: string): Promise<void> {

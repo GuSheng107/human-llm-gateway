@@ -36,7 +36,6 @@ from ..core.security import (
 )
 from ..core.time import utc_now
 from ..domain.connections import ConnectorError
-from ..domain.dsl import is_empty_draft, parse_reply
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -46,6 +45,7 @@ from ..domain.enums import (
     UserRole,
 )
 from ..domain.errors import DomainError, DomainErrorCode
+from ..domain.values import ReplyDraft
 from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ImConnection, RequestTask, User
 from ..repositories.system import AuditRepository
@@ -1079,9 +1079,8 @@ class ConnectionService:
     ) -> InboundResult:
         """把进站文本提交为任务回复（首个有效提交获胜）。
 
-        正文经 IM DSL 解析为 ReplyDraft（思考 / 假 tool call / 最终文本），与 Web
-        编辑器共享同一结构且往返不丢字段；无围栏块时整段作为 final_text，向后兼容
-        M4 纯文本回复（docs/API_CONTRACT.md §9、docs/PRODUCT.md §6.4）。
+        IM 回复当前为纯文本语义：整段正文即 final_text（后续迭代将重构
+        富文本回复，不再使用 DSL 围栏）。与 Web 编辑器共享 ReplyDraft 结构。
         定位语义：回复上下文 > `#<task_public_id> <正文>` > 唯一等待任务默认。
         """
         text = (message.text or "").strip()
@@ -1104,36 +1103,9 @@ class ConnectionService:
         if task is None or not text:
             return InboundResult.UNHANDLED
 
-        draft = parse_reply(text)
-        if is_empty_draft(draft):
-            return InboundResult.UNHANDLED
-        from .task_service import TaskService
-
-        try:
-            draft = TaskService.normalize_reply_draft(task, draft, source="IM 回复")
-        except DomainError:
-            self._add_task_event(
-                session,
-                task_id=task.id,
-                event_type=TaskEventType.REPLY_REJECTED_POLICY,
-                actor_type=ActorType.IM,
-                actor_user_id=row.owner_user_id,
-                payload={
-                    "source": "im",
-                    "connection_id": row.id,
-                    "reason": "invalid_tool_call",
-                },
-            )
-            log_event(
-                "warning",
-                "im.reply_rejected",
-                "IM 回复因策略限制被拒绝",
-                task_id=task.id,
-                connection_id=row.id,
-                source="im",
-                reason="invalid_tool_call",
-            )
-            return InboundResult.REJECTED
+        # IM 回复当前为纯文本语义（后续迭代将重构富文本回复）：整段正文即
+        # final_text，不解析工具/思考围栏。Web 回复工作台才是 Tool Call 入口。
+        draft = ReplyDraft(reasoning=None, tool_calls=[], final_text=text)
         accepted = self.tasks.first_reply_wins(
             session,
             task_id=task.id,

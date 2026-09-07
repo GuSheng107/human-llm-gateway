@@ -1,6 +1,6 @@
-"""观察项修复验证：IM 事件归属、llm 策略跳过 IM 投递、前端草稿去重契约。
+"""观察项修复验证：IM 事件归属、llm 策略跳过 IM 投递、IM 纯文本回复语义。
 
-后端两项 + 前端 dsl.test.ts（vitest，14 例）配套。
+后端三项（前端配套用例随前端工作包补齐）。
 """
 
 from __future__ import annotations
@@ -238,63 +238,25 @@ def test_im_reply_events_carry_owner_user_id(client, created_user, created_key) 
         assert all(e.actor_user_id == created_user.user_id for e in late)
 
 
-def test_im_tools_share_web_validation_and_first_reply_wins(
-    client, created_user, created_key
-) -> None:
+def test_im_plain_text_reply_semantics(client, created_user, created_key) -> None:
+    """IM 回复为纯文本语义：整段正文即 final_text，围栏语法不再解析。"""
     from types import SimpleNamespace
 
     from app.connectors.base import InboundMessage
-    from app.domain.values import ReplyDraft
     from app.services.connection_service import ConnectionService
-    from app.services.task_service import TaskService
 
     conn_id = _make_connection(client, created_user.headers, "tool-conn")
     task_id = _make_task(created_key.id, created_user.user_id, delivery="web", strategy="human")
     with database.SessionLocal() as session:
         task = session.get(RequestTask, task_id)
-        normalized = json.loads(task.normalized_request_json)
-        normalized["tools"] = [
-            {
-                "type": "function",
-                "function": {
-                    "name": "search",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"query": {"type": "string"}},
-                        "required": ["query"],
-                    },
-                },
-            }
-        ]
-        task.normalized_request_json = json.dumps(normalized)
-        session.commit()
         row = session.get(ImConnection, conn_id)
         service = ConnectionService()
-        for index, (name, arguments) in enumerate(
-            [
-                ("undeclared", '{"query":"hi"}'),
-                ("search", '{"query":1}'),
-            ]
-        ):
-            result = service._submit_task_reply(
-                session,
-                row=row,
-                message=InboundMessage(
-                    external_message_id=f"bad-{index}",
-                    sender_external_id="sender",
-                    reply_to_public_id=task.public_id,
-                    text=f"::: tool caller-id {name}\n{arguments}\n:::",
-                ),
-                receipt=SimpleNamespace(task_id=None),
-            )
-            session.commit()
-            assert result.value == "rejected"
-            assert task.response_payload_json is None
+        # 含旧 DSL 围栏的文本不再按工具解析，整段作为 final_text 落库。
         result = service._submit_task_reply(
             session,
             row=row,
             message=InboundMessage(
-                external_message_id="valid",
+                external_message_id="fence-as-text",
                 sender_external_id="sender",
                 reply_to_public_id=task.public_id,
                 text='::: tool caller-id search\n{"query":"hi"}\n:::',
@@ -304,8 +266,7 @@ def test_im_tools_share_web_validation_and_first_reply_wins(
         session.commit()
         assert result.value == "accepted"
         session.refresh(task)
-        actual = ReplyDraft.model_validate_json(task.response_payload_json)
-        expected = TaskService.normalize_reply_draft(task, actual)
-        assert actual == expected
-        assert actual.tool_calls[0].id == "call_01"
-        assert actual.tool_calls[0].arguments == {"query": "hi"}
+        assert task.response_payload_json is not None
+        draft = json.loads(task.response_payload_json)
+        assert draft.get("tool_calls") in (None, [])
+        assert "::: tool" in (draft.get("final_text") or "")

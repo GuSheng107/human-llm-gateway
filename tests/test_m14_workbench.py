@@ -1,10 +1,10 @@
-"""M14 工作台收件箱 + 乐观锁 + 对话投影（回复工作台改造）。
+"""M14 工作台收件箱 + 乐观锁 + RequestView 投影（回复工作台改造）。
 
 - GET /api/tasks/inbox：owner 的 waiting_human + 未读位，上限 10 无分页
 - GET /api/tasks/inbox-summary：未读/待处理计数
 - POST /api/tasks/{id}/seen：幂等已读
 - PATCH /api/tasks/{id}/drafts/{id}：乐观锁 expected_version（409 draft_version_conflict）
-- GET /api/tasks/{id}/conversation + /messages/{index}：多轮上下文投影
+- GET /api/tasks/{id}/request-view + /blocks/{block_id}：本次请求分区投影
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 
 import app.core.db as database
-from app.domain.conversation import project_messages
 from app.domain.enums import InferenceProtocol
 from app.protocols import chat_completions as chat_protocol
 from app.repositories.models import ApiKey, TaskInboxState, User
@@ -77,10 +76,8 @@ def test_seen_updates_last_event_id(client, created_user, created_key) -> None:
 
 def test_inbox_owner_isolation(client, admin_headers, created_user, created_key) -> None:
     other = _make_task(created_key.id, created_user.user_id)
-    # 管理员自己的 inbox 应不含其他用户任务
     admin_inbox = client.get("/api/tasks/inbox", headers=admin_headers).json()
     assert all(item["id"] != str(other) for item in admin_inbox["items"])
-    # 管理员也可以看到全站：/api/tasks
     assert admin_inbox["waiting_count"] == 0
 
 
@@ -117,102 +114,49 @@ def test_draft_update_missing_expected_version_rejected(client, created_user, cr
     assert resp.status_code == 422
 
 
-def test_conversation_projection(client, created_user, created_key) -> None:
-    task_id = _make_task(created_key.id, created_user.user_id, content="你好")
-    resp = client.get(f"/api/tasks/{task_id}/conversation", headers=created_user.headers)
+def test_request_view_returns_current_input(client, created_user, created_key) -> None:
+    task_id = _make_task(created_key.id, created_user.user_id, content="你好，这是问题")
+    resp = client.get(f"/api/tasks/{task_id}/request-view", headers=created_user.headers)
     assert resp.status_code == 200
     body = resp.json()
-    user_msgs = [m for m in body["messages"] if m["role"] == "user"]
-    assert body["total"] >= 1
-    assert user_msgs[0]["preview"]  # 非空预览
+    assert body["task"]["id"] == str(task_id)
+    assert body["raw_request_available"] is True
+    assert "current_input" in body
+    assert "attached_context" in body
+    assert "caller_system" in body
+    assert "attachments" in body
+    assert "caller_tools" in body
+    # 当前输入优先展示，且携带稳定 block id。
+    assert body["current_input"] != [] or body["attached_context"] != []
+    blocks = body["current_input"] if body["current_input"] else body["attached_context"]
+    assert blocks[0]["id"].startswith("ctx_")
+    assert blocks[0]["blocks"][0]["id"].startswith("blk_")
 
 
-def test_project_messages_uses_context_once_and_normalizes_images() -> None:
-    """工作台只投影 context，并区分技术包裹与用户正文。"""
-    context = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "type": "text",
-                    "text": "agent header\n<user_input>真正的问题</user_input>\nagent footer",
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {"url": "https://example.test/image.png"},
-                },
-            ],
-        }
-    ]
-    messages = project_messages(
-        {
-            "instructions": "只展示必要内容",
-            "context": context,
-            # 这些字段是诊断/原始保存字段，不应再次产生展示消息。
-            "messages": context,
-            "input": context,
-        }
+def test_request_view_block_lazy_load(client, created_user, created_key) -> None:
+    task_id = _make_task(created_key.id, created_user.user_id, content="这段是完整正文内容")
+    view = client.get(f"/api/tasks/{task_id}/request-view", headers=created_user.headers).json()
+    items = view["current_input"] if view["current_input"] else view["attached_context"]
+    block_id = items[0]["blocks"][0]["id"]
+    block = client.get(
+        f"/api/tasks/{task_id}/request-view/blocks/{block_id}", headers=created_user.headers
     )
-
-    assert [(item["role"], item.get("context_index")) for item in messages] == [
-        ("system", None),
-        ("user", 0),
-    ]
-    user_blocks = messages[1]["blocks"]
-    assert {block["display_kind"] for block in user_blocks if block["type"] == "text"} == {
-        "technical",
-        "content",
-    }
-    image = next(block for block in user_blocks if block["type"] == "image")
-    assert image["url"] == "https://example.test/image.png"
-    assert image["source_type"] == "image_url"
+    assert block.status_code == 200
+    assert block.json()["type"] == "text"
+    assert "完整正文内容" in block.json()["text"]
 
 
-def test_project_messages_normalizes_anthropic_base64_image() -> None:
-    messages = project_messages(
-        {
-            "context": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": "YWJj",
-                            },
-                        }
-                    ],
-                }
-            ]
-        }
+def test_request_view_missing_block_404(client, created_user, created_key) -> None:
+    task_id = _make_task(created_key.id, created_user.user_id)
+    resp = client.get(
+        f"/api/tasks/{task_id}/request-view/blocks/blk_nonexistent", headers=created_user.headers
     )
-    image = messages[0]["blocks"][0]
-    assert image["type"] == "image"
-    assert image["url"] == "data:image/png;base64,YWJj"
-    assert image["media_type"] == "image/png"
-    assert image["source_type"] == "base64"
+    assert resp.status_code == 404
 
 
-def test_conversation_message_by_index(client, created_user, created_key) -> None:
-    task_id = _make_task(created_key.id, created_user.user_id, content="需要完整内容的长提示词")
-    mess = client.get(f"/api/tasks/{task_id}/conversation/messages/0", headers=created_user.headers)
-    assert mess.status_code == 200
-    body = mess.json()
-    assert body["index"] == 0
-    assert "完整" in body["full_text"] or body["length"] > 0
-
-    missing = client.get(
-        f"/api/tasks/{task_id}/conversation/messages/999", headers=created_user.headers
-    )
-    assert missing.status_code == 404
-
-
-def test_conversation_forbidden_for_other_user(
+def test_request_view_admin_readonly_visible(
     client, admin_headers, created_user, created_key
 ) -> None:
     task_id = _make_task(created_key.id, created_user.user_id)
-    other_headers = admin_headers  # admin 可以看 conversation
-    resp = client.get(f"/api/tasks/{task_id}/conversation", headers=other_headers)
+    resp = client.get(f"/api/tasks/{task_id}/request-view", headers=admin_headers)
     assert resp.status_code == 200

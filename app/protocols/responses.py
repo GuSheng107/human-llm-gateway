@@ -162,8 +162,10 @@ def reply_output_items(draft: ReplyDraft) -> tuple[list[dict[str, Any]], dict[st
                 "status": "completed",
             }
         )
-    message_item = _message_item("msg_reply", draft.final_text or "")
-    items.append(message_item)
+    message_item: dict[str, Any] | None = None
+    if draft.final_text:
+        message_item = _message_item("msg_reply", draft.final_text)
+        items.append(message_item)
     return items, message_item
 
 

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.constants import MAX_CONTEXT_CHAIN_DEPTH
-from ..core.logging import get_request_id, log_event
+from ..core.logging import get_request_id, log_event, new_trace_id
 from ..core.time import utc_now
 from ..domain.enums import (
     ActorType,
@@ -89,7 +89,7 @@ class InferenceService:
                 else None
             ),
             previous_task_id=previous_task.id if previous_task else None,
-            origin_trace_id=get_request_id(),
+            request_id=get_request_id() or new_trace_id(),
             owner_user_id=owner.id,
             api_key_id=key.id,
             api_key_prefix_snapshot=key.key_prefix,
@@ -179,7 +179,13 @@ class InferenceService:
         previous_task: RequestTask | None,
         protocol: InferenceProtocol,
     ) -> dict[str, Any]:
-        """构造规范化请求 + 等价展开的历史上下文（唯一语义，§12.5）。"""
+        """构造规范化请求 + 等价展开的历史上下文（唯一语义，§12.5）。
+
+        Caller Tool 定义名称必须在同一请求内唯一，歧义直接协议兼容 400。
+        """
+        from ..domain.caller_tools import assert_unique_tool_names, build_caller_tool_catalog
+
+        assert_unique_tool_names(list(build_caller_tool_catalog(protocol, parsed.raw).definitions))
         if not isinstance(parsed, responses_protocol.ResponsesRequest):
             normalized = parsed.normalized_request()
             enforce_context_budget(normalized["context"])

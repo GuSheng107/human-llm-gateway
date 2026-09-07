@@ -12,7 +12,6 @@ describe("bridge", () => {
     registerEditBridge({
       getDraft: () => null,
       getResource: () => ({}),
-      apply: () => {},
     });
     expect(currentEditBridge()).not.toBeNull();
     registerEditBridge(null);
@@ -23,12 +22,10 @@ describe("bridge", () => {
     registerEditBridge({
       getDraft: () => ({ reasoning: null, final_text: "first", tool_calls: [] }),
       getResource: () => ({ task_id: "1" }),
-      apply: () => {},
     });
     registerEditBridge({
       getDraft: () => ({ reasoning: null, final_text: "second", tool_calls: [] }),
       getResource: () => ({ task_id: "2" }),
-      apply: () => {},
     });
     expect(currentEditBridge()?.getDraft()?.final_text).toBe("second");
     expect(currentEditBridge()?.getResource()["task_id"]).toBe("2");
@@ -88,7 +85,6 @@ describe("buildContextSnapshot", () => {
         tool_calls: [{ id: "c1", name: "fn", arguments: { a: 1 } }],
       }),
       getResource: () => ({ task_id: "9", state: "waiting_human", model: "deepseek-v4-pro" }),
-      apply: () => {},
     });
     const snapshot = buildContextSnapshot("/tasks", "");
     expect(snapshot!.unsaved_edit?.final_text).toBe("草稿");

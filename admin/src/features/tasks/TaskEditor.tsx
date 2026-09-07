@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  acknowledgeToolCallWarning,
   generateDraft,
-  getConversation,
+  getRequestView,
   getTask,
   saveDraft,
   submitReply,
   updateDraft,
-  type ConversationPage,
   type DraftGenerateMode,
+  type RequestView,
 } from "../../api/tasks";
 import { listLlmConfigs } from "../../api/llmConfigs";
 import { Card } from "../../components/data-display/Card";
@@ -102,9 +103,6 @@ function buildDraft(
 
 type TabKey = "reasoning" | "final" | "tools";
 
-/** 工具风险警告的 sessionStorage 记忆键：本次登录只弹一次。 */
-const TOOL_WARN_KEY = "hlg_tool_call_warned";
-
 const TABS: { key: TabKey; label: string; icon: string }[] = [
   { key: "reasoning", label: "思考链", icon: "list" },
   { key: "final", label: "正式回复", icon: "reply" },
@@ -146,8 +144,11 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
   const [generateError, setGenerateError] = useState("");
   const [generateMode, setGenerateMode] = useState<DraftGenerateMode>("both");
   const [guidance, setGuidance] = useState("");
-  const [conversation, setConversation] = useState<ConversationPage | null>(null);
-  const [excludedIndices, setExcludedIndices] = useState<number[]>([]);
+  const [requestView, setRequestView] = useState<RequestView | null>(null);
+  /** 被排除的附带上下文稳定 ctx ID（current_input 不可排除）。 */
+  const [excludedCtxIds, setExcludedCtxIds] = useState<string[]>([]);
+  const [includeCallerSystem, setIncludeCallerSystem] = useState(true);
+  const [includeAttachments, setIncludeAttachments] = useState(true);
   // 草稿乐观锁版本（服务端 DraftView.version）。
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
   // 截止时间每秒重渲染（formatDeadline 是"剩余时间"语义）。
@@ -163,6 +164,14 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
   }, [taskId]);
 
   useEffect(() => void load(), [load]);
+
+  // 首次进入即同步服务端工具风险确认状态（每 RequestTask 一次）。
+  useEffect(() => {
+    if (!task?.can_edit) return;
+    getRequestView(taskId)
+      .then((view) => setToolWarnAcked(!view.tool_call_warning.required || view.tool_call_warning.acknowledged))
+      .catch(() => setToolWarnAcked(null));
+  }, [task?.can_edit, taskId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setTick((t) => t + 1), 1000);
@@ -201,7 +210,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     return result.ok ? result.draft : null;
   }, [reasoning, toolCalls, finalText]);
 
-  // 编辑器桥：全局助手读取未提交草稿与覆盖写入（与工作台共享同一契约）。
+  // 编辑器桥（只读）：全局助手读取未提交草稿与任务资源字段做脱敏上下文参考。
   const liveDraftRef = useRef<ReplyDraft | null>(liveDraft);
   liveDraftRef.current = liveDraft;
   useEffect(() => {
@@ -225,13 +234,9 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
         strategy: task.reply_strategy,
         delivery: task.delivery_mode,
       }),
-      apply: (draft) => {
-        applyDraft(draft);
-        notify("已覆盖编辑器内容");
-      },
     });
     return () => registerEditBridge(null);
-  }, [task, applyDraft]);
+  }, [task]);
 
   const doSave = useCallback(async () => {
     if (!task || !task.can_edit || saving) return;
@@ -307,12 +312,18 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     if (!task) return;
     setShowGenerate(true);
     setGenerateError("");
-    setExcludedIndices([]);
+    setExcludedCtxIds([]);
+    setIncludeCallerSystem(true);
+    setIncludeAttachments(true);
     setGuidance("");
-    setConversation(null);
-    getConversation(task.id)
-      .then(setConversation)
-      .catch(() => setConversation(null));
+    setRequestView(null);
+    getRequestView(task.id)
+      .then((view) => {
+        setRequestView(view);
+        // 服务端默认折叠调用方 system：默认不携带，与工作台展示语义一致。
+        setIncludeCallerSystem(!view.caller_system.collapsed_by_default);
+      })
+      .catch(() => setRequestView(null));
   }, [task]);
 
   const handleGenerate = async (llmConfigId: number) => {
@@ -323,12 +334,12 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
       const draft = await generateDraft(task.id, {
         llm_config_id: llmConfigId,
         mode: generateMode,
-        exclude_context_indices: excludedIndices.length ? excludedIndices : undefined,
+        generation_instruction: guidance.trim() ? guidance.trim() : undefined,
+        include_caller_system: includeCallerSystem,
+        excluded_context_item_ids: excludedCtxIds.length ? excludedCtxIds : undefined,
+        include_attachments: includeAttachments,
         reasoning_seed:
           generateMode === "reply" && reasoning.trim() ? reasoning.trim() : undefined,
-        guidance: guidance.trim() ? guidance.trim() : undefined,
-        selected_tool_names:
-          generateMode === "reasoning" ? [] : toolCalls.map((call) => call.name),
       });
       setActiveDraftId(draft.id);
       setDraftVersion(draft.version);
@@ -385,9 +396,13 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     });
   };
 
-  /** 工具相关操作前的风险警告：本次登录只弹一次（sessionStorage 记忆）。 */
+  /** 服务端风险确认状态（每 RequestTask 一次）：未知悉时弹窗，确认后写入服务端。 */
+  const [toolWarnAcked, setToolWarnAcked] = useState<boolean | null>(null);
+  const [toolWarnSubmitting, setToolWarnSubmitting] = useState(false);
+
+  /** 工具相关操作前的风险告知：任务首次使用调用方工具时弹一次，确认写入服务端。 */
   const requireToolWarn = () => {
-    if (sessionStorage.getItem(TOOL_WARN_KEY)) return;
+    if (toolWarnAcked === true) return;
     setToolWarnOpen(true);
   };
 
@@ -406,7 +421,11 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
           ...prev,
           {
             name: tool.name,
-            argumentsText: JSON.stringify(buildInitialArguments(tool.parameters), null, 2),
+            argumentsText: JSON.stringify(
+              buildInitialArguments(tool.input_schema ?? {}),
+              null,
+              2,
+            ),
           },
         ];
       }
@@ -415,9 +434,18 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     if (checked) setTab("tools");
   };
 
-  const dismissToolWarn = () => {
-    sessionStorage.setItem(TOOL_WARN_KEY, "1");
-    setToolWarnOpen(false);
+  const dismissToolWarn = async () => {
+    if (toolWarnSubmitting) return;
+    setToolWarnSubmitting(true);
+    try {
+      await acknowledgeToolCallWarning(taskId);
+      setToolWarnAcked(true);
+      setToolWarnOpen(false);
+    } catch (caught) {
+      notify(friendlyErrorMessage(caught, "确认失败"), "error");
+    } finally {
+      setToolWarnSubmitting(false);
+    }
   };
 
   if (error && !task) {
@@ -517,7 +545,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
                     onChange={(event) => setReasoning(event.target.value)}
                     disabled={!canEdit}
                     className="field-input min-h-[320px] font-mono text-xs"
-                    placeholder="::: reasoning 围栏块的等价内容"
+                    placeholder="人工推理过程（仅人工可见）"
                   />
                 </div>
               )}
@@ -694,7 +722,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
                       <details className="mt-1 text-[10px] text-slate-400" onClick={(event) => event.stopPropagation()}>
                         <summary className="cursor-pointer">查看参数结构</summary>
                         <pre className="mt-1 max-h-32 overflow-auto rounded bg-slate-50 p-2 font-mono">
-                          {JSON.stringify(tool.parameters, null, 2)}
+                          {JSON.stringify(tool.input_schema, null, 2)}
                         </pre>
                       </details>
                     </span>
@@ -714,11 +742,8 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
 
       {toolWarnOpen && (
         <Modal
-          title="工具调用风险提示"
-          onClose={() => {
-            // 关闭即视为已知悉：记录本次登录不再弹出。
-            dismissToolWarn();
-          }}
+          title="工具调用风险告知"
+          onClose={() => setToolWarnOpen(false)}
           width="max-w-lg"
         >
           <div className="space-y-4 p-6 text-sm text-slate-600">
@@ -726,10 +751,10 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
               用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
             </p>
             <p className="text-amber-700">
-              名称必须命中调用方声明的工具，工具调用不是必须的。本次登录内不再重复提示。
+              名称必须命中调用方在请求中声明的工具，工具调用不是必须的。本任务首次使用调用方工具需确认一次，确认后写入服务端。
             </p>
             <div className="flex justify-end border-t border-slate-100 pt-4">
-              <Button onClick={dismissToolWarn}>
+              <Button onClick={() => void dismissToolWarn()} loading={toolWarnSubmitting}>
                 <Icon name="check" className="h-4 w-4" />
                 我已知晓
               </Button>
@@ -807,7 +832,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
                   <button
                     type="button"
                     className="hover:underline"
-                    onClick={() => setExcludedIndices([])}
+                    onClick={() => setExcludedCtxIds([])}
                   >
                     全选
                   </button>
@@ -815,63 +840,76 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
                     type="button"
                     className="hover:underline"
                     onClick={() => {
-                      const all = (conversation?.messages ?? [])
-                        .map((m) => m.context_index)
-                        .filter((i): i is number => i !== null);
-                      setExcludedIndices(all);
+                      const all = (requestView?.attached_context ?? []).map((item) => item.id);
+                      setExcludedCtxIds(all);
                     }}
                   >
                     全部排除
                   </button>
                 </div>
               </div>
-              {conversation === null && (
+              {requestView === null && (
                 <p className="rounded-md border border-dashed border-slate-200 px-3 py-2 text-center text-xs text-slate-400">
                   加载上下文中…
                 </p>
               )}
-              {conversation !== null && conversation.messages.length === 0 && (
-                <p className="rounded-md border border-dashed border-slate-200 px-3 py-2 text-center text-xs text-slate-400">
-                  没有可用的上下文消息
-                </p>
+              {requestView !== null &&
+                requestView.current_input.length === 0 &&
+                requestView.attached_context.length === 0 &&
+                requestView.caller_system.items.length === 0 && (
+                  <p className="rounded-md border border-dashed border-slate-200 px-3 py-2 text-center text-xs text-slate-400">
+                    没有可用的上下文
+                  </p>
+                )}
+              {requestView !== null && requestView.current_input.length > 0 && (
+                <div className="rounded-lg border border-slate-200">
+                  <p className="border-b border-slate-100 bg-blue-50/40 px-3 py-1.5 text-[11px] font-medium text-blue-700">
+                    本次输入（始终参与，不可排除）
+                  </p>
+                  <div className="divide-y divide-slate-100">
+                    {requestView.current_input.map((item) => (
+                      <div key={item.id} className="flex items-start gap-2 px-3 py-2 text-xs">
+                        <span className="mt-1 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-medium capitalize text-slate-500">
+                          {item.role}
+                        </span>
+                        <span className="line-clamp-2 min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] text-slate-600">
+                          {item.blocks.map((b) => b.text ?? "").join(" ").slice(0, 200) || "(空)"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               )}
-              {conversation !== null && conversation.messages.length > 0 && (
-                <div className="max-h-72 divide-y divide-slate-100 overflow-auto rounded-lg border border-slate-200">
-                  {conversation.messages.map((message) => {
-                    const isSystem = message.context_index === null;
-                    const checked = !excludedIndices.includes(message.context_index ?? -1);
+              {requestView !== null && requestView.attached_context.length > 0 && (
+                <div className="max-h-56 divide-y divide-slate-100 overflow-auto rounded-lg border border-slate-200">
+                  {requestView.attached_context.map((item) => {
+                    const checked = !excludedCtxIds.includes(item.id);
                     return (
                       <label
-                        key={message.index}
+                        key={item.id}
                         className="flex cursor-pointer items-start gap-2 px-3 py-2 text-xs hover:bg-slate-50"
                       >
                         <input
                           type="checkbox"
                           className="mt-1"
-                          checked={isSystem ? true : checked}
-                          disabled={isSystem}
+                          checked={checked}
                           onChange={(event) => {
-                            const ctxIdx = message.context_index;
-                            if (ctxIdx === null) return;
-                            setExcludedIndices((prev) =>
+                            setExcludedCtxIds((prev) =>
                               event.target.checked
-                                ? prev.filter((i) => i !== ctxIdx)
-                                : Array.from(new Set([...prev, ctxIdx])),
+                                ? prev.filter((id) => id !== item.id)
+                                : Array.from(new Set([...prev, item.id])),
                             );
                           }}
                         />
                         <span className="min-w-0 flex-1">
                           <span className="mb-1 flex items-center gap-2 text-[11px] text-slate-500">
                             <span className="rounded-full bg-slate-100 px-2 py-0.5 font-medium capitalize">
-                              {message.role}
+                              {item.role}
                             </span>
-                            <span>{message.length.toLocaleString()} 字</span>
-                            {isSystem && (
-                              <span className="text-amber-600">系统指令（始终参与）</span>
-                            )}
+                            <span>{item.text_length.toLocaleString()} 字</span>
                           </span>
                           <span className="line-clamp-2 whitespace-pre-wrap break-words font-mono text-[11px] text-slate-600">
-                            {message.preview || "(空)"}
+                            {item.blocks.map((b) => b.text ?? "").join(" ").slice(0, 200) || "(空)"}
                           </span>
                         </span>
                       </label>
@@ -879,8 +917,45 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
                   })}
                 </div>
               )}
+              {requestView !== null && requestView.caller_system.items.length > 0 && (
+                <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={includeCallerSystem}
+                    onChange={(event) => setIncludeCallerSystem(event.target.checked)}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium text-slate-600">
+                      携带调用方 system（{requestView.caller_system.item_count} 条 ·{" "}
+                      {requestView.caller_system.character_count.toLocaleString()} 字）
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">
+                      调用方 IDE 注入的系统指令，含 Agent 提示词；不需要时可排除。
+                    </span>
+                  </span>
+                </label>
+              )}
+              {requestView !== null && requestView.attachments.length > 0 && (
+                <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs hover:bg-slate-50">
+                  <input
+                    type="checkbox"
+                    className="mt-1"
+                    checked={includeAttachments}
+                    onChange={(event) => setIncludeAttachments(event.target.checked)}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="font-medium text-slate-600">
+                      携带附件（{requestView.attachments.length} 个）
+                    </span>
+                    <span className="mt-0.5 block text-[11px] text-slate-400">
+                      附件无法承载到上游协议时生成会被拒绝，而不是静默降级。
+                    </span>
+                  </span>
+                </label>
+              )}
               <p className="text-[11px] text-slate-400">
-                取消勾选的消息不会送入上游 LLM；系统指令始终参与生成。
+                取消勾选的附带上下文不会送入上游 LLM；本次输入始终参与生成。
               </p>
             </fieldset>
 

@@ -86,6 +86,8 @@ class AuditRepository:
         owner_user_id: int | None = None,
         request_id: str | None = None,
         hours: int | None = None,
+        start_at: Any | None = None,
+        end_at: Any | None = None,
     ) -> tuple[list[AuditLog], int]:
         """管理员审计检索：按操作者/资源/动作/所有者/traceId/时间窗筛选。"""
         from sqlalchemy import func, select
@@ -96,7 +98,7 @@ class AuditRepository:
         if resource_type:
             filters.append(AuditLog.resource_type == resource_type)
         if action:
-            filters.append(AuditLog.action.like(f"%{action}%"))
+            filters.append(AuditLog.action == action)
         if owner_user_id is not None:
             filters.append(AuditLog.owner_user_id == owner_user_id)
         if request_id:
@@ -105,6 +107,10 @@ class AuditRepository:
             from datetime import timedelta
 
             filters.append(AuditLog.created_at >= _now() - timedelta(hours=hours))
+        if start_at is not None:
+            filters.append(AuditLog.created_at >= start_at)
+        if end_at is not None:
+            filters.append(AuditLog.created_at <= end_at)
         total = session.scalar(select(func.count()).select_from(AuditLog).where(*filters)) or 0
         rows = list(
             session.scalars(
@@ -126,6 +132,8 @@ class AuditRepository:
         hours: int | None = None,
         request_id: str | None = None,
         action: str | None = None,
+        start_at: Any | None = None,
+        end_at: Any | None = None,
     ) -> list[AuditLog]:
         """本人可见审计：actor 或 owner 是自己。仅返回用于合并视图的条数。"""
         from datetime import timedelta
@@ -144,6 +152,10 @@ class AuditRepository:
             filters.append(AuditLog.request_id == request_id)
         if action:
             filters.append(AuditLog.action.like(f"%{action}%"))
+        if start_at is not None:
+            filters.append(AuditLog.created_at >= start_at)
+        if end_at is not None:
+            filters.append(AuditLog.created_at <= end_at)
         rows = list(
             session.scalars(
                 select(AuditLog).where(*filters).order_by(AuditLog.id.desc()).limit(limit)
@@ -199,9 +211,16 @@ class AppLogRepository:
         request_id: str | None = None,
         scope_owner_id: int | None = None,
         hours: int | None = None,
+        start_at: Any | None = None,
+        end_at: Any | None = None,
     ) -> tuple[list[AppLog], int]:
-        """应用日志检索：按级别/分类/事件/关联 ID/request_id/时间窗筛选。"""
+        """应用日志检索：按级别/分类/事件/关联 ID/trace/时间窗筛选。
+
+        列表查询 defer detail_json：详情正文只在 GET /api/logs/{entry_id}
+        懒加载，绝不把 detail 读入内存后丢弃（§7.5）。
+        """
         from sqlalchemy import func, select
+        from sqlalchemy.orm import defer
 
         filters: list[Any] = []
         if level:
@@ -243,10 +262,15 @@ class AppLogRepository:
             from datetime import timedelta
 
             filters.append(AppLog.created_at >= _now() - timedelta(hours=hours))
+        if start_at is not None:
+            filters.append(AppLog.created_at >= start_at)
+        if end_at is not None:
+            filters.append(AppLog.created_at <= end_at)
         total = session.scalar(select(func.count()).select_from(AppLog).where(*filters)) or 0
         rows = list(
             session.scalars(
                 select(AppLog)
+                .options(defer(AppLog.detail_json))
                 .where(*filters)
                 .order_by(AppLog.id.desc())
                 .offset((page - 1) * page_size)
@@ -254,3 +278,7 @@ class AppLogRepository:
             )
         )
         return rows, total
+
+    def get_entry(self, session: Session, entry_id: int) -> AppLog | None:
+        """详情懒加载：按主键取单条（含 detail_json）。"""
+        return session.get(AppLog, entry_id)

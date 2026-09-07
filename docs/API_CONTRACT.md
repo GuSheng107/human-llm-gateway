@@ -26,10 +26,12 @@
 | `GET /api/tasks/inbox` | 获取当前用户待回复任务和未读状态 | 登录用户 |
 | `GET /api/tasks/inbox-summary` | 获取待处理和未读数量 | 登录用户 |
 | `POST /api/tasks/{task_id}/seen` | 标记任务已读，可同步最后事件 ID | 任务所有者 |
-| `GET /api/tasks/{task_id}/conversation` | 获取任务对话投影和预览 | 所有者/管理员 |
-| `GET /api/tasks/{task_id}/conversation/messages/{index}` | 按需获取单条完整消息 | 所有者/管理员 |
+| `GET /api/tasks/{task_id}/request-view` | 请求视图：分区后的本次请求与警告状态 | 所有者/管理员只读 |
+| `GET /api/tasks/{task_id}/request-view/blocks/{block_id}` | 按需获取附件或超长块的完整内容 | 所有者/管理员只读 |
+| `POST /api/tasks/{task_id}/tool-call-warning/acknowledge` | 确认本任务的 Caller Tool 风险告知（幂等） | 任务所有者 |
+| `POST /api/tasks/{task_id}/tools/{tool_name}/arguments/generate` | 小助手按 Schema 生成调用方工具参数 | 任务所有者 |
 
-草稿 `PATCH` 必须携带 `expected_version`；版本不匹配返回 `409 draft_version_conflict`。回复统一使用回复工作台。
+草稿 `PATCH` 必须携带 `expected_version`；版本不匹配返回 `409 draft_version_conflict`。手动草稿生成使用统一的 `POST /api/tasks/{task_id}/drafts/generate` 契约（generation_instruction、include_caller_system、excluded_context_item_ids、include_attachments、reasoning_seed、mode∈reasoning/reply/both）。回复统一使用回复工作台。
 
 ### 1.1 `/readyz` 就绪条件
 
@@ -377,7 +379,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 管理员只能查看允许的任务元数据和脱敏请求，不可调用草稿或回复写接口。
 
-回复请求使用统一的协议无关 `ReplyDraft` 表示。Web 编辑器直接读写该结构，IM DSL 解析器也必须生成完全相同的结构：
+回复请求使用统一的协议无关 `ReplyDraft` 表示。Web 编辑器直接读写该结构；IM 纯文本回复的整段正文以 `final_text` 写入同一结构：
 
 ```json
 {

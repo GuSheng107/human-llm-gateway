@@ -132,7 +132,7 @@ class ReplyToolCall(BaseModel):
 
 
 class ReplyDraft(BaseModel):
-    """IM DSL、Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构。
+    """IM、Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构。
 
     协议专有 ID、SSE 序号和 finish reason 由渲染器生成，不反向写入此结构。
     """
@@ -140,3 +140,44 @@ class ReplyDraft(BaseModel):
     reasoning: str | None = None
     tool_calls: list[ReplyToolCall] = Field(default_factory=list)
     final_text: str | None = None
+
+
+def is_empty_draft(draft: ReplyDraft) -> bool:
+    """判断回复草稿是否为空（Web 提交接口与 IM 共用）。"""
+    return not (
+        draft.reasoning or draft.tool_calls or (draft.final_text and draft.final_text.strip())
+    )
+
+
+def normalize_generation_instruction(raw: Any) -> str | None:
+    """统一归一化用户自定义生成引导（generation_instruction）。
+
+    - 仅接受字符串或 None；非字符串直接 400 ``generation_instruction_invalid``。
+    - 去除首尾空白后为空按未提供（None）处理。
+    - 按 Unicode 字符数校验 ``GENERATION_INSTRUCTION_MAX_CHARS``，超限 400。
+    - 一次生成操作的短生命周期输入：不落库、不进入最终对外回复、
+      日志只记录脱敏后的摘要与长度指标。
+    """
+    from ..core.constants import GENERATION_INSTRUCTION_MAX_CHARS
+    from .errors import DomainError, DomainErrorCode
+
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            "generation_instruction 必须是字符串",
+            status_code=400,
+            public_code="generation_instruction_invalid",
+        )
+    cleaned = raw.strip()
+    if not cleaned:
+        return None
+    if len(cleaned) > GENERATION_INSTRUCTION_MAX_CHARS:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            f"generation_instruction 超过 {GENERATION_INSTRUCTION_MAX_CHARS} 字符上限",
+            status_code=400,
+            public_code="generation_instruction_invalid",
+        )
+    return cleaned

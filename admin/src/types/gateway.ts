@@ -190,8 +190,11 @@ export interface ToolCall {
 export interface ToolDefinition {
   name: string;
   description: string | null;
-  parameters: Record<string, unknown>;
+  /** JSON Schema；null 表示未声明。 */
+  input_schema: Record<string, unknown> | null;
   source_type: string;
+  /** 是否允许小助手生成参数（无法抽取输入 Schema 的工具不允许）。 */
+  is_generatable: boolean;
 }
 
 export interface ReplyDraft {

@@ -170,7 +170,6 @@ class InboundResult(StrEnum):
     UNBOUND = "unbound"
     UNHANDLED = "unhandled"
     BOUND = "bound"
-    REJECTED = "rejected"  # 业务规则拒绝（如 IM 提交携带 tool_call）
 
 
 class TaskEventType(StrEnum):
@@ -178,7 +177,6 @@ class TaskEventType(StrEnum):
     DELIVERED = "delivered"
     REPLY_SUBMITTED = "reply_submitted"
     REPLY_REJECTED_LATE = "reply_rejected_late"
-    REPLY_REJECTED_POLICY = "reply_rejected_policy"  # 策略拒绝（如 IM 提交携带 tool_call）
     FALLBACK = "fallback"
     STREAM = "stream"
     COMPLETED = "completed"
@@ -240,4 +238,5 @@ class AuditAction(StrEnum):
     API_KEY_UPDATED = "api_key.updated"
     API_KEY_DELETED = "api_key.deleted"
     TASK_REPLY_SUBMITTED = "task.reply_submitted"
+    TASK_TOOL_CALL_WARNING_ACKNOWLEDGED = "task.tool_call_warning_ack"
     MCP_TOOL_CALLED = "mcp_tool.called"

@@ -695,6 +695,18 @@ def test_forward_upstream_tool_calls_recorded_not_executed(client, created_user)
             json={
                 "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": "hi"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"q": {"type": "string"}},
+                            },
+                        },
+                    }
+                ],
             },
         )
     assert resp.status_code == 200

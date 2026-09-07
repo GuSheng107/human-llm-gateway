@@ -87,7 +87,6 @@ export function AssistantPanel() {
     localStorage.getItem(DEFAULT_LLM_KEY) ?? "",
   );
   const [streamingText, setStreamingText] = useState<string | null>(null);
-  const [insertPreview, setInsertPreview] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
@@ -336,21 +335,6 @@ export function AssistantPanel() {
   const copyMessage = async (message: AssistantMessage) => {
     await copyText(message.text, "回复");
   };
-
-  const applyInsert = useCallback(() => {
-    const target = currentEditBridge();
-    if (!target || insertPreview === null) {
-      setInsertPreview(null);
-      return;
-    }
-    target.apply({
-      reasoning: null,
-      final_text: insertPreview,
-      tool_calls: [],
-    });
-    setInsertPreview(null);
-    notify("已覆盖编辑器内容");
-  }, [insertPreview]);
 
   const removeSession = useCallback(async () => {
     if (!activeSessionId) return;
@@ -732,15 +716,6 @@ export function AssistantPanel() {
                           trace: {message.trace_id.slice(0, 12)}…
                         </span>
                       )}
-                      {bridge && !isError && (
-                        <button
-                          type="button"
-                          onClick={() => setInsertPreview(message.text)}
-                          className="text-primary hover:underline"
-                        >
-                          插入到回复编辑器
-                        </button>
-                      )}
                     </div>
                   </div>
                 </div>
@@ -789,24 +764,6 @@ export function AssistantPanel() {
             </Button>
           </form>
         </aside>
-      )}
-
-      {insertPreview !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl">
-            <h3 className="text-sm font-semibold text-slate-800">插入到回复编辑器</h3>
-            <p className="mt-1 text-xs text-red-500">将覆盖当前编辑内容，无法撤回。</p>
-            <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600">
-              {insertPreview}
-            </pre>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setInsertPreview(null)}>
-                取消
-              </Button>
-              <Button onClick={applyInsert}>确认覆盖</Button>
-            </div>
-          </div>
-        </div>
       )}
     </>
   );

@@ -1,14 +1,16 @@
 """LLM 草稿生成服务（M7-B）。
 
 任务工作台中用户选择 LLM 配置生成持久化草稿：
-- 仅同协议：Chat/Responses -> openai_chat LLM；Anthropic -> Anthropic LLM。
-  跨协议转换在 M7-C 字段矩阵中实现，本阶段不开放。
-- 使用配置的 base_url / api_key 调上游最小请求（非流式）。
-- 上游响应解析为 ReplyDraft 后落库为 source=llm 的活动草稿，用户继续编辑后提交。
+- 同协议直拼原始请求（多模态原样透传）；跨协议走 cross 矩阵转换。
+- 生成契约：mode + generation_instruction + include_caller_system +
+  excluded_context_item_ids + include_attachments + reasoning_seed。
+- 上游响应解析为 ReplyDraft，经 CallerToolCallValidator 结构校验后落库为
+  source=llm 的活动草稿，用户继续编辑后提交。
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -30,15 +32,14 @@ from ..domain.enums import (
     ThinkingMode,
 )
 from ..domain.errors import DomainError, DomainErrorCode
-from ..domain.tool_validation import normalize_tool_calls
-from ..domain.values import ReplyDraft
+from ..domain.values import ReplyDraft, normalize_generation_instruction
 from ..protocols import cross
-from ..protocols.normalized import declared_tool_definitions
 from ..repositories.llm_configs import LlmConfigRepository
 from ..repositories.models import LlmConfig, RequestTask, TaskDraft, User
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
 from . import llm_upstream
+from .caller_tool_service import catalog_for_task, validate_structural
 
 # ---------------------------------------------------------------------------
 # 配置参数应用（采样默认 / extra_body / 思考模式）
@@ -97,13 +98,11 @@ _REASONING_ONLY_INSTRUCTION = (
 _REPLY_FROM_SEED_TEMPLATE = (
     "以下思考过程已由人工确认，请严格基于它直接输出最终答复，不要再输出额外的推理过程。\n\n{seed}"
 )
-_GUIDANCE_TEMPLATE = (
-    "以下是任务回复者对本次生成内容（思考链 / 正式回复 / 工具调用参数）的引导性要求，"
-    "请严格遵循它来生成：\n\n{guidance}"
-)
-_TOOL_SELECTION_TEMPLATE = (
-    "只允许按以下顺序各调用一次工具：{names}。每次调用的 name 必须精确命中，"
-    "arguments 必须是对应 JSON Schema 的 JSON 对象；不要调用未列出的工具，不要重复调用。"
+# 用户自定义生成引导（generation_instruction）：只表达“怎么生成”的方向性
+# 要求，优先级低于协议与 Schema 约束、生成模式约束，高于调用方上下文。
+_GENERATION_INSTRUCTION_TEMPLATE = (
+    "以下是回复者对本次生成的引导要求（优先级低于协议、Schema 与生成模式约束），"
+    "请在符合上述约束的前提下遵循：\n\n{instruction}"
 )
 
 # 生成模式（DraftGenerateInput.mode）
@@ -135,7 +134,10 @@ def _decrypt_config(row: LlmConfig) -> str:
 
 
 def _coerce_message_content(content: Any) -> str:
-    """把上下文项的 content 统一为字符串（多模态数组简化为首段文本）。"""
+    """把上下文项的 content 统一为字符串（跨协议文本提取用）。
+
+    同协议路径不使用本函数：内容数组按协议原样透传（多模态不静默降级）。
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -146,10 +148,87 @@ def _coerce_message_content(content: Any) -> str:
     return str(content) if content is not None else ""
 
 
+_MEDIA_PART_TYPES = frozenset(
+    {"image", "image_url", "input_image", "input_audio", "audio", "file", "input_file", "document"}
+)
+
+
+def _content_has_media(content: Any) -> bool:
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(part, dict) and str(part.get("type") or "") in _MEDIA_PART_TYPES
+        for part in content
+    )
+
+
+def _normalized_has_media(normalized: dict[str, Any]) -> bool:
+    context = normalized.get("context")
+    if isinstance(context, list):
+        for item in context:
+            if isinstance(item, dict) and _content_has_media(item.get("content")):
+                return True
+    return False
+
+
+def _strip_media_from_content(content: Any) -> Any:
+    """剔除内容数组中的媒体块（include_attachments=False 时使用）。"""
+    if not isinstance(content, list):
+        return content
+    return [
+        part
+        for part in content
+        if not (isinstance(part, dict) and str(part.get("type") or "") in _MEDIA_PART_TYPES)
+    ]
+
+
+def _strip_media_from_normalized(normalized: dict[str, Any]) -> dict[str, Any]:
+    context = normalized.get("context")
+    if not isinstance(context, list):
+        return normalized
+    stripped = [
+        {**item, "content": _strip_media_from_content(item.get("content"))}
+        if isinstance(item, dict)
+        else item
+        for item in context
+    ]
+    return {**normalized, "context": stripped}
+
+
+def _drop_caller_system(normalized: dict[str, Any], protocol_kind: str) -> dict[str, Any]:
+    """include_caller_system=False：剔除调用方 system 指令（不进入上游）。"""
+    prepared = {
+        **normalized,
+        "instructions": None,
+        "system_blocks": None,
+    }
+    if protocol_kind == "chat":
+        context = normalized.get("context")
+        if isinstance(context, list):
+            filtered = [
+                item
+                for item in context
+                if not (
+                    isinstance(item, dict)
+                    and str(item.get("role") or "") in {"system", "developer"}
+                )
+            ]
+            prepared["context"] = filtered
+            prepared["messages"] = filtered
+    return prepared
+
+
+def _inject_generation_instruction(
+    body: dict[str, Any], protocol: LLMProtocol, instruction: str
+) -> None:
+    """注入用户生成引导（在模式指令之后、调用方上下文之前的引导层级）。"""
+    _inject_mode_instruction(body, protocol, instruction)
+
+
 def _filter_context(
     normalized: dict[str, Any], excluded_indices: list[int] | None
 ) -> dict[str, Any]:
-    """按用户在会话视图中勾选的条数（对应 normalized.context 下标）剔除消息。
+    """按稳定 ctx ID 解析出的下标剔除上下文条目（current_input 不可排除）。
 
     剔除不改变系统指令段（instructions / system_blocks）。
     """
@@ -194,72 +273,6 @@ def _inject_mode_instruction(body: dict[str, Any], protocol: LLMProtocol, instru
             body["system"] = instruction
 
 
-def _raw_tool_name(tool: dict[str, Any]) -> str | None:
-    function = tool.get("function")
-    if isinstance(function, dict) and isinstance(function.get("name"), str):
-        name = function["name"].strip()
-        return name or None
-    name = tool.get("name")
-    if not isinstance(name, str):
-        return None
-    name = name.strip()
-    return name or None
-
-
-def _prepare_tool_selection(
-    normalized: dict[str, Any],
-    selected_tool_names: list[str] | None,
-    *,
-    protocol: LLMProtocol,
-    mode: str,
-) -> tuple[dict[str, Any], list[str] | None]:
-    """按工作台选择重建工具集合，并返回生成结果应满足的调用顺序。"""
-    # reasoning 模式绝不向上游提供工具，也不接受上游工具调用。
-    selection_is_explicit = selected_tool_names is not None or mode == MODE_REASONING
-    if not selection_is_explicit:
-        return normalized, None
-    selected = [name.strip() for name in (selected_tool_names or [])]
-    if len(selected) != len(set(selected)):
-        raise DomainError(DomainErrorCode.VALIDATION_FAILED, "选中的工具不能重复", status_code=400)
-    declared = declared_tool_definitions(normalized)
-    declared_names = {item["name"] for item in declared}
-    unknown = [name for name in selected if name not in declared_names]
-    if unknown:
-        raise DomainError(
-            DomainErrorCode.VALIDATION_FAILED,
-            f"选中的工具 {'、'.join(unknown)} 不在调用方声明的工具内",
-            status_code=400,
-        )
-    if mode == MODE_REASONING:
-        selected = []
-    raw_tools = normalized.get("tools")
-    by_name = {
-        name: tool
-        for tool in (raw_tools if isinstance(raw_tools, list) else [])
-        if isinstance(tool, dict)
-        for name in [_raw_tool_name(tool)]
-        if name
-    }
-    filtered = [by_name[name] for name in selected if name in by_name]
-    options = dict(normalized.get("options") or {})
-    options.pop("tools", None)
-    options.pop("tool_choice", None)
-    prepared = {
-        **normalized,
-        "tools": filtered or None,
-        "options": options,
-        # 显式选择覆盖请求原有 tool_choice；空选择必须同时移除二者。
-        "tool_choice": None,
-    }
-    if len(selected) == 1:
-        name = selected[0]
-        if protocol is LLMProtocol.OPENAI_CHAT:
-            prepared["tool_choice"] = {"type": "function", "function": {"name": name}}
-        elif protocol is LLMProtocol.ANTHROPIC_MESSAGES:
-            prepared["tool_choice"] = {"type": "tool", "name": name}
-    return prepared, selected
-
-
 def _build_chat_request(
     *,
     real_model: str,
@@ -268,8 +281,8 @@ def _build_chat_request(
 ) -> dict[str, Any]:
     """OpenAI Chat Completions 请求体：把规范化 context 直接转 messages。
 
-    system 指令注入首位（来自 normalized.instructions）。
-    assistant 历史与 tool_calls 已包含在 context 中。
+    system 指令注入首位（来自 normalized.instructions）；内容数组（多模态）
+    按协议原样透传，不静默降级为纯文本。assistant 历史 tool_calls 保留。
     """
     context = normalized.get("context") or []
     instructions = normalized.get("instructions")
@@ -282,13 +295,20 @@ def _build_chat_request(
         role = item.get("role")
         if role not in {"user", "assistant", "system", "tool"}:
             continue
-        messages.append({"role": role, "content": _coerce_message_content(item.get("content"))})
+        message: dict[str, Any] = {"role": role, "content": item.get("content")}
+        if role == "assistant" and isinstance(item.get("tool_calls"), list):
+            message["tool_calls"] = item["tool_calls"]
+            if message["content"] is None:
+                message["content"] = None
+        messages.append(message)
     body: dict[str, Any] = {"model": real_model, "messages": messages}
     if normalized.get("tools"):
         body["tools"] = normalized["tools"]
     if normalized.get("tool_choice"):
         body["tool_choice"] = normalized["tool_choice"]
     for key, value in (normalized.get("options") or {}).items():
+        if key in {"tools", "tool_choice"}:
+            continue
         body.setdefault(key, value)
     if cfg is not None:
         _apply_config(body, cfg)
@@ -302,7 +322,7 @@ def _build_anthropic_request(
     max_tokens: int,
     cfg: LlmConfig | None = None,
 ) -> dict[str, Any]:
-    """Anthropic Messages 请求体。"""
+    """Anthropic Messages 请求体（内容数组原样透传，多模态不降级）。"""
     context = normalized.get("context") or []
     instructions = normalized.get("instructions")
     system_blocks = normalized.get("system_blocks")
@@ -321,7 +341,7 @@ def _build_anthropic_request(
         messages.append(
             {
                 "role": role,
-                "content": _coerce_message_content(item.get("content")),
+                "content": item.get("content"),
             }
         )
     body: dict[str, Any] = {
@@ -334,6 +354,50 @@ def _build_anthropic_request(
     if normalized.get("tools"):
         body["tools"] = normalized["tools"]
     for key, value in (normalized.get("options") or {}).items():
+        if key in {"tools", "tool_choice"}:
+            continue
+        body.setdefault(key, value)
+    if cfg is not None:
+        _apply_config(body, cfg)
+    return body
+
+
+def _prepare_rebuild(normalized: dict[str, Any], mode: str) -> dict[str, Any]:
+    """重建路径的规范化预处理：reasoning 模式不向上游提供工具。"""
+    if mode != MODE_REASONING:
+        return normalized
+    options = dict(normalized.get("options") or {})
+    options.pop("tools", None)
+    options.pop("tool_choice", None)
+    return {**normalized, "tools": None, "tool_choice": None, "options": options}
+
+
+def _build_responses_request(
+    *,
+    real_model: str,
+    normalized: dict[str, Any],
+    mode: str,
+    cfg: LlmConfig | None = None,
+) -> dict[str, Any]:
+    """OpenAI Responses 同协议请求体：input 项原样透传（多模态不降级）。
+
+    使用已展开的规范化 context/input，绝不透传本平台代理 response ID。
+    """
+    prepared = _prepare_rebuild(normalized, mode)
+    body: dict[str, Any] = {
+        "model": real_model,
+        "input": prepared.get("input") or [],
+    }
+    instructions = prepared.get("instructions")
+    if isinstance(instructions, str) and instructions.strip():
+        body["instructions"] = instructions
+    if prepared.get("tools"):
+        body["tools"] = prepared["tools"]
+    if prepared.get("tool_choice"):
+        body["tool_choice"] = prepared["tool_choice"]
+    for key, value in (prepared.get("options") or {}).items():
+        if key in {"tools", "tool_choice"}:
+            continue
         body.setdefault(key, value)
     if cfg is not None:
         _apply_config(body, cfg)
@@ -545,12 +609,13 @@ class LlmDraftService:
         owner: User,
         llm_config_id: int,
         mode: str = MODE_BOTH,
-        exclude_context_indices: list[int] | None = None,
+        generation_instruction: str | None = None,
+        include_caller_system: bool = True,
+        excluded_context_item_ids: list[str] | None = None,
+        include_attachments: bool = True,
         reasoning_seed: str | None = None,
-        guidance: str | None = None,
-        selected_tool_names: list[str] | None = None,
     ) -> TaskDraft:
-        """生成草稿。
+        """生成草稿（契约见 docs/API_CONTRACT.md §9）。
 
         mode:
         - ``reasoning``：只生成思考链（上游回复内容归入草稿 reasoning）。
@@ -558,13 +623,15 @@ class LlmDraftService:
           的思考依据；草稿 reasoning 保持用户手写内容不被覆盖）。
         - ``both``（默认）：思考链与回复都生成。
 
-        ``exclude_context_indices`` 对应 normalized context 下标（与
-        ``GET /tasks/{id}/conversation`` 返回的 context_index 一致），用于
-        消息级勾选：剔除不送入上游的历史消息。
+        ``generation_instruction`` 是一次生成操作的短生命周期引导（不落库、
+        不进入最终回复），优先级低于协议/Schema 与生成模式约束。
 
-        ``selected_tool_names`` 为前端当前选择的有序工具名；显式传入空数组
-        表示本次生成不提供工具。只要显式选择，就必须走规范化重建路径，
-        不复用原始请求中的 tools/tool_choice。
+        ``excluded_context_item_ids`` 为 RequestView 附带上下文的稳定 ctx ID
+        （current_input 不可排除；未知 ID 400 ``invalid_context_item``）。
+
+        ``include_caller_system`` / ``include_attachments`` 控制调用方 system
+        指令与附件是否送上游；附件无法承载时返回 422
+        ``attachment_not_supported``，不静默降级为纯文本。
 
         已存在未提交的 LLM 草稿时按模式合并更新，而不是拒绝（三模式需要
         允许「先生成思考链、再按它生成回复」的两次序列）。
@@ -573,6 +640,7 @@ class LlmDraftService:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED, f"不支持的生成模式: {mode}", status_code=400
             )
+        generation_instruction = normalize_generation_instruction(generation_instruction)
         task_id = task.id
         owner_id = owner.id
         # 1. 任务状态校验：仅 waiting_human 可生成
@@ -606,26 +674,49 @@ class LlmDraftService:
                 "LLM 配置已停用，无法生成草稿",
                 status_code=400,
             )
-        # 4. 解析规范化请求（消息级勾选：剔除用户不选中的上下文条目）
+        # 4. 解析规范化请求：ctx ID 解析 -> 上下文剔除 -> system/附件开关。
+        from .request_view_service import RequestViewService
+
+        view_service = RequestViewService()
+        excluded_indices = view_service.resolve_excluded_context_ids(
+            task, excluded_context_item_ids
+        )
         try:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, json.JSONDecodeError):
             normalized = {}
-        normalized = _filter_context(normalized, exclude_context_indices)
-        normalized, expected_tool_names = _prepare_tool_selection(
-            normalized,
-            selected_tool_names,
-            protocol=cfg.protocol,
-            mode=mode,
-        )
-        # 5. 构造目标协议请求体（同协议直拼；跨协议走 cross 矩阵，§12.6）
+        protocol_kind = {
+            InferenceProtocol.OPENAI_CHAT: "chat",
+            InferenceProtocol.OPENAI_RESPONSES: "responses",
+            InferenceProtocol.ANTHROPIC_MESSAGES: "anthropic",
+        }[task.protocol]
+        normalized = _filter_context(normalized, excluded_indices)
+        if not include_caller_system:
+            normalized = _drop_caller_system(normalized, protocol_kind)
+        if not include_attachments:
+            normalized = _strip_media_from_normalized(normalized)
+        # 附件承载校验：同协议直拼/透传可携带多模态；跨协议或配置声明
+        # 不支持图片输入时明确 422，绝不静默只取文本。
+        has_attachments = _normalized_has_media(normalized)
         expected_llm_protocol = _INFERENCE_TO_LLM.get(task.protocol)
-        raw_body: dict[str, Any] | None = None
-        # 上下文勾选过滤后必须使用规范化重建路径，不能直拼原始请求。
         if (
-            selected_tool_names is None
-            and mode != MODE_REASONING
-            and not exclude_context_indices
+            has_attachments
+            and include_attachments
+            and (expected_llm_protocol is not cfg.protocol or not cfg.supports_image_input)
+        ):
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "所选 LLM 配置或跨协议路径无法承载请求中的附件",
+                status_code=422,
+                public_code="attachment_not_supported",
+            )
+        # 5. 构造目标协议请求体（同协议直拼；跨协议走 cross 矩阵，§12.6）
+        raw_body: dict[str, Any] | None = None
+        # 任何过滤/开关/guidance 都要求走规范化重建路径，不能直拼原始请求。
+        if (
+            excluded_indices is None
+            and include_caller_system
+            and include_attachments
             and expected_llm_protocol is cfg.protocol
         ):
             try:
@@ -643,45 +734,52 @@ class LlmDraftService:
             body = raw_body
             body["model"] = cfg.real_model
             body["stream"] = False
+            if mode == MODE_REASONING:
+                body.pop("tools", None)
+                body.pop("tool_choice", None)
             _apply_config(body, cfg)
         elif cfg.protocol is LLMProtocol.OPENAI_CHAT:
             if expected_llm_protocol is LLMProtocol.OPENAI_CHAT:
+                normalized_prepared = _prepare_rebuild(normalized, mode)
                 body = _build_chat_request(
-                    real_model=cfg.real_model, normalized=normalized, cfg=cfg
+                    real_model=cfg.real_model, normalized=normalized_prepared, cfg=cfg
                 )
             else:
                 body = cross.to_chat_request(normalized, cfg.real_model)
                 _apply_config(body, cfg)
         elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
-            body = cross.to_responses_request(normalized, cfg.real_model)
-            _apply_config(body, cfg)
+            if expected_llm_protocol is LLMProtocol.OPENAI_RESPONSES:
+                body = _build_responses_request(
+                    real_model=cfg.real_model, normalized=normalized, mode=mode, cfg=cfg
+                )
+            else:
+                body = cross.to_responses_request(normalized, cfg.real_model)
+                _apply_config(body, cfg)
         else:
             if expected_llm_protocol is LLMProtocol.ANTHROPIC_MESSAGES:
                 body = _build_anthropic_request(
                     real_model=cfg.real_model,
-                    normalized=normalized,
+                    normalized=_prepare_rebuild(normalized, mode),
                     max_tokens=int(normalized.get("max_tokens") or LLM_DEFAULT_MAX_TOKENS),
                     cfg=cfg,
                 )
             else:
                 body = cross.to_anthropic_request(normalized, cfg.real_model)
                 _apply_config(body, cfg)
-        # 5.5 生成模式提示注入（reasoning-only / 基于人工思考链的 reply）
+        # 5.5 提示注入。优先级固定：协议/Schema > 生成模式 > 用户生成引导 >
+        # 调用方上下文。generation_instruction 先注入（在下），模式指令后
+        # 注入（插到最前），最终顺序为 [mode, generation, caller system, ...]。
+        if generation_instruction:
+            _inject_generation_instruction(
+                body,
+                cfg.protocol,
+                _GENERATION_INSTRUCTION_TEMPLATE.format(instruction=generation_instruction),
+            )
         if mode == MODE_REASONING:
             _inject_mode_instruction(body, cfg.protocol, _REASONING_ONLY_INSTRUCTION)
         elif mode == MODE_REPLY and reasoning_seed and reasoning_seed.strip():
             _inject_mode_instruction(
                 body, cfg.protocol, _REPLY_FROM_SEED_TEMPLATE.format(seed=reasoning_seed.strip())
-            )
-        if guidance and guidance.strip():
-            _inject_mode_instruction(
-                body, cfg.protocol, _GUIDANCE_TEMPLATE.format(guidance=guidance.strip())
-            )
-        if expected_tool_names is not None:
-            _inject_mode_instruction(
-                body,
-                cfg.protocol,
-                _TOOL_SELECTION_TEMPLATE.format(names="、".join(expected_tool_names) or "无"),
             )
         # 6. 解密凭据并调上游（经 llm_upstream 模块属性调用，测试可统一 patch）
         secret = _decrypt_config(cfg)
@@ -692,6 +790,17 @@ class LlmDraftService:
         # 上游网络 I/O 前结束读取事务，避免 SQLite 在数十秒调用期间持锁。
         # 上游完成后重新取得写锁并复核任务与草稿状态。
         session.rollback()
+        # 日志仅记录 generation_instruction 的存在性与长度/指纹指标，
+        # 原始内容（可能含用户敏感描述）不写入日志（§11.6）。
+        instruction_metrics: dict[str, Any] = {}
+        if generation_instruction:
+            instruction_metrics = {
+                "generation_instruction_present": True,
+                "generation_instruction_length": len(generation_instruction),
+                "generation_instruction_sha256": hashlib.sha256(
+                    generation_instruction.encode("utf-8")
+                ).hexdigest(),
+            }
         log_event(
             "info",
             "llm_draft.upstream_started",
@@ -700,6 +809,9 @@ class LlmDraftService:
             llm_config_id=cfg_id,
             protocol=cfg_protocol.value,
             mode=mode,
+            include_caller_system=include_caller_system,
+            include_attachments=include_attachments,
+            **instruction_metrics,
         )
         try:
             if cfg_protocol is LLMProtocol.OPENAI_CHAT:
@@ -753,7 +865,7 @@ class LlmDraftService:
                 f"上游响应解析失败: {exc.__class__.__name__}",
                 status_code=502,
             ) from exc
-        # 5.9 模式后处理 + 工具名校验（只允许调用方已声明的工具）
+        # 5.9 模式后处理 + Caller Tool 结构校验（名称/参数 Schema/ID 唯一）。
         log_event(
             "info",
             "llm_draft.upstream_completed",
@@ -779,17 +891,28 @@ class LlmDraftService:
                 tool_calls=draft.tool_calls,
                 final_text=draft.final_text,
             )
-        # 任何落库前都校验参数 schema；显式选择还要求数量、顺序、名称完全一致。
-        draft = draft.model_copy(
-            update={
-                "tool_calls": normalize_tool_calls(
-                    normalized,
-                    draft.tool_calls,
-                    expected_names=expected_tool_names,
-                    source="上游生成",
+        # LLM 草稿结果中的 Tool Call 必须引用当前请求声明的 Caller Tool；
+        # 结构校验失败按上游生成无效处理（不静默丢弃、不落库）。
+        if draft.tool_calls:
+            try:
+                validate_structural(
+                    catalog_for_task(task), [c.model_dump() for c in draft.tool_calls]
                 )
-            }
-        )
+            except DomainError as exc:
+                log_event(
+                    "warning",
+                    "llm_draft.tool_calls_invalid",
+                    "LLM 草稿返回的 Tool Call 未通过 Caller Tool 校验",
+                    task_id=task_id,
+                    llm_config_id=cfg_id,
+                    mode=mode,
+                )
+                raise DomainError(
+                    DomainErrorCode.UPSTREAM_ERROR,
+                    f"上游返回的 Tool Call 不符合当前请求声明的工具: {exc.message}",
+                    status_code=502,
+                    public_code="generated_tool_calls_invalid",
+                ) from exc
         # 7. 落库前原子复核；调用期间若人工已回复或生成了草稿，拒绝晚到结果。
         begin_immediate_if_sqlite(session)
         current_task = session.get(RequestTask, task_id, with_for_update=True)

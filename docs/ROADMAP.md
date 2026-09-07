@@ -31,6 +31,7 @@
 | M12 | 工具调用透传，移除网关工具执行 | 已完成 |
 | M13 | trace 关联日志、IM 归属、数据保留 | 已完成 |
 | M14 | 统一回复工作台、上下文投影、草稿版本保护 | 已完成 |
+| M15 | Caller Tool 统一校验与一次性警告、RequestView、LLM 生成引导、日志详情信封与详情弹窗 | 已完成 |
 
 ## M10：部署与运维
 
@@ -76,7 +77,8 @@
 ## M12–M14 已实现的关键行为
 
 - 删除工具沙箱、执行服务和前端工具执行页面；只传递调用方声明的工具调用。
-- Web/IM 提交都校验工具名称与已声明参数结构，生成稳定调用 ID，网关不执行工具。
+- Web 提交校验工具名称与已声明参数结构，生成稳定调用 ID，网关不执行工具；
+  IM 回复当前为纯文本语义，后续迭代重构富文本回复。
 - Web 工作台提供工具草稿和结构化预览；提交结果不可撤销或覆盖。
 - 服务端生成 trace_id，并关联请求任务、LLM/IM 处理、应用与审计日志。
 - 日志异步批量落库，管理台按时间、级别、分类、事件和 trace 查询并脱敏展示。
@@ -86,6 +88,22 @@
 - 统一回复收件箱、未读状态、按需加载的完整上下文、草稿乐观锁与版本冲突。
 - 工具参数编辑与声明 Schema 对齐；模型分组支持公开/私有和完整分页加载。
 - 无可用 LLM 配置时禁用小助手发送入口；失效配置的历史会话只读。
+
+## M15 已实现的关键行为（本次重构）
+
+- 移除遗留的平台工具、白名单和沙箱概念；人工回复中的 Tool Call 统一为调用方声明的
+  Caller Tool Call（名称精确命中、参数按声明 JSON Schema 校验、并行/tool_choice 约束、ID 唯一）。
+- 提交含 Tool Call 的人工回复前需在 Web 工作台读并完成一次性风险确认（服务端 per-task 记录）。
+- 三个协议渲染器对 Tool Call-only 回复不再冗余空正文块。
+- 工作台替换为收件箱 + 请求视图（RequestView），GET /api/tasks/{id}/request-view 提供
+  caller_system（默认折叠）、current_input、attached_context、attachments 的稳定块结构。
+- 草稿生成与工具参数生成接受相同的 generation_instruction、include_caller_system、
+  excluded_context_item_ids、include_attachments 与 mode（reasoning/reply/both）。
+- Web 小助手收敛为只读 MCP 工具（get_caller_tool_schema / validate_caller_tool_arguments），
+  不再通过 bridge 写回编辑器内容。
+- 应用日志新增 LogDetailEnvelope（红acted 字段计数 + sections + links）；GET /api/logs/{entry_id}
+  延迟加载详情，日志列表添加类型/详情/耗时/状态筛选和详情标记。
+- 日志页提供大弹窗详情：按 section 渲染 JSON/Text/JSONL、复制、截断提示、同 Trace 跳转。
 
 ## 2026-09-05 交付修复
 

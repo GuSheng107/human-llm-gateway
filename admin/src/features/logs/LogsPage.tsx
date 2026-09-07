@@ -4,12 +4,11 @@ import { listLogs, type LogItem } from "../../api/logs";
 import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
-import { Modal } from "../../components/feedback/Modal";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
-import { copyText } from "../../utils/clipboard";
 import { friendlyErrorMessage } from "../../utils/notify";
+import { LogDetailModal } from "./LogDetailModal";
 
 const DEFAULT_PAGE_SIZE = 20;
 type Level = "debug" | "error" | "warning" | "info";
@@ -60,29 +59,34 @@ export function LogsPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [detail, setDetail] = useState<LogItem | null>(null);
+  const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
+  const [detailTitle, setDetailTitle] = useState("");
 
   const [traceInput, setTraceInput] = useState(initialTraceId);
   const initialCategory = searchParams.get("category") ?? "";
   const initialEvent = searchParams.get("event") ?? "";
   const initialLevel = (searchParams.get("level") as Level | null) ?? "";
   const initialHours = searchParams.get("hours") ?? "";
+  const initialKind = (searchParams.get("kind") as "audit" | "app" | null) ?? "";
   const [categoryInput, setCategoryInput] = useState(initialCategory);
   const [eventInput, setEventInput] = useState(initialEvent);
   const [levelInput, setLevelInput] = useState<Level | "">(initialLevel);
   const [hoursInput, setHoursInput] = useState(initialHours);
+  const [kindInput, setKindInput] = useState<"audit" | "app" | "">(initialKind);
   const [filters, setFilters] = useState<{
     traceId: string;
     category: string;
     event: string;
     level: Level | "";
     hours: string;
+    kind: "audit" | "app" | "";
   }>({
     traceId: initialTraceId,
     category: initialCategory,
     event: initialEvent,
     level: initialLevel,
     hours: initialHours,
+    kind: initialKind,
   });
 
   const load = useCallback(async () => {
@@ -97,6 +101,7 @@ export function LogsPage() {
         event: filters.event.trim() || undefined,
         level: filters.level || undefined,
         hours: filters.hours ? Number(filters.hours) : undefined,
+        kind: filters.kind || undefined,
       });
       setItems(result.items);
       setTotal(result.total);
@@ -120,6 +125,7 @@ export function LogsPage() {
       event: eventInput,
       level: levelInput,
       hours: hoursInput,
+      kind: kindInput,
     });
     const params = new URLSearchParams(searchParams);
     const values: Record<string, string> = {
@@ -128,6 +134,7 @@ export function LogsPage() {
       event: eventInput.trim(),
       level: levelInput,
       hours: hoursInput.trim(),
+      kind: kindInput,
     };
     for (const [key, value] of Object.entries(values)) {
       if (value) params.set(key, value);
@@ -145,8 +152,6 @@ export function LogsPage() {
     setSearchParams(params, { replace: true });
   };
 
-  const contextText = detail?.context ? JSON.stringify(detail.context, null, 2) : "暂无上下文";
-
   return (
     <div className="space-y-5">
       <PageHeader
@@ -156,6 +161,16 @@ export function LogsPage() {
       <Card>
         {error && <ErrorBanner message={error} className="m-4" />}
         <form onSubmit={submitSearch} className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-3">
+          <select
+            value={kindInput}
+            onChange={(event) => setKindInput(event.target.value as "audit" | "app" | "")}
+            className="field-input sm:w-28"
+            aria-label="日志类型"
+          >
+            <option value="">全部类型</option>
+            <option value="app">应用</option>
+            <option value="audit">审计</option>
+          </select>
           <select
             value={levelInput}
             onChange={(event) => setLevelInput(event.target.value as Level | "")}
@@ -246,15 +261,50 @@ export function LogsPage() {
                     {formatTime(item.created_at)}
                   </td>
                   <td className="max-w-[320px] truncate px-4 py-3 text-slate-500">
-                    {item.message || "-"}
+                    <span className="flex items-center gap-1.5">
+                      {item.duration_ms != null && (
+                        <span
+                          className="shrink-0 rounded bg-slate-100 px-1 py-0.5 font-mono text-[9px] text-slate-500"
+                          title="上游耗时"
+                        >
+                          {item.duration_ms >= 1000
+                            ? `${(item.duration_ms / 1000).toFixed(1)}s`
+                            : `${item.duration_ms}ms`}
+                        </span>
+                      )}
+                      {item.status_code != null && (
+                        <span
+                          className={`shrink-0 rounded px-1 py-0.5 font-mono text-[9px] ${
+                            item.status_code >= 400
+                              ? "bg-red-50 text-red-600"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                          title="HTTP 状态码"
+                        >
+                          {item.status_code}
+                        </span>
+                      )}
+                      <span className="min-w-0 truncate">{item.message || "-"}</span>
+                    </span>
                   </td>
                   <td className="px-4 py-3 text-right">
                     <button
                       type="button"
-                      onClick={() => setDetail(item)}
+                      onClick={() => {
+                        setDetailEntryId(item.id);
+                        setDetailTitle(
+                          `${KIND_LABEL[item.kind]} · ${item.event || item.message.slice(0, 30)}`,
+                        );
+                      }}
                       className="text-primary hover:underline"
                     >
                       查看详情
+                      {item.has_detail && (
+                        <span
+                          className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle"
+                          title="含详情信封"
+                        />
+                      )}
                     </button>
                   </td>
                 </tr>
@@ -282,48 +332,19 @@ export function LogsPage() {
         </div>
       </Card>
 
-      {detail && (
-        <Modal
-          title="日志详情"
-          description={`${KIND_LABEL[detail.kind]} · ${detail.event || "未命名事件"}`}
-          onClose={() => setDetail(null)}
-          width="max-w-4xl"
-        >
-          <div className="max-h-[75vh] space-y-5 overflow-y-auto p-6 text-xs">
-            <dl className="grid gap-2 sm:grid-cols-2">
-              <DetailField label="级别" value={<LevelBadge level={detail.level} />} />
-              <DetailField label="类型" value={detail.category || "-"} />
-              <DetailField label="来源 / 事件" value={detail.event} />
-              <DetailField label="日志 ID" value={detail.id} />
-              <DetailField label="Trace ID" value={detail.request_id} />
-              <DetailField label="创建时间" value={formatTime(detail.created_at)} />
-              <DetailField label="用户" value={detail.username ?? detail.user_id} />
-              <DetailField label="任务 ID" value={detail.task_id} />
-              <DetailField label="API Key ID" value={detail.api_key_id} />
-              <DetailField label="连接 ID" value={detail.connection_id} />
-            </dl>
-            <section>
-              <h3 className="mb-2 text-sm font-medium text-slate-700">消息</h3>
-              <p className="whitespace-pre-wrap rounded border border-slate-100 bg-slate-50 p-3 text-slate-600">
-                {detail.message || "-"}
-              </p>
-            </section>
-            <section>
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <h3 className="text-sm font-medium text-slate-700">Context JSON</h3>
-                {detail.context && (
-                  <Button type="button" variant="ghost" onClick={() => void copyText(contextText, "Context JSON")}>
-                    <Icon name="copy" className="h-3.5 w-3.5" />
-                    复制
-                  </Button>
-                )}
-              </div>
-              <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded border border-slate-100 bg-slate-900 p-4 font-mono text-[11px] leading-5 text-slate-100">
-                {contextText}
-              </pre>
-            </section>
-          </div>
-        </Modal>
+      {detailEntryId && (
+        <LogDetailModal
+          entryId={detailEntryId}
+          title={detailTitle}
+          onClose={() => {
+            setDetailEntryId(null);
+            setDetailTitle("");
+          }}
+          onFilterByTrace={(traceId) => {
+            setDetailEntryId(null);
+            filterByTrace(traceId);
+          }}
+        />
       )}
     </div>
   );

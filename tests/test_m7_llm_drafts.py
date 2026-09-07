@@ -156,10 +156,10 @@ def test_generate_chat_with_openai_chat_llm(client, created_user, created_key) -
     assert body["tool_calls"][0]["arguments"] == {"q": "weather"}
 
 
-def test_generate_selected_tools_filters_full_schema_and_canonicalizes_calls(
+def test_generate_preserves_declared_tools_and_caller_tool_call_id(
     client, created_user, created_key
 ) -> None:
-    """工作台选中的工具按顺序重建请求，并严格校验返回参数。"""
+    """草稿生成保留调用方声明的工具，上游返回的 Tool Call 保留其 ID。"""
     search_tool = {
         "type": "function",
         "function": {
@@ -222,28 +222,26 @@ def test_generate_selected_tools_filters_full_schema_and_canonicalizes_calls(
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
-            json={
-                "llm_config_id": int(cfg["id"]),
-                "selected_tool_names": ["lookup"],
-            },
+            json={"llm_config_id": int(cfg["id"])},
         )
     assert resp.status_code == 201, resp.text
     body = resp.json()
+    # 调用方 ID 保留，不服务端重排。
     assert body["tool_calls"] == [
-        {"id": "call_01", "name": "lookup", "arguments": {"city": "北京"}}
+        {"id": "upstream-arbitrary-id", "name": "lookup", "arguments": {"city": "北京"}}
     ]
-    assert captured["body"]["tools"] == [lookup_tool]
-    assert captured["body"]["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "lookup"},
-    }
-    assert "只允许按以下顺序各调用一次工具" in captured["body"]["messages"][0]["content"]
+    # 请求声明的两个工具都保留（不因选择而裁剪）。
+    sent_tool_names = [
+        (t.get("function") or {}).get("name", t.get("name"))
+        for t in captured["body"].get("tools") or []
+    ]
+    assert set(sent_tool_names) == {"search", "lookup"}
 
 
-def test_generate_with_empty_tool_selection_removes_tools_and_choice(
+def test_generate_reasoning_mode_strips_tools_from_upstream(
     client, created_user, created_key
 ) -> None:
-    """显式不选工具时，不能把原始 tools/tool_choice 带给上游。"""
+    """reasoning 模式不向上游提供工具（避免上游返回工具调用）。"""
     tool = {
         "type": "function",
         "function": {
@@ -257,13 +255,13 @@ def test_generate_with_empty_tool_selection_removes_tools_and_choice(
 
     async def fake(**kwargs: Any) -> Any:
         captured["body"] = kwargs["request_body"]
-        return {"choices": [{"message": {"role": "assistant", "content": "无工具回答"}}]}
+        return {"choices": [{"message": {"role": "assistant", "content": "只输出推理"}}]}
 
     with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
-            json={"llm_config_id": int(cfg["id"]), "selected_tool_names": []},
+            json={"llm_config_id": int(cfg["id"]), "mode": "reasoning"},
         )
     assert resp.status_code == 201, resp.text
     assert "tools" not in captured["body"]
@@ -274,7 +272,7 @@ def test_generate_with_empty_tool_selection_removes_tools_and_choice(
 def test_generate_rejects_tool_arguments_that_break_declared_schema(
     client, created_user, created_key
 ) -> None:
-    """上游返回缺失必填字段或错误类型时，草稿不得落库。"""
+    """上游返回参数违反声明 Schema 时，草稿不得落库（502）。"""
     tool = {
         "type": "function",
         "function": {
@@ -314,13 +312,10 @@ def test_generate_rejects_tool_arguments_that_break_declared_schema(
         resp = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
-            json={
-                "llm_config_id": int(cfg["id"]),
-                "selected_tool_names": ["lookup"],
-            },
+            json={"llm_config_id": int(cfg["id"]), "mode": "both"},
         )
-    assert resp.status_code == 400, resp.text
-    assert "类型不符合" in resp.json()["error"]["message"]
+    assert resp.status_code == 502, resp.text
+    assert "不符合" in resp.json()["error"]["message"]
     detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers).json()
     assert detail["drafts"] == []
 
@@ -1186,8 +1181,10 @@ def test_generate_mode_reply_preserves_user_reasoning_seed(
     assert seed in sys_msg["content"]
 
 
-def test_generate_exclude_context_indices_omits_history(client, created_user, created_key) -> None:
-    """消息级勾选：被排除的 normalized context 下标不会送入上游。"""
+def test_generate_excluded_context_item_ids_omits_history(
+    client, created_user, created_key
+) -> None:
+    """稳定 ctx ID 勾选：被排除的附带上下文不送入上游；current_input 不可排除。"""
     messages = [
         {"role": "system", "content": "你是助手"},
         {"role": "user", "content": "第一问"},
@@ -1197,6 +1194,11 @@ def test_generate_exclude_context_indices_omits_history(client, created_user, cr
     task_id = _make_waiting_task_multi(
         client, created_key.id, created_user.user_id, messages=messages
     )
+    # 附带上下文：system 进 caller_system，latest user（第二问）是 current_input，
+    # "第一问" 是 attached_context 的第一条。
+    view = client.get(f"/api/tasks/{task_id}/request-view", headers=created_user.headers).json()
+    attached_ids = [item["id"] for item in view["attached_context"]]
+    assert attached_ids, "应有至少一条附带上下文"
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
     captured: dict[str, Any] = {}
 
@@ -1211,20 +1213,19 @@ def test_generate_exclude_context_indices_omits_history(client, created_user, cr
             json={
                 "llm_config_id": int(cfg["id"]),
                 "mode": "reply",
-                "exclude_context_indices": [1],  # 排除 normalized context[1]（第一问）
+                "excluded_context_item_ids": [attached_ids[0]],
             },
         )
     assert resp.status_code == 201, resp.text
     sent = captured["body"]["messages"]
-    # 第一问（被排除）不应出现；其他上下文仍存在。
     joined = "\n".join(str(m.get("content", "")) for m in sent)
     assert "第一问" not in joined
     assert "第一答" in joined
     assert "第二问" in joined
 
 
-def test_generate_exclude_invalid_index_returns_400(client, created_user, created_key) -> None:
-    """exclude_context_indices 越界直接 400，避免静默丢弃过滤。"""
+def test_generate_invalid_context_item_id_returns_400(client, created_user, created_key) -> None:
+    """未知 ctx ID 直接 400 invalid_context_item，避免静默丢弃过滤。"""
     task_id = _make_waiting_task_multi(
         client,
         created_key.id,
@@ -1240,16 +1241,18 @@ def test_generate_exclude_invalid_index_returns_400(client, created_user, create
         headers=created_user.headers,
         json={
             "llm_config_id": int(cfg["id"]),
-            "exclude_context_indices": [99],
+            "excluded_context_item_ids": ["ctx_does_not_exist"],
         },
     )
     assert resp.status_code == 400, resp.text
-    assert "下标越界" in resp.json()["error"]["message"]
+    assert "无效的上下文条目" in resp.json()["error"]["message"]
 
 
 def test_save_draft_with_undeclared_tool_call_rejected(client, created_user, created_key) -> None:
     """草稿保存：tool_call 名称不在调用方声明工具内时拒绝 400。"""
-    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    task_id = _make_waiting_task(
+        client, created_key.id, created_user.user_id, content="hi", tool_names=["search"]
+    )
     resp = client.post(
         f"/api/tasks/{task_id}/drafts",
         headers=created_user.headers,
@@ -1262,7 +1265,25 @@ def test_save_draft_with_undeclared_tool_call_rejected(client, created_user, cre
     assert resp.status_code == 400, resp.text
     body = resp.json()
     assert body["error"]["code"] == "validation_failed"
-    assert "不在调用方声明的工具内" in body["error"]["message"]
+    assert "不在当前请求声明的 Caller Tool 中" in body["error"]["message"]
+
+
+def test_save_draft_with_tool_call_on_no_tool_task_rejected(
+    client, created_user, created_key
+) -> None:
+    """任务未声明任何 Caller Tool 时，携带工具调用保存应拒绝（caller_tools_not_available）。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "x", "arguments": {}}],
+            "final_text": "ok",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "没有声明 Caller Tool" in resp.json()["error"]["message"]
 
 
 def test_save_draft_with_declared_tool_call_allowed(client, created_user, created_key) -> None:
@@ -1288,7 +1309,9 @@ def test_save_draft_with_declared_tool_call_allowed(client, created_user, create
 
 def test_submit_reply_with_undeclared_tool_call_rejected(client, created_user, created_key) -> None:
     """直接回复提交：tool_call 名称不在声明工具内时拒绝 400。"""
-    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    task_id = _make_waiting_task(
+        client, created_key.id, created_user.user_id, content="hi", tool_names=["search"]
+    )
     resp = client.post(
         f"/api/tasks/{task_id}/reply",
         headers=created_user.headers,
@@ -1300,7 +1323,7 @@ def test_submit_reply_with_undeclared_tool_call_rejected(client, created_user, c
         },
     )
     assert resp.status_code == 400, resp.text
-    assert "不在调用方声明的工具内" in resp.json()["error"]["message"]
+    assert "不在当前请求声明的 Caller Tool 中" in resp.json()["error"]["message"]
 
 
 def test_generate_rejects_tool_call_not_declared(client, created_user, created_key) -> None:
@@ -1333,8 +1356,8 @@ def test_generate_rejects_tool_call_not_declared(client, created_user, created_k
             headers=created_user.headers,
             json={"llm_config_id": int(cfg["id"]), "mode": "both"},
         )
-    assert resp.status_code == 400, resp.text
-    assert "不在调用方声明的工具内" in resp.json()["error"]["message"]
+    assert resp.status_code == 502, resp.text
+    assert "不符合" in resp.json()["error"]["message"]
 
 
 def test_generate_persists_declared_tool_call(client, created_user, created_key) -> None:
@@ -1379,8 +1402,10 @@ def test_generate_persists_declared_tool_call(client, created_user, created_key)
     ]
 
 
-def test_conversation_includes_context_index(client, created_user, created_key) -> None:
-    """GET /conversation 返回的每条消息携带 context_index（系统指令为 None）。"""
+def test_request_view_splits_current_input_and_attached_context(
+    client, created_user, created_key
+) -> None:
+    """RequestView 把最新 user 输入与早期消息分区，stable ID 稳定且不暴露下标。"""
     task_id = _make_waiting_task_multi(
         client,
         created_key.id,
@@ -1390,10 +1415,21 @@ def test_conversation_includes_context_index(client, created_user, created_key) 
             {"role": "assistant", "content": "第一答"},
         ],
     )
-    resp = client.get(f"/api/tasks/{task_id}/conversation", headers=created_user.headers)
+    resp = client.get(f"/api/tasks/{task_id}/request-view", headers=created_user.headers)
     assert resp.status_code == 200, resp.text
-    items = resp.json()["messages"]
-    assert items, "project_messages 应至少返回 2 条历史消息"
-    indexes = [item["context_index"] for item in items]
-    # 系统指令块 context_index 为 None；normalized context 条目按 0..n 标记。
-    assert [i for i in indexes if i is not None] == [0, 1]
+    body = resp.json()
+    current = body["current_input"]
+    attached = body["attached_context"]
+    assert len(current) == 1
+    assert len(attached) == 1
+    # 最新输入是 current_input；附带的早期消息是 attached_context。
+    assert any("第一答" in _blocks_text(item) for item in current) or any(
+        "第一答" in _blocks_text(item) for item in attached
+    )
+    # 稳定 ID 前缀为 ctx_，块 ID 前缀为 blk_，不暴露数组下标语义。
+    assert current[0]["id"].startswith("ctx_")
+    assert current[0]["blocks"][0]["id"].startswith("blk_")
+
+
+def _blocks_text(item: dict[str, Any]) -> str:
+    return "".join(str(block.get("text") or "") for block in item.get("blocks") or [])

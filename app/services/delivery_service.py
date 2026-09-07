@@ -18,9 +18,9 @@ from ..core.logging import log_event
 from ..core.time import iso_utc
 from ..domain.connections import ERROR_CONFIG
 from ..domain.enums import ActorType, TaskEventType
-from ..protocols.normalized import declared_tool_names
 from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ImConnection, RequestTask
+from .caller_tool_service import catalog_for_task
 
 # 使用 outbox 可靠投递的平台（docs/DATABASE.md §4.2）
 OUTBOX_PLATFORMS = frozenset({"webhook", "http_poll", "websocket"})
@@ -245,7 +245,7 @@ class DeliveryService:
                         ]
                         prompt = "\n".join(part for part in parts if part)
                     break
-        tool_names = declared_tool_names(normalized)
+        tool_names = sorted(catalog_for_task(task).names)
         # Agent 工具（opencode 等）的提示词前面是海量系统上下文，真正的
         # 提问在末尾：超长时保留尾部，仅省略前缀。
         if len(prompt) > _PROMPT_SUMMARY_CAP:

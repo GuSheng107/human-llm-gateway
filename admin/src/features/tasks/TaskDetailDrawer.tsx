@@ -201,7 +201,7 @@ export function TaskDetailDrawer({
                     <p className="mt-1 text-[11px] text-slate-400">{tool.description}</p>
                   )}
                   <pre className="mt-2 max-h-40 overflow-auto rounded bg-slate-50 p-2 font-mono text-[10px] text-slate-500">
-                    {JSON.stringify(tool.parameters, null, 2)}
+                    {JSON.stringify(tool.input_schema, null, 2)}
                   </pre>
                 </details>
               ))}
