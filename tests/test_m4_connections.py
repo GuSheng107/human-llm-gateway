@@ -89,11 +89,11 @@ def _generated_token(created: dict, field: str = "inbound_token") -> str:
     return token
 
 
-def test_platform_catalog_exposes_five_platforms_with_config_schema(client, admin_headers) -> None:
+def test_platform_catalog_exposes_platforms_with_config_schema(client, admin_headers) -> None:
     response = client.get("/api/im-platforms", headers=admin_headers)
     assert response.status_code == 200
     codes = {item["code"] for item in response.json()}
-    assert codes == {"wecom_ilink", "wecom_aibot", "webhook", "websocket", "http_poll"}
+    assert codes == {"wecom_ilink", "wecom_aibot", "webhook", "websocket", "http_poll", "lark"}
     websocket = next(item for item in response.json() if item["code"] == "websocket")
     assert websocket["config_schema"][0]["secret"] is True
     assert websocket["config_schema"][0]["name"] == "connection_token"
@@ -106,6 +106,12 @@ def test_platform_catalog_exposes_five_platforms_with_config_schema(client, admi
     assert wecom["requires_binding"] is True
     assert wecom["binding_command"] == "connect mycom"
     assert http_poll["requires_binding"] is False
+    lark = next(item for item in response.json() if item["code"] == "lark")
+    assert lark["requires_binding"] is True
+    assert lark["binding_command"] == "connect lark"
+    assert lark["config_schema"][0]["name"] == "app_id"
+    assert lark["config_schema"][1]["name"] == "app_secret"
+    assert lark["config_schema"][1]["secret"] is True
 
 
 def test_connection_config_is_encrypted_and_secrets_never_echoed(client, admin_headers) -> None:

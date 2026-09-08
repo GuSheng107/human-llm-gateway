@@ -22,7 +22,6 @@ from app.domain.dsl import (
     is_empty_draft,
     parse_message,
     parse_reply,
-    serialize_reply,
 )
 from app.domain.enums import InferenceProtocol, TaskState
 from app.domain.values import ReplyDraft, ReplyToolCall
@@ -738,64 +737,36 @@ def test_task_list_search_by_model(client, created_user, created_key) -> None:
 
 
 class TestImDslRoundtrip:
-    """IM DSL 与 Web 共享 ReplyDraft，parse(serialize(draft)) == draft。"""
+    """IM 回复不再使用围栏 DSL，纯文本直接作为 final_text。"""
 
     def test_plain_final_text_no_fence(self) -> None:
         draft = ReplyDraft(final_text="你好世界")
-        assert serialize_reply(draft) == "你好世界"
         assert parse_reply("你好世界") == draft
 
-    def test_full_draft_roundtrip(self) -> None:
-        draft = ReplyDraft(
-            reasoning="先想想",
-            tool_calls=[
-                ReplyToolCall(id="call_1", name="search", arguments={"q": "test"}),
-                ReplyToolCall(id="call_2", name="calc", arguments={"x": 1, "y": 2}),
-            ],
-            final_text="最终答案",
-        )
-        text = serialize_reply(draft)
-        assert parse_reply(text) == draft
+    def test_plain_text_becomes_final_only(self) -> None:
+        parsed = parse_reply("纯文本回复，无围栏")
+        assert parsed.final_text == "纯文本回复，无围栏"
+        assert parsed.reasoning is None
+        assert parsed.tool_calls == []
 
-    def test_reasoning_and_final_only_roundtrip(self) -> None:
-        draft = ReplyDraft(reasoning="只有思考", final_text="只有正文")
-        assert parse_reply(serialize_reply(draft)) == draft
-
-    def test_tool_calls_only_roundtrip(self) -> None:
-        draft = ReplyDraft(
-            tool_calls=[ReplyToolCall(id="t1", name="fn", arguments={"a": [1, 2]})],
-        )
-        assert parse_reply(serialize_reply(draft)) == draft
-
-    def test_empty_draft_serializes_to_empty(self) -> None:
-        assert serialize_reply(ReplyDraft()) == ""
+    def test_fence_blocks_treated_as_plain_text(self) -> None:
+        # 围栏语法已移除：`::: reasoning` 等不再被解析为结构字段，
+        # 整段正文（含 `:::` 行）直接作为 final_text。
+        parsed = parse_reply("::: reasoning\n思考\n:::\n\n最终正文")
+        assert parsed.final_text == "::: reasoning\n思考\n:::\n\n最终正文"
+        assert parsed.reasoning is None
+        assert parsed.tool_calls == []
 
     def test_empty_draft_is_empty(self) -> None:
         assert is_empty_draft(ReplyDraft()) is True
         assert is_empty_draft(ReplyDraft(final_text="   ")) is True
         assert is_empty_draft(ReplyDraft(final_text="x")) is False
-        assert is_empty_draft(ReplyDraft(tool_calls=[ReplyToolCall(id="a", name="b")])) is False
 
     def test_m4_backward_compat_plain_text(self) -> None:
         parsed = parse_reply("纯文本回复，无围栏")
         assert parsed.final_text == "纯文本回复，无围栏"
         assert parsed.reasoning is None
         assert parsed.tool_calls == []
-
-    def test_tool_fence_json_arguments_parsed(self) -> None:
-        body = '::: tool call_1 search\n{"q": "天气", "n": 3}\n:::\n\n结果如下'
-        draft = parse_reply(body)
-        assert len(draft.tool_calls) == 1
-        assert draft.tool_calls[0].id == "call_1"
-        assert draft.tool_calls[0].name == "search"
-        assert draft.tool_calls[0].arguments == {"q": "天气", "n": 3}
-        assert draft.final_text == "结果如下"
-
-    def test_tool_fence_empty_arguments(self) -> None:
-        body = "::: tool call_0 noop\n:::\n\n正文"
-        draft = parse_reply(body)
-        assert draft.tool_calls[0].arguments == {}
-        assert draft.final_text == "正文"
 
 
 class TestExtractTaskTarget:
@@ -814,12 +785,12 @@ class TestExtractTaskTarget:
         assert public_id == "TASK001"
         assert body == ""
 
-    def test_parse_message_combines_target_and_dsl(self) -> None:
-        text = "#TASK001 ::: reasoning\n思考\n:::\n\n最终正文"
+    def test_parse_message_combines_target_and_plain_text(self) -> None:
+        text = "#TASK001 最终正文"
         public_id, draft = parse_message(text)
         assert public_id == "TASK001"
-        assert draft.reasoning == "思考"
         assert draft.final_text == "最终正文"
+        assert draft.reasoning is None
 
 
 # ======================================================================
@@ -828,15 +799,17 @@ class TestExtractTaskTarget:
 
 
 def test_web_and_im_share_same_replydraft_structure() -> None:
-    """Web 编辑器和 IM DSL 解析器必须生成同一个 ReplyDraft 结构。"""
+    """Web 编辑器和 IM 回复共用 ReplyDraft 结构；IM 纯文本仅产生 final_text。"""
+    # Web 侧可提交完整 ReplyDraft（reasoning / tool_calls / final_text）。
     web_draft = ReplyDraft(
         reasoning="分析",
         tool_calls=[ReplyToolCall(id="c1", name="lookup", arguments={"key": "k"})],
         final_text="结论",
     )
-    im_text = serialize_reply(web_draft)
-    im_draft = parse_reply(im_text)
-    assert im_draft == web_draft
-    assert im_draft.model_dump_json(exclude_none=True) == web_draft.model_dump_json(
-        exclude_none=True
-    )
+    assert web_draft.final_text == "结论"
+
+    # IM 侧纯文本回复直接作为 final_text，reasoning / tool_calls 为空。
+    im_draft = parse_reply("结论")
+    assert im_draft == ReplyDraft(final_text="结论")
+    assert im_draft.reasoning is None
+    assert im_draft.tool_calls == []

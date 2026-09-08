@@ -1,6 +1,7 @@
 import type { ImConnection, PlatformSpec } from "../../types/gateway";
 
 export const PLATFORM_ORDER = [
+  "lark",
   "wecom_ilink",
   "wecom_aibot",
   "http_poll",
@@ -17,6 +18,13 @@ export interface PlatformVisual {
 }
 
 const PLATFORM_VISUALS: Record<string, PlatformVisual> = {
+  lark: {
+    mark: "飞",
+    eyebrow: "FEISHU LARK",
+    iconClass: "border-sky-200 bg-sky-50 text-sky-700",
+    headerClass: "from-sky-50/80 via-white to-white",
+    railClass: "bg-sky-400",
+  },
   wecom_ilink: {
     mark: "微",
     eyebrow: "WECHAT ILINK",
@@ -146,6 +154,15 @@ export function platformSetupGuide(
         title: "企业微信配置与接入",
         description: "保存机器人配置后，在企业微信个人会话完成绑定。",
         commandLabel: "在企业微信中发送",
+        commandHelp: "命令固定。绑定成功后才能启用连接。",
+        endpoints: [],
+        commands: [],
+      };
+    case "lark":
+      return {
+        title: "飞书配置与接入",
+        description: "填写飞书开放平台应用的 App ID / App Secret，在飞书单聊会话完成绑定。",
+        commandLabel: "在飞书中发送",
         commandHelp: "命令固定。绑定成功后才能启用连接。",
         endpoints: [],
         commands: [],

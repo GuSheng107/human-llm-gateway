@@ -65,8 +65,8 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 ### 👤 人工回复闭环
 - Web 任务工作台：完整原始请求 + 时间线 + 草稿
 - 统一回复工作台：收件箱、未读状态、对话上下文和草稿版本保护
-- IM 投递：微信 iLink / 企微 / Webhook / WebSocket / HTTP 轮询
-- IM DSL：`::: reasoning` / `::: tool` 围栏，与 Web 编辑器共享结构
+- IM 投递：微信 iLink / 企微 / 飞书 / Webhook / WebSocket / HTTP 轮询
+- IM 回复指令：斜杠命令（/ans /res /commit /page /file）与 `#<任务ID>` 定位，与 Web 编辑器共享结构
 - 首个有效提交获胜，不可撤销
 
 </td><td width="50%" valign="top">

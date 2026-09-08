@@ -438,15 +438,15 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
   const importDsl = () => {
     setDslError("");
     if (!dslInput.trim()) {
-      setDslError("请粘贴 DSL 文本");
+      setDslError("请粘贴回复文本");
       return;
     }
     try {
       const parsed = parseReply(dslInput);
       applyDraft(parsed);
-      notify("已从 DSL 导入");
+      notify("已从文本导入");
     } catch (caught) {
-      setDslError(caught instanceof Error ? caught.message : "DSL 解析失败");
+      setDslError(caught instanceof Error ? caught.message : "解析失败");
     }
   };
 
@@ -709,7 +709,7 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
                     onChange={(event) => setReasoning(event.target.value)}
                     disabled={!canEdit}
                     className="field-input min-h-[320px] font-mono text-xs"
-                    placeholder="::: reasoning 围栏块的等价内容"
+                    placeholder="人工推理过程（不会作为最终回复输出）"
                   />
                 </div>
               )}
@@ -792,22 +792,22 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
 
           <details className="rounded-lg border border-slate-200 bg-slate-50/60">
             <summary className="cursor-pointer select-none px-4 py-3 text-xs font-semibold text-slate-700">
-              DSL 双向同步（与 IM 共享同一结构）
+              回复文本同步（与 IM 共享同一结构）
             </summary>
             <div className="space-y-3 border-t border-slate-200 px-4 pb-4 pt-3">
               <div>
-                <span className="block text-xs text-slate-400">当前编辑器序列化为 DSL</span>
+                <span className="block text-xs text-slate-400">当前编辑器序列化结果</span>
                 <pre className="mt-1 max-h-40 overflow-auto rounded border border-slate-200 bg-white p-3 font-mono text-[11px] text-slate-600">
                   {liveDsl || "(空)"}
                 </pre>
               </div>
               <div>
-                <span className="block text-xs text-slate-400">从 DSL 导入（粘贴后解析）</span>
+                <span className="block text-xs text-slate-400">从文本导入（粘贴后解析）</span>
                 <textarea
                   value={dslInput}
                   onChange={(event) => setDslInput(event.target.value)}
                   className="field-input mt-1 min-h-[72px] font-mono text-[11px]"
-                  placeholder="::: reasoning&#10;...&#10;:::"
+                  placeholder="粘贴回复文本"
                 />
                 {dslError && <p className="mt-1 text-xs text-red-500">{dslError}</p>}
                 <Button type="button" variant="ghost" className="mt-2" onClick={importDsl}>
@@ -992,7 +992,7 @@ export function TaskEditor({ taskId, onSubmitted, standalone = true }: TaskEdito
               </div>
             </section>
             <section>
-              <h3 className="mb-2 text-sm font-medium text-slate-700">IM DSL 等价文本</h3>
+              <h3 className="mb-2 text-sm font-medium text-slate-700">IM 回复文本</h3>
               <pre className="max-h-48 overflow-auto rounded-lg border border-slate-100 bg-slate-50 p-4 font-mono text-[11px] text-slate-600">
                 {serializeReply(preview)}
               </pre>

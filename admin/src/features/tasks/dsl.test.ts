@@ -14,17 +14,13 @@ describe("serializeReply", () => {
     expect(serializeReply({ reasoning: null, tool_calls: [], final_text: null })).toBe("");
   });
 
-  it("reasoning + tool call + final_text 完整结构", () => {
+  it("reasoning 与 tool_calls 不再参与序列化（仅 final_text）", () => {
     const draft: ReplyDraft = {
       reasoning: "先想想",
       tool_calls: [{ id: "call_1", name: "search", arguments: { q: "test" } }],
       final_text: "最终答案",
     };
-    const text = serializeReply(draft);
-    expect(text).toContain("::: reasoning\n先想想\n:::");
-    expect(text).toContain("::: tool call_1 search");
-    expect(text).toContain('{"q":"test"}');
-    expect(text.endsWith("最终答案")).toBe(true);
+    expect(serializeReply(draft)).toBe("最终答案");
   });
 });
 
@@ -36,61 +32,18 @@ describe("parseReply", () => {
     expect(draft.tool_calls).toEqual([]);
   });
 
-  it("围栏块：reasoning / tool / 自由文本", () => {
+  it("围栏块被视为普通文本（不再解析）", () => {
     const body = '::: reasoning\n思考\n:::\n\n::: tool call_1 search\n{"q": "天气"}\n:::\n\n结果如下';
     const draft = parseReply(body);
-    expect(draft.reasoning).toBe("思考");
-    expect(draft.tool_calls).toHaveLength(1);
-    expect(draft.tool_calls[0].id).toBe("call_1");
-    expect(draft.tool_calls[0].name).toBe("search");
-    expect(draft.tool_calls[0].arguments).toEqual({ q: "天气" });
-    expect(draft.final_text).toBe("结果如下");
+    expect(draft.final_text).toBe(body);
+    expect(draft.reasoning).toBeNull();
+    expect(draft.tool_calls).toEqual([]);
   });
 
-  it("tool 空参数解析为空对象", () => {
-    const draft = parseReply("::: tool call_0 noop\n:::\n\n正文");
-    expect(draft.tool_calls[0].arguments).toEqual({});
-    expect(draft.final_text).toBe("正文");
-  });
-
-  it("未知围栏类型抛错（不静默忽略）", () => {
-    expect(() => parseReply("::: unknown\nx\n:::")).toThrow(/围栏类型/);
-  });
-
-  it("tool arguments 非法 JSON 抛错", () => {
-    expect(() => parseReply('::: tool c1 fn\nnot-json\n:::')).toThrow(/JSON/);
-  });
-
-  it("tool arguments 非对象（数组）抛错", () => {
-    expect(() => parseReply("::: tool c1 fn\n[1,2]\n:::")).toThrow(/JSON/);
-  });
-});
-
-describe("往返一致（与后端 test_m6_tasks 同构）", () => {
-  it("parse(serialize(draft)) == draft（全字段）", () => {
-    const draft: ReplyDraft = {
-      reasoning: "分析",
-      tool_calls: [
-        { id: "c1", name: "lookup", arguments: { key: "k" } },
-        { id: "c2", name: "calc", arguments: { x: 1, y: 2 } },
-      ],
-      final_text: "结论",
-    };
-    expect(parseReply(serializeReply(draft))).toEqual(draft);
-  });
-
-  it("仅 tool_calls 往返不丢字段", () => {
-    const draft: ReplyDraft = {
-      reasoning: null,
-      tool_calls: [{ id: "t1", name: "fn", arguments: { a: [1, 2] } }],
-      final_text: null,
-    };
-    expect(parseReply(serializeReply(draft))).toEqual(draft);
-  });
-
-  it("reasoning 与 final_text 往返", () => {
-    const draft: ReplyDraft = { reasoning: "只有思考", tool_calls: [], final_text: "只有正文" };
-    expect(parseReply(serializeReply(draft))).toEqual(draft);
+  it("空正文解析为 null final_text", () => {
+    const draft = parseReply("   ");
+    expect(draft.final_text).toBeNull();
+    expect(draft.tool_calls).toEqual([]);
   });
 });
 
