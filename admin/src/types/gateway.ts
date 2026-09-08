@@ -112,7 +112,6 @@ export interface FakeModel {
   billing_tier: string;
   endpoint_types: string[];
   logo_url: string | null;
-  tags: string[];
   created_at: string;
 }
 

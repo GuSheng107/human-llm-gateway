@@ -49,11 +49,10 @@ export interface FakeModelPayload {
   pricing?: ModelPricing;
   context_window?: number | null;
   max_output_tokens?: number | null;
-  capabilities?: string[];
+capabilities?: string[];
   billing_tier?: string;
   endpoint_types?: string[];
   logo_url?: string | null;
-  tags?: string[];
   group_ids?: number[];
 }
 
@@ -70,7 +69,6 @@ export interface ModelListFilters {
   billing_tier?: string;
   endpoint_type?: string;
   capability?: string;
-  tag?: string;
   group_id?: string;
   include_disabled?: boolean;
 }
@@ -95,7 +93,6 @@ export function listFakeModels(
   if (filters.billing_tier) query.set("billing_tier", filters.billing_tier);
   if (filters.endpoint_type) query.set("endpoint_type", filters.endpoint_type);
   if (filters.capability) query.set("capability", filters.capability);
-  if (filters.tag) query.set("tag", filters.tag);
   if (filters.group_id) query.set("group_id", filters.group_id);
   if (filters.include_disabled) query.set("include_disabled", "true");
   return api<Page<FakeModel>>(`/api/fake-models?${query}`);

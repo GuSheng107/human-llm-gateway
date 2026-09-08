@@ -83,7 +83,6 @@ class FakeModel(TimestampMixin, Base):
         nullable=False,
     )
     logo_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
 

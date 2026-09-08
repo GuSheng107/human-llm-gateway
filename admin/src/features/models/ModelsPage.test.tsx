@@ -27,7 +27,6 @@ const models = Array.from({ length: 35 }, (_, index) => ({
   billing_tier: "free",
   endpoint_types: ["openai_chat"],
   logo_url: null,
-  tags: ["通用"],
   created_at: "2026-01-01T00:00:00Z",
 }));
 

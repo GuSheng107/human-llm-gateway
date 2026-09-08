@@ -116,25 +116,20 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
             "capabilities": ["tools", "vision"],
             "billing_tier": "subscription",
             "endpoint_types": ["openai_chat", "openai_responses"],
-            "tags": ["测试", "多模态"],
         },
     ).json()
     assert created["input_price_per_million"] == 1.5
     assert created["billing_tier"] == "subscription"
     assert created["endpoint_types"] == ["openai_chat", "openai_responses"]
-    assert created["tags"] == ["测试", "多模态"]
 
     updated = client.patch(
         f"/api/fake-models/{created['id']}",
         headers=admin_headers,
-        json={"input_price_per_million": 2.5, "tags": ["更新"]},
+        json={"input_price_per_million": 2.5},
     ).json()
     assert updated["input_price_per_million"] == 2.5
-    assert updated["tags"] == ["更新"]
 
-    # 标签筛选 + 搜索（model_id/显示名/描述/标签）。
-    by_tag = client.get("/api/fake-models", headers=admin_headers, params={"tag": "更新"}).json()
-    assert {item["model_id"] for item in by_tag["items"]} == {"market-test-model"}
+    # 搜索（model_id/显示名/描述）。
     by_search = client.get(
         "/api/fake-models", headers=admin_headers, params={"search": "广场测试"}
     ).json()

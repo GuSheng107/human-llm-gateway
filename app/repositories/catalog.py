@@ -23,7 +23,7 @@ from .models import ApiKeyFakeModel, FakeModel, ModelGroup, ModelGroupItem
 # 按母公司划分：分组是第一层候选集，模型选择只能在分组内收窄。
 # 模型一律为 system scope（owner_user_id 为空），因此对所有用户可见可用；
 # 分组挂在管理员名下仅因为 model_groups.owner_user_id 非空约束，不影响模型可见性。
-# meta：模型广场展示属性（价格单位：元 / 1M tokens；capabilities/tags 为标签）。
+# meta：模型广场展示属性（价格单位：元 / 1M tokens；capabilities 为能力标签）。
 DEFAULT_MODEL_GROUPS: list[dict] = [
     {
         "name": "DeepSeek",
@@ -36,7 +36,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 32_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["代码", "推理"],
             },
             "deepseek-v4-flash": {
                 "input": 0.5,
@@ -45,7 +44,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 16_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
         },
     },
@@ -62,7 +60,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["旗舰", "多模态"],
             },
             "gpt-5.6-sol": {
                 "input": 4,
@@ -72,7 +69,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["旗舰", "多模态"],
             },
             "gpt-5.6-terra": {
                 "input": 2,
@@ -82,7 +78,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["均衡"],
             },
             "gpt-5.6-luna": {
                 "input": 0.2,
@@ -92,7 +87,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["轻量"],
             },
             "gpt-5.5": {
                 "input": 5,
@@ -102,7 +96,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": [],
             },
             "gpt-5.4": {
                 "input": 2.5,
@@ -112,7 +105,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["入门"],
             },
         },
     },
@@ -131,7 +123,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["旗舰"],
             },
             "claude-fable-5.1": {
                 "input": 10,
@@ -142,7 +133,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["旗舰"],
             },
             "claude-fable-5": {
                 "input": 30,
@@ -153,7 +143,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["旗舰", "长文本"],
             },
             "claude-opus-5": {
                 "input": 21,
@@ -164,7 +153,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["推理"],
             },
             "claude-sonnet-5": {
                 "input": 10.5,
@@ -175,7 +163,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["均衡"],
             },
             "claude-haiku-4-5": {
                 "input": 5,
@@ -186,7 +173,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 32_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["轻量"],
             },
         },
     },
@@ -200,7 +186,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["长文本"],
             },
             "kimi-k2.7-code": {
                 "input": 4,
@@ -208,7 +193,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 256_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["代码"],
             },
             "kimi-k2.7-code-highspeed": {
                 "input": 8,
@@ -216,7 +200,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 256_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["代码", "高速"],
             },
             "kimi-k2.6": {
                 "input": 2,
@@ -224,7 +207,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 256_000,
                 "max_output": 32_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
         },
     },
@@ -238,7 +220,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["推理"],
             },
             "MiniMax-M2.7": {
                 "input": 1.5,
@@ -246,7 +227,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 204_800,
                 "max_output": 32_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "MiniMax-M2.7-highspeed": {
                 "input": 3,
@@ -254,7 +234,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 204_800,
                 "max_output": 32_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["高速"],
             },
         },
     },
@@ -269,7 +248,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 500_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["旗舰"],
             },
             "grok-4.6": {
                 "input": 18,
@@ -277,7 +255,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 500_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["旗舰"],
             },
             "grok-4.5": {
                 "input": 9,
@@ -285,7 +262,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 500_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["均衡"],
             },
             "grok-4.3": {
                 "input": 4.5,
@@ -293,7 +269,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 32_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["轻量"],
             },
         },
     },
@@ -307,7 +282,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 131_072,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["旗舰"],
             },
             "qwen3.8-flash": {
                 "input": 1,
@@ -315,7 +289,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 131_072,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "qwen3.7-max": {
                 "input": 4.8,
@@ -323,7 +296,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "streaming"],
-                "tags": [],
             },
             "qwen3.7-plus": {
                 "input": 1.6,
@@ -331,7 +303,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "streaming"],
-                "tags": [],
             },
             "qwen3.7-flash": {
                 "input": 0.4,
@@ -339,7 +310,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "streaming"],
-                "tags": ["入门"],
             },
         },
     },
@@ -353,7 +323,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["代码", "推理"],
             },
             "glm-5.3-flash": {
                 "input": 0.7,
@@ -361,7 +330,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["免费试用"],
             },
             "glm-5.2": {
                 "input": 2,
@@ -369,7 +337,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 128_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": [],
             },
             "glm-4.7": {
                 "input": 1,
@@ -377,7 +344,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 200_000,
                 "max_output": 16_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["入门"],
             },
         },
     },
@@ -385,6 +351,14 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "Gemini",
         "owned_by": "gemini",
         "models": {
+            "gemini-3.8-flash": {
+                "input": 5.25,
+                "output": 26.25,
+                "cached": 0.26,
+                "context": 1_000_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+            },
             "gemini-3.7-flash": {
                 "input": 2.1,
                 "output": 8.4,
@@ -392,7 +366,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["长文本"],
             },
             "gemini-3.6-flash": {
                 "input": 1.75,
@@ -401,7 +374,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "gemini-3.5-flash": {
                 "input": 1,
@@ -410,7 +382,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "gemini-3.5-flash-lite": {
                 "input": 0.35,
@@ -419,7 +390,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["入门"],
             },
         },
     },
@@ -685,7 +655,6 @@ class FakeModelRepository:
         capabilities: list[str] | None = None,
         billing_tier: BillingTier = BillingTier.PAY_AS_YOU_GO,
         endpoint_types: list[str] | None = None,
-        tags: list[str] | None = None,
     ) -> FakeModel:
         row = FakeModel(
             scope=FakeModelScope.SYSTEM,
@@ -706,7 +675,6 @@ class FakeModelRepository:
             endpoint_types=(
                 list(endpoint_types) if endpoint_types else [ModelEndpointType.OPENAI_CHAT.value]
             ),
-            tags=tags or [],
         )
         session.add(row)
         return row
@@ -754,7 +722,6 @@ class FakeModelRepository:
                         capabilities=meta.get("capabilities", []),
                         billing_tier=BillingTier(meta.get("billing", "pay_as_you_go")),
                         endpoint_types=_default_endpoint_types(meta),
-                        tags=meta.get("tags", []),
                     )
                     session.flush()
                 model_pks.append(model.id)

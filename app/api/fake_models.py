@@ -44,7 +44,6 @@ class FakeModelCreate(StrictModel):
     billing_tier: str | None = None
     endpoint_types: list[str] | None = Field(default=None, max_length=8)
     logo_url: str | None = Field(default=None, max_length=512)
-    tags: list[str] = Field(default_factory=list, max_length=20)
     group_ids: list[int] = Field(default_factory=list, max_length=100)
 
 
@@ -63,7 +62,6 @@ class FakeModelUpdate(StrictModel):
     billing_tier: str | None = None
     endpoint_types: list[str] | None = Field(default=None, max_length=8)
     logo_url: str | None = Field(default=None, max_length=512)
-    tags: list[str] | None = Field(default=None, max_length=20)
     group_ids: list[int] | None = Field(default=None, max_length=100)
 
 
@@ -87,7 +85,6 @@ class FakeModelView(BaseModel):
     billing_tier: str
     endpoint_types: list[str]
     logo_url: str | None
-    tags: list[str]
     created_at: str
 
 
@@ -169,7 +166,6 @@ def _model_view(row: FakeModel) -> FakeModelView:
         billing_tier=row.billing_tier.value,
         endpoint_types=list(row.endpoint_types or []),
         logo_url=row.logo_url,
-        tags=list(row.tags or []),
         created_at=iso_utc(row.created_at) or "",
     )
 
@@ -212,7 +208,6 @@ def list_fake_models(
     billing_tier: str | None = Query(default=None, max_length=32),
     endpoint_type: str | None = Query(default=None, max_length=32),
     capability: str | None = Query(default=None, max_length=32),
-    tag: str | None = Query(default=None, max_length=64),
     group_id: int | None = Query(default=None, ge=1),
     include_disabled: bool = Query(default=False),
     user: User = Depends(require_current_user),
@@ -225,7 +220,6 @@ def list_fake_models(
             "billing_tier": billing_tier,
             "endpoint_type": endpoint_type,
             "capability": capability,
-            "tag": tag,
         }.items()
         if value
     }
@@ -276,7 +270,6 @@ def create_fake_model(
         billing_tier=payload.billing_tier,
         endpoint_types=payload.endpoint_types,
         logo_url=payload.logo_url,
-        tags=payload.tags,
         group_ids=payload.group_ids,
     )
     db.commit()

@@ -44,7 +44,13 @@ ALLOWED_CAPABILITIES = {
 
 def _clean_capabilities(values: list[str] | None) -> list[str]:
     """去重并只保留白名单内的能力标签（历史 function_calling 归并为 tools）。"""
-    cleaned = _clean_tags(values)
+    if not values:
+        return []
+    cleaned: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
     if "function_calling" in cleaned:
         cleaned = [item for item in cleaned if item != "function_calling"]
         if "tools" not in cleaned:
@@ -93,19 +99,6 @@ def _clean_endpoint_types(values: list[str] | None) -> list[str]:
             status_code=400,
         )
     return cleaned
-
-
-def _clean_tags(values: list[str] | None) -> list[str]:
-    if not values:
-        return []
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        normalized = str(value).strip()
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            result.append(normalized)
-    return result[:20]
 
 
 def _validate_model_id(model_id: str) -> str:
@@ -171,7 +164,6 @@ class FakeModelService:
                 if term in row.model_id.lower()
                 or (row.display_name and term in row.display_name.lower())
                 or (row.description and term in row.description.lower())
-                or any(term in tag.lower() for tag in (row.tags or []))
             ]
         if filters:
             provider = filters.get("provider")
@@ -186,9 +178,6 @@ class FakeModelService:
             capability = filters.get("capability")
             if capability:
                 result = [row for row in result if capability in (row.capabilities or [])]
-            tag = filters.get("tag")
-            if tag:
-                result = [row for row in result if tag in (row.tags or [])]
             if filters.get("enabled_only"):
                 result = [row for row in result if row.is_enabled]
             model_ids = filters.get("model_ids")
@@ -228,7 +217,6 @@ class FakeModelService:
         billing_tier: str | None = None,
         endpoint_types: list[str] | None = None,
         logo_url: str | None = None,
-        tags: list[str] | None = None,
         group_ids: list[int] | None = None,
     ) -> FakeModel:
         begin_immediate_if_sqlite(session)
@@ -265,7 +253,6 @@ class FakeModelService:
             billing_tier=BillingTier(billing_tier or BillingTier.PAY_AS_YOU_GO.value),
             endpoint_types=_clean_endpoint_types(endpoint_types),
             logo_url=(logo_url or "").strip() or None,
-            tags=_clean_tags(tags),
         )
         self.catalog.add(session, row)
         try:
@@ -311,7 +298,6 @@ class FakeModelService:
             "billing_tier",
             "endpoint_types",
             "logo_url",
-            "tags",
         }
         pricing_names = {
             "input_price_per_million",
@@ -328,8 +314,6 @@ class FakeModelService:
                 value = (value or "").strip() or None
             elif name == "capabilities":
                 value = _clean_capabilities(value)
-            elif name == "tags":
-                value = _clean_tags(value)
             elif name == "billing_tier" and value is not None:
                 value = BillingTier(value)
             elif name == "endpoint_types":
