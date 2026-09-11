@@ -67,6 +67,22 @@ def test_parse_command_slash_commands() -> None:
     assert is_command_text("#task_public_1 正文") is False
 
 
+def test_parse_command_target_extraction() -> None:
+    """命令在前语法：/cmd #<task_public_id> 正文。"""
+    ans = parse_command("/ans #task_public_cmd 修复 bug")
+    assert (ans.name, ans.target, ans.body) == ("ans", "task_public_cmd", "修复 bug")
+    ans_no_target = parse_command("/ans 修复 #标题 行")
+    assert ans_no_target.target is None
+    assert ans_no_target.body == "修复 #标题 行"
+    page = parse_command("/page #task_public_cmd 2")
+    assert (page.name, page.target, page.args) == ("page", "task_public_cmd", "2")
+    file_cmd = parse_command("/file #task_public_cmd md")
+    assert (file_cmd.name, file_cmd.target, file_cmd.args) == ("file", "task_public_cmd", "md")
+    commit = parse_command("/commit #task_public_cmd")
+    assert (commit.name, commit.target) == ("commit", "task_public_cmd")
+    assert parse_command("/ans #task_public_cmd 正文").body == "正文"
+
+
 # ---------------------------------------------------------------------------
 # 进站命令路由（webhook 入站）
 # ---------------------------------------------------------------------------
@@ -362,6 +378,72 @@ def test_ans_to_late_task_returns_late(client, webhook_scene) -> None:
     assert _inbound(client, scene, "cmd-commit-late", "#task_public_cmd /commit").json()[
         "result"
     ] == (InboundResult.LATE.value)
+
+
+def test_command_first_target_syntax(client, webhook_scene) -> None:
+    """命令在前语法 /cmd #id ...：两种语法等价，均按 #id 定位任务。"""
+    scene = webhook_scene
+
+    # /ans #id 暂存草稿（等价于 #id /ans）
+    assert _inbound(client, scene, "cmd-first-ans", "/ans #task_public_cmd 新语法回复").json()[
+        "result"
+    ] == (InboundResult.ACCEPTED.value)
+    with database.SessionLocal() as session:
+        draft = (
+            session.query(TaskDraft)
+            .filter(TaskDraft.task_id == scene["task_id"], TaskDraft.state == DraftState.EDITING)
+            .one()
+        )
+        assert draft.final_text == "新语法回复"
+        assert "#task_public_cmd" not in draft.final_text
+
+    # /commit #id 提交草稿
+    assert _inbound(client, scene, "cmd-first-commit", "/commit #task_public_cmd").json()[
+        "result"
+    ] == (InboundResult.ACCEPTED.value)
+    with database.SessionLocal() as session:
+        task = session.get(RequestTask, scene["task_id"])
+        assert task.state is TaskState.RESPONSE_READY
+        assert "新语法回复" in task.response_payload_json
+
+    # /page #id 指定任务分页外发
+    assert _inbound(client, scene, "cmd-first-page", "/page #task_public_cmd 1").json()[
+        "result"
+    ] == (InboundResult.ACCEPTED.value)
+    with database.SessionLocal() as session:
+        payloads = [
+            json.loads(row.payload_json)
+            for row in session.query(ConnectorOutbox)
+            .filter(ConnectorOutbox.connection_id == scene["connection_id"])
+            .all()
+        ]
+    page_payload = next((p for p in payloads if p.get("kind") == "page"), None)
+    assert page_payload is not None
+    assert "task_public_cmd" in page_payload.get("text", "")
+
+    # 显式 #id 不存在：拒绝且不落到唯一等待任务（避免误回复别的任务）
+    scene2_task = _seed_task(_owner_id(client, scene), scene["connection_id"], "task_public_cmd3")
+    assert _inbound(client, scene, "cmd-first-bad", "/ans #task_missing 不该提交").json()[
+        "result"
+    ] == (InboundResult.UNHANDLED.value)
+    with database.SessionLocal() as session:
+        task = session.get(RequestTask, scene2_task)
+        assert task.state is TaskState.WAITING_HUMAN
+
+
+def test_command_first_legacy_syntax_pure_text(client, webhook_scene) -> None:
+    """任务在前语法 #id /ans ...：剥掉定位后命令仍被识别。"""
+    scene = webhook_scene
+    assert _inbound(client, scene, "cmd-legacy-ans", "#task_public_cmd /ans 兼容语法").json()[
+        "result"
+    ] == (InboundResult.ACCEPTED.value)
+    with database.SessionLocal() as session:
+        draft = (
+            session.query(TaskDraft)
+            .filter(TaskDraft.task_id == scene["task_id"], TaskDraft.state == DraftState.EDITING)
+            .one()
+        )
+        assert draft.final_text == "兼容语法"
 
 
 # ---------------------------------------------------------------------------

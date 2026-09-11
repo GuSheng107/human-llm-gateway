@@ -1122,21 +1122,32 @@ class ConnectionService:
 
         IM 回复当前为纯文本语义：整段正文即 final_text（后续迭代将重构
         富文本回复，不再使用 DSL 围栏）。与 Web 编辑器共享 ReplyDraft 结构。
-        定位语义：回复上下文 > `#<task_public_id> <正文>` > 唯一等待任务默认。
+        定位语义：回复上下文 > 命令内 `#<task_public_id>`（/cmd #id ...）>
+        消息首 `#<task_public_id>` > 唯一等待任务默认。
         """
         text = (message.text or "").strip()
         if not text:
             return InboundResult.UNHANDLED
+        command = parse_command(text)
         task: RequestTask | None = None
         if message.reply_to_public_id:
             task = self._find_task_by_public_id(session, row, message.reply_to_public_id)
             if task is None:
                 return InboundResult.UNHANDLED
-        elif text.startswith("#"):
-            public_id, _, rest = text[1:].partition(" ")
-            task = self._find_task_by_public_id(session, row, public_id)
-            if task is not None:
-                text = rest.strip()
+        else:
+            command_target = command.target if command is not None else None
+            if command_target:
+                task = self._find_task_by_public_id(session, row, command_target)
+                if task is None:
+                    # 显式指定了任务但不可见/不存在，宁可拒绝也不落到别的任务上。
+                    return InboundResult.UNHANDLED
+            elif text.startswith("#"):
+                public_id, _, rest = text[1:].partition(" ")
+                task = self._find_task_by_public_id(session, row, public_id)
+                if task is not None:
+                    text = rest.strip()
+                    if command is None:
+                        command = parse_command(text)
         if task is None:
             waiting = self._sole_waiting_task(session, row)
             if waiting is not None:
@@ -1144,7 +1155,6 @@ class ConnectionService:
 
         # 斜杠命令分流：/ans /res 是回复命令，/page /file 是内容外发命令；
         # 未知 `/xxx` 拒绝（UNHANDLED），避免命令被误当回复正文提交。
-        command = parse_command(text)
         if command is not None:
             return self._handle_command(
                 session, row=row, task=task, command=command, receipt=receipt

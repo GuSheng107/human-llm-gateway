@@ -82,7 +82,7 @@ class InferenceService:
         self.admission.acquire_slot(session, key, owner)
 
         task = RequestTask(
-            public_id=self._task_public_id(),
+            public_id=self._task_public_id(session),
             response_public_id=(
                 f"resp_{secrets.token_hex(16)}"
                 if protocol is InferenceProtocol.OPENAI_RESPONSES
@@ -284,8 +284,19 @@ class InferenceService:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _task_public_id() -> str:
-        return f"task_{secrets.token_hex(16)}"
+    def _task_public_id(session: Session) -> str:
+        """对外任务编号：`t_` + 8 位随机 hex（主键仍为自增 int）。
+
+        8 位 hex 有碰撞可能，插入前预检已占用编号，3 次未命中则退回长格式。
+        """
+        for _ in range(3):
+            candidate = f"t_{secrets.token_hex(4)}"
+            occupied = session.execute(
+                select(RequestTask.public_id).where(RequestTask.public_id == candidate)
+            ).scalar_one_or_none()
+            if occupied is None:
+                return candidate
+        return f"t_{secrets.token_hex(16)}"
 
     def _event(
         self,
