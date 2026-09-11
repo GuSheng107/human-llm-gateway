@@ -38,7 +38,9 @@
 
 ## 2. Git 与变更边界
 
-- 本项目只使用 `master` 分支，不创建其他分支。
+- `master` 是受保护分支；所有改动经分支 + Pull Request 合入，禁止直接推送或强推 `master`。
+
+- 分支从最新 `master` 拉出，命名使用 `feat/`、`fix/`、`docs/`、`test/` 前缀；PR 目标分支为 `master`。
 
 - 修改前先检查 `git status`、当前分支和远端；保留用户已有且与任务无关的改动。
 
@@ -50,7 +52,7 @@
 
 - 禁止使用 `git reset --hard`、`git checkout --` 等破坏性命令覆盖用户改动。
 
-- 推送前必须确认本地 `master` 与 `origin/master` 的关系，并完成质量门禁。
+- PR 合入前必须完成质量门禁，并确认分支基于最新 `master`。
 
 ## 3. Python 后端规范
 
@@ -163,4 +165,4 @@ git diff --check
 
 - 工作区无本任务产生的敏感文件或无关生成物。
 
-- 代码已提交并推送到 `origin/master`。
+- 代码已通过 PR 合入 `origin/master`。

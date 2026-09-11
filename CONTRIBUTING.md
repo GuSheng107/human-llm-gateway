@@ -81,17 +81,25 @@ FastAPI 会托管已生成的 `admin/dist`。健康检查为 `GET /healthz`。
 
 ## 4. Git 工作流
 
-本仓库由产品决定只使用 `master` 分支：
+`master` 是受保护分支，禁止直接推送。所有改动通过分支 + Pull Request 合入：
 
-1. 修改前检查 `git status --short --branch` 和远端关系。
-2. 保留用户已有且与当前任务无关的改动。
-3. 不创建 feature、develop、release 或兼容分支。
-4. 每个里程碑形成一个可运行、可验证的提交。
-5. 只暂存本阶段文件，提交信息使用 Conventional Commits 前缀和中文说明。
-6. 推送前确认本地 `master` 没有落后 `origin/master`。
-7. 质量门禁通过后推送 `origin/master`。
+1. 修改前检查 `git status --short --branch` 和远端关系，先同步最新 `master`。
+2. 从 `master` 拉出短期分支，命名使用 `feat/<scope>`、`fix/<scope>`、`docs/<scope>` 或 `test/<scope>`。
+3. 保留用户已有且与当前任务无关的改动；只暂存本任务文件。
+4. 提交信息使用 Conventional Commits 前缀和中文说明，每个提交都应可运行、可验证。
+5. 推送分支后用 `gh pr create --base master` 发起 PR，描述里写明改动范围、验证方式和未覆盖风险。
+6. PR 必须通过 CI 与本地质量门禁，评审通过后合并；合并后删除分支并同步本地 `master`。
 
 示例：
+
+```bash
+git switch -c feat/fake-model-groups
+# 修改后提交；多行提交信息写入临时文件，再用 git commit -F 提交
+git push -u origin feat/fake-model-groups
+gh pr create --base master --fill
+```
+
+提交信息示例：
 
 ```text
 docs: 完成 M1 产品与架构规范
@@ -100,7 +108,7 @@ fix: 修复任务名额重复释放
 test: 增加三协议流式契约测试
 ```
 
-禁止使用破坏性命令覆盖未提交改动，禁止把数据库、`.env`、日志、缓存、构建产物、二维码或演示 Key 纳入提交。
+禁止使用破坏性命令覆盖未提交改动，禁止强推 `master`，禁止把数据库、`.env`、日志、缓存、构建产物、二维码或演示 Key 纳入提交。
 
 ## 5. 实现顺序
 
@@ -113,7 +121,7 @@ test: 增加三协议流式契约测试
 5. 接入 Router、Connector 或前端页面。
 6. 增加正常、失败、权限和并发测试。
 7. 运行完整质量门禁。
-8. 实现、测试、文档和远端推送都完成后再勾选路线图。
+8. 实现、测试、文档和 PR 合入都完成后再勾选路线图。
 
 接口、Schema、服务、前端和测试必须保持同一契约；不要增加重复路由、重复字段、双写或职责不明的兼容层。
 
@@ -141,7 +149,7 @@ Fake Model、LLM 配置和 API Key 权限必须严格区分：
 - LLM 配置是用户私有真实上游。
 - API Key 决定所有者、策略、入口和有效 Fake Model 集合。
 - 模型分组先预筛，Key 的直接模型选择再收窄；空选择代表全部候选模型。
-- IM DSL、Web 编辑器、LLM 草稿和协议渲染器共享同一个 ReplyDraft；首个有效提交后没有撤销接口。
+- IM 回复指令、Web 编辑器、LLM 草稿和协议渲染器共享同一个 ReplyDraft；首个有效提交后没有撤销接口。
 - `previous_response_id` 等网关控制字段必须按契约校验和等价展开，不能机械透传无法识别的内部 ID。
 
 ## 7. 前端边界
@@ -209,6 +217,7 @@ git diff --check
 ```powershell
 Set-Location admin
 npm ci
+npm test
 npm run build
 ```
 
@@ -224,4 +233,4 @@ npm run build
 - 后端和前端质量门禁通过。
 - README 和路线图同步。
 - 工作树只包含预期变更，无 Secret 或无关生成物。
-- 提交已经推送到 `origin/master`，远端提交可验证。
+- 改动已通过 PR 合入 `origin/master`，远端提交可验证。

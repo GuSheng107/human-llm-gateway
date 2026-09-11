@@ -11,14 +11,14 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](admin/package.json)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](pyproject.toml)
 [![Tailwind](https://img.shields.io/badge/Tailwind%20CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](admin/package.json)
-[![Tests](https://img.shields.io/badge/tests-quality%20gates-brightgreen)]()
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg)]()
+[![Quality gates](https://github.com/GuSheng107/human-llm-gateway/actions/workflows/quality.yml/badge.svg)](https://github.com/GuSheng107/human-llm-gateway/actions/workflows/quality.yml)
+[![欢迎 PR](https://img.shields.io/badge/PRs-welcome-ff69b4.svg)](CONTRIBUTING.md)
 
 [English](README.md) | **简体中文**
 
 ---
 
-一次部署，把「你在 IM 里敲的字」变成「标准 LLM API 响应」。
+用任意 OpenAI / Anthropic 兼容客户端调用它，回复由你或你的真实 LLM 上游写出。
 
 > **项目状态：受邀试用版本。** 核心功能已实现，适合按单实例方式部署给受邀用户使用；真实 IM、LLM 上游和公网环境须按[部署验收说明](docs/DEPLOYMENT.md)验证。完整进度以路线图为准。
 
@@ -28,10 +28,14 @@
 
 ## ✨ 这是什么
 
-你是否想让某个工具调用「GPT-5」，但回复其实由**你自己**写？
-或者你已经订阅了真实 LLM，想让它的输出**带上你自定义的身份**？
+Human LLM Gateway 是一个可自托管的 **LLM 身份网关**。调用方用普通的 OpenAI 或
+Anthropic SDK 发起请求，回复由 Web 工作台里的人写出、由你的真实 LLM 上游生成，
+或者由先出结果的那一方胜出。
 
-Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
+它对应两种场景：
+
+- 客户端需要调用 `gpt-5` 这类模型名，而回复由你自己写；
+- 你已有真实 LLM，希望它的输出带上你掌控的身份。
 
 ```
 调用方（SDK / 应用）                    你的网关                        回复来源
@@ -99,9 +103,9 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 
 ```
                     ┌────────────────────────────────────────────┐
-                    │                admin/ (React 19)           │
-│   登录 · 工作台 · 任务 · 连接 · Key · 模型   │
-│      LLM 配置 · 日志 · 小助手               │
+                    │              admin/ (React 19)             │
+                    │  登录 · 工作台 · 任务 · 连接 · Key · 模型   │
+                    │  LLM 配置 · 日志 · 小助手                   │
                     └────────────────────┬───────────────────────┘
                                          │ /api/*
 ┌──────────────┐  /v1/*  ┌───────────────▼────────────────┐  上游   ┌─────────────┐
@@ -111,7 +115,7 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
                            │  app/services/  用例编排          │  投递   ┌─────────────┐
 ┌──────────────┐  /conn.  │  app/repositories/  持久化        │ ──────► │ 你的 IM     │
 │ 你的 IM 客户端 │ ──────► │  app/connectors/  IM 连接器       │  ◄────── │ 微信/企微/…  │
-└──────────────┘  回复DSL  │  app/protocols/  三协议适配        │   回复   └─────────────┘
+└──────────────┘  回复     │  app/protocols/  三协议适配        │   回复   └─────────────┘
                            │  app/domain/  枚举/状态机/纯规则    │
                            │  app/core/  安全/配置/日志          │
                            └────────────────────────────────┘
@@ -206,6 +210,7 @@ for chunk in stream:
 | M12 | 工具调用透传（沙箱已移除） | ✅ |
 | M13 | trace 关联日志、IM 归属隔离、数据保留 | ✅ |
 | M14 | 统一回复工作台 | ✅ |
+| M15 | Caller Tool 统一校验与一次性警告 · 请求视图 · LLM 生成引导 · 日志详情信封 | ✅ |
 
 完整计划见 [ROADMAP](docs/ROADMAP.md)。当前测试数量以末尾质量门禁的实际输出为准。
 
@@ -213,20 +218,28 @@ M12 原为隔离工具沙箱，现已移除。网关不再执行任何工具：�
 声明的工具（按名称校验），由调用方自行执行并承担全部后果。
 
 已部署服务的接口边界为：管理台 `/api/*`、三种推理协议 `/v1/*`、连接器入口
-`/connectors/*`、存活检查 `/healthz`。接口和数据库按当前部署契约运行。
+`/connectors/*`、存活检查 `/healthz`。已退役的回复页面和旧数据库 Schema 不提供兼容路由。
 
 ## 🤝 参与贡献
 
+`master` 为受保护分支，所有改动通过分支加 Pull Request 合入。
+
 ```bash
-# 质量门禁（提交前必须全绿）
+# 质量门禁（发起 PR 前必须全绿）
 uv lock --check
 uv run --locked ruff format --check app tests
 uv run --locked ruff check app tests
 uv run --locked python -m pytest -q
-cd admin && npm ci && npm run build && npm test
+git diff --check
+(cd admin && npm ci && npm test && npm run build)
+
+# 拉分支、推送、发起 PR
+git switch -c feat/your-change
+git push -u origin feat/your-change
+gh pr create --base master --fill
 ```
 
-开发规范见 [AGENTS.md](AGENTS.md) 与 [CONTRIBUTING.md](CONTRIBUTING.md)。
+完整流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，强制规范见 [AGENTS.md](AGENTS.md)。
 
 ## 📄 许可证
 
@@ -242,10 +255,8 @@ cd admin && npm ci && npm run build && npm test
 
 <div align="center">
 
-**如果这个项目对你有帮助，请点一个 Star ⭐**
+[报告问题](https://github.com/GuSheng107/human-llm-gateway/issues) · [参与讨论](https://github.com/GuSheng107/human-llm-gateway/discussions)
 
-[报告问题](https://github.com/GuSheng107/human-llm-gateway/issues) · [功能讨论](https://github.com/GuSheng107/human-llm-gateway/discussions)
-
-特别感谢 [Linux.do 社区](https://linux.do/)，感谢社区的讨论、反馈和支持，帮助本项目完成部署。
+感谢 [Linux.do 社区](https://linux.do/) 的早期反馈与讨论。
 
 </div>
