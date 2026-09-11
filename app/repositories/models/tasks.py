@@ -31,6 +31,12 @@ from ...domain.enums import (
 from .base import TimestampMixin, VersionMixin, sa_enum, utc_now
 
 
+def _new_request_id() -> str:
+    import uuid
+
+    return f"req_{uuid.uuid4().hex[:24]}"
+
+
 class RequestTask(TimestampMixin, VersionMixin, Base):
     __tablename__ = "request_tasks"
     __table_args__ = (
@@ -43,6 +49,7 @@ class RequestTask(TimestampMixin, VersionMixin, Base):
         Index("ix_request_tasks_api_key_created", "api_key_id", "created_at"),
         Index("ix_request_tasks_model_created", "requested_model", "created_at"),
         Index("ix_request_tasks_previous", "previous_task_id"),
+        Index("ix_request_tasks_request", "request_id"),
         Index("ix_request_tasks_deadline", "state", "human_deadline_at"),
         Index("ix_request_tasks_slot_released", "slot_released_at"),
     )
@@ -53,11 +60,15 @@ class RequestTask(TimestampMixin, VersionMixin, Base):
     previous_task_id: Mapped[int | None] = mapped_column(
         ForeignKey("request_tasks.id"), nullable=True
     )
+    # 一次外部推理请求（RequestTask）的稳定 request_id：创建时取自请求上下文
+    # （缺失则生成），人工等待、后台 fallback、转发与日志全程复用同一 trace。
+    request_id: Mapped[str] = mapped_column(String(64), nullable=False, default=_new_request_id)
     owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     api_key_id: Mapped[int] = mapped_column(
         ForeignKey("api_keys.id", ondelete="RESTRICT"), nullable=False
     )
     api_key_prefix_snapshot: Mapped[str] = mapped_column(String(8), nullable=False)
+    api_key_name_snapshot: Mapped[str] = mapped_column(String(100), nullable=False)
     fake_model_id: Mapped[int | None] = mapped_column(
         ForeignKey("fake_models.id", ondelete="SET NULL"), nullable=True
     )
@@ -165,4 +176,8 @@ class TaskInboxState(TimestampMixin, Base):
     seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_event_id: Mapped[int | None] = mapped_column(
         ForeignKey("task_events.id", ondelete="SET NULL"), nullable=True
+    )
+    # 首个 Caller Tool 风险告知确认时间（每 RequestTask 一次性；NULL=未确认）。
+    tool_call_warning_acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )

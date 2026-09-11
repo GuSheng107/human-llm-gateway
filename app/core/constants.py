@@ -93,16 +93,13 @@ SSRF_METADATA_HOSTS = frozenset(
 )
 SSRF_METADATA_NETWORKS = ("169.254.0.0/16",)
 
-# 工具沙箱（M12）：进程级隔离限制。
-TOOL_MIN_TIMEOUT_SECONDS = 1
-TOOL_MAX_TIMEOUT_SECONDS = 120
-TOOL_MAX_STDOUT_BYTES = 64 * 1024  # 单边输出上限（截断保存）
-TOOL_MAX_NAME_LENGTH = 100
-TOOL_MAX_COMMAND_LENGTH = 2000
-TOOL_MAX_ARGUMENTS = 16
-TOOL_MAX_ARGUMENT_VALUE_LENGTH = 4096
-# stdin 传入数据上限（与 output 64 KiB 对称，经 stdin 喂容器不经 shell）。
-TOOL_MAX_STDIN_BYTES = 64 * 1024
+# 用户自定义生成引导（generation_instruction）统一上限（Unicode 字符数）。
+GENERATION_INSTRUCTION_MAX_CHARS = 4000
+
+# 日志详情（LogDetailEnvelope）容量控制：用户要求日志完整可见——正常路径
+# 不做任何截断（脱敏后原样落库）；仅保留病态构造的防御上限，防止单条
+# 日志把 app_logs 写爆。触发时显式标记，绝不静默丢内容。
+APP_LOG_DETAIL_GUARD_BYTES = 64 * 1024 * 1024  # 单条详情信封防御上限（64 MiB）
 
 # 外部 API Key：`sk-` + 32 字节随机数的无 padding base64url（43 字符）。
 API_KEY_PREFIX = "sk-"

@@ -1,13 +1,14 @@
-"""任务工作台 API（docs/API_CONTRACT.md §9）：任务详情、事件时间线、草稿与原子提交。
+"""任务工作台 API（docs/API_CONTRACT.md §9）：请求视图、草稿、原子提交与工具告警。
 
-LLM 草稿生成（POST /api/tasks/{id}/drafts/generate）属于 M7，本阶段不提供。
 管理员对草稿与回复写接口只读：归属校验、状态校验与禁写均在 TaskService 内完成。
+请求视图（request-view）只投影本次请求：current_input / caller_system /
+attached_context / attachments / caller_tools，不做网关会话历史语义。
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Response
 from pydantic import BaseModel, Field
@@ -16,13 +17,18 @@ from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..core.time import iso_utc
-from ..domain.conversation import load_projected_task_messages
-from ..domain.dsl import is_empty_draft
-from ..domain.enums import TaskState, UserRole
+from ..domain.enums import AuditAction, TaskState, UserRole
 from ..domain.errors import DomainError, DomainErrorCode
-from ..domain.values import ReplyDraft, ReplyToolCall
+from ..domain.values import (
+    ReplyDraft,
+    ReplyToolCall,
+    is_empty_draft,
+    normalize_generation_instruction,
+)
 from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, TaskInboxState, User
+from ..services.caller_tool_service import catalog_for_task
 from ..services.delivery_service import DeliveryService
+from ..services.request_view_service import RequestViewService
 from ..services.task_service import TaskService, draft_from_row
 from .common import StrictModel
 from .deps import require_current_user
@@ -30,6 +36,7 @@ from .deps import require_current_user
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 _service = TaskService()
+_view_service = RequestViewService()
 
 
 # ------------------------------------------------------------------
@@ -38,6 +45,7 @@ _service = TaskService()
 
 
 class ToolCallInput(StrictModel):
+    # 调用方 ID：校验非空 + 回复内唯一，服务端不重排（§8.1）。
     id: str = Field(min_length=1, max_length=128)
     name: str = Field(min_length=1, max_length=128)
     arguments: dict[str, Any] = Field(default_factory=dict)
@@ -63,7 +71,39 @@ class ReplySubmitInput(StrictModel):
 
 
 class DraftGenerateInput(StrictModel):
+    """LLM 草稿生成契约（§7.3）。
+
+    - generation_instruction：一次生成操作的短生命周期引导（不落库、
+      不进入最终回复；空白归一为 None，超限 400 generation_instruction_invalid）。
+    - excluded_context_item_ids：附带上下文的稳定 ctx ID（current_input 不可
+      排除；未知 ID 400 invalid_context_item）。
+    - include_caller_system / include_attachments：调用方 system 与附件开关；
+      附件无法承载时 422 attachment_not_supported，不静默降级。
+    """
+
     llm_config_id: int = Field(ge=1)
+    mode: Literal["reasoning", "reply", "both"] = "both"
+    generation_instruction: str | None = Field(default=None)
+    include_caller_system: bool = True
+    excluded_context_item_ids: list[str] | None = Field(default=None, max_length=200)
+    include_attachments: bool = True
+    # mode=reply 时可携带人工已确认的思考链作为生成依据。
+    reasoning_seed: str | None = Field(default=None, max_length=20000)
+
+
+class ToolArgumentsGenerateInput(StrictModel):
+    """指定工具参数生成契约（§7.4）。"""
+
+    llm_config_id: int = Field(ge=1)
+    generation_instruction: str | None = Field(default=None)
+    include_caller_system: bool = True
+    excluded_context_item_ids: list[str] | None = Field(default=None, max_length=200)
+    include_attachments: bool = True
+    current_arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+class AcknowledgeBody(StrictModel):
+    pass
 
 
 # ------------------------------------------------------------------
@@ -75,6 +115,14 @@ class ToolCallView(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any]
+
+
+class ToolDefinitionView(BaseModel):
+    name: str
+    description: str | None
+    input_schema: dict[str, Any]
+    source_type: str
+    is_generatable: bool
 
 
 class DraftView(BaseModel):
@@ -109,6 +157,8 @@ class TaskItem(BaseModel):
     reply_strategy: str
     delivery_mode: str
     api_key_prefix: str
+    api_key_name: str
+    display_name: str
     stream_requested: bool
     has_tools: bool
     prompt_preview: str
@@ -134,10 +184,13 @@ class ReplyDraftView(BaseModel):
 
 
 class TaskDetail(TaskItem):
+    request_id: str
     is_owner: bool
     can_edit: bool
     prompt_text: str
-    tool_names: list[str]
+    tool_definitions: list[ToolDefinitionView]
+    # 旧客户端只需要名称；完整 Schema 以 tool_definitions 为准。
+    tool_names: list[str] = Field(default_factory=list)
     raw_request: dict[str, Any] | None
     previous_task_id: str | None
     drafts: list[DraftView]
@@ -172,6 +225,8 @@ class InboxItem(BaseModel):
     human_deadline_at: str | None
     created_at: str
     prompt_preview: str
+    api_key_name: str
+    display_name: str
     has_tools: bool
     unread: bool
     seen_at: str | None
@@ -191,29 +246,126 @@ class InboxSummary(BaseModel):
     waiting_count: int
 
 
-class ConversationBlock(BaseModel):
+# ----------------------------------------------------------------------
+# 请求视图（RequestView，§6.2 / §7.1）
+# ----------------------------------------------------------------------
+
+
+class ContentBlockView(BaseModel):
+    id: str
     type: str
     text: str | None = None
-    language: str | None = None
-    tool_call_id: str | None = None
+    text_length: int | None = None
+    truncated: bool | None = None
     name: str | None = None
-    size: int | None = None
     media_type: str | None = None
+    filename: str | None = None
+    source: str | None = None
+    url: str | None = None
+    size_bytes: int | None = None
+    previewable: bool | None = None
+    call_id: str | None = None
+    arguments: dict[str, Any] | None = None
+    raw_type: str | None = None
 
 
-class ConversationMessage(BaseModel):
-    index: int
+class ContextItemView(BaseModel):
+    id: str
     role: str
-    blocks: list[ConversationBlock]
-    preview: str
-    length: int
-    has_more: bool
+    blocks: list[ContentBlockView]
+    text_length: int
+    block_count: int
 
 
-class ConversationPage(BaseModel):
+class CallerSystemView(BaseModel):
+    items: list[ContextItemView]
+    item_count: int
+    character_count: int
+    collapsed_by_default: bool
+
+
+class CallerToolsView(BaseModel):
+    definitions: list[ToolDefinitionView]
+    choice: str
+    required_name: str | None
+    parallel_allowed: bool
+
+
+class ToolCallWarningView(BaseModel):
+    required: bool
+    acknowledged: bool
+    acknowledged_at: str | None
+
+
+class RequestViewTask(BaseModel):
+    id: str
+    public_id: str
+    request_id: str
+    protocol: str
+    requested_model: str
+    state: str
+    created_at: str | None
+    deadline_at: str | None
+
+
+class RequestViewResponse(BaseModel):
+    task: RequestViewTask
+    current_input: list[ContextItemView]
+    caller_system: CallerSystemView
+    attached_context: list[ContextItemView]
+    attachments: list[ContentBlockView]
+    caller_tools: CallerToolsView
+    tool_call_warning: ToolCallWarningView
+    raw_request_available: bool
+
+
+class WarningAcknowledgeView(BaseModel):
     task_id: str
-    messages: list[ConversationMessage]
-    total: int
+    acknowledged: bool
+    acknowledged_at: str
+
+
+class ToolArgumentsGenerateView(BaseModel):
+    tool_name: str
+    arguments: dict[str, Any]
+    llm_config_id: str
+    schema_valid: bool
+    warnings: list[str]
+
+
+# ----------------------------------------------------------------------
+# 转换
+# ----------------------------------------------------------------------
+
+
+def _content_block_view(block: dict[str, Any]) -> ContentBlockView:
+    return ContentBlockView(
+        id=str(block.get("id") or ""),
+        type=str(block.get("type") or "text"),
+        text=block.get("text"),
+        text_length=block.get("text_length"),
+        truncated=block.get("truncated"),
+        name=block.get("name"),
+        media_type=block.get("media_type"),
+        filename=block.get("filename"),
+        source=block.get("source"),
+        url=block.get("url"),
+        size_bytes=block.get("size_bytes"),
+        previewable=block.get("previewable") if block.get("previewable") is not None else None,
+        call_id=block.get("call_id"),
+        arguments=block.get("arguments"),
+        raw_type=block.get("raw_type"),
+    )
+
+
+def _context_item_view(item: dict[str, Any]) -> ContextItemView:
+    return ContextItemView(
+        id=str(item.get("id") or ""),
+        role=str(item.get("role") or "user"),
+        blocks=[_content_block_view(block) for block in item.get("blocks") or []],
+        text_length=int(item.get("text_length") or 0),
+        block_count=int(item.get("block_count") or 0),
+    )
 
 
 # ------------------------------------------------------------------
@@ -266,6 +418,24 @@ def _is_owner(task: RequestTask, user: User) -> bool:
 
 def _summary(task: RequestTask) -> tuple[str, list[str]]:
     return DeliveryService._extract_request_summary(task)
+
+
+def _tool_definitions(task: RequestTask) -> list[ToolDefinitionView]:
+    catalog = catalog_for_task(task)
+    return [
+        ToolDefinitionView(
+            name=tool.name,
+            description=tool.description,
+            input_schema=tool.input_schema,
+            source_type=tool.source_type,
+            is_generatable=tool.is_generatable,
+        )
+        for tool in catalog.definitions
+    ]
+
+
+def _task_display_name(task: RequestTask) -> str:
+    return f"{task.api_key_name_snapshot} · {task.requested_model}"
 
 
 # 列表预览长度（字符）；取摘要尾部（Agent 提示词的提问在末尾）。
@@ -327,6 +497,8 @@ def _item_view(
         reply_strategy=task.reply_strategy_snapshot.value,
         delivery_mode=task.delivery_mode_snapshot.value,
         api_key_prefix=task.api_key_prefix_snapshot,
+        api_key_name=task.api_key_name_snapshot,
+        display_name=_task_display_name(task),
         stream_requested=task.stream_requested,
         has_tools=bool(tool_names),
         prompt_preview=_preview_text(_prompt),
@@ -362,12 +534,14 @@ def _detail_view(session: Session, task: RequestTask, user: User) -> TaskDetail:
     previous_public_id = _service.repo.get_previous_public_id(session, task)
     return TaskDetail(
         **item.model_dump(),
+        request_id=task.request_id,
         is_owner=is_owner,
         can_edit=(
             is_owner and task.state is TaskState.WAITING_HUMAN and user.role is not UserRole.ADMIN
         ),
         # 所有者可查看完整提示词（Agent 海量上下文不截断）；非归属用户仅摘要前 200 字。
         prompt_text=prompt if is_owner else (prompt[:200] if prompt else ""),
+        tool_definitions=_tool_definitions(task),
         tool_names=tool_names,
         raw_request=None,
         previous_task_id=previous_public_id,
@@ -385,7 +559,8 @@ def _to_draft(payload: ReplyDraftInput | ReplySubmitInput | DraftUpdateInput) ->
     return ReplyDraft(
         reasoning=payload.reasoning,
         tool_calls=[
-            ReplyToolCall(id=c.id, name=c.name, arguments=c.arguments) for c in payload.tool_calls
+            ReplyToolCall(id=c.id or "", name=c.name, arguments=c.arguments)
+            for c in payload.tool_calls
         ],
         final_text=payload.final_text,
     )
@@ -589,25 +764,44 @@ def delete_draft(
     return Response(status_code=204)
 
 
-@router.post("/{task_id}/drafts/generate", response_model=DraftView, status_code=201)
+@router.post("/{task_id}/drafts/generate", response_model=DraftView)
 async def generate_draft(
     task_id: int,
     payload: DraftGenerateInput,
+    response: Response,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> DraftView:
-    """调用用户选定 LLM 配置生成持久化草稿（M7-B）。
+    """调用用户选定 LLM 生成草稿（契约见 DraftGenerateInput）。
 
-    仅同协议：Chat/Responses 任务必须选 openai_chat；Anthropic 任务
-    必须选 anthropic。跨协议生成在后续阶段（字段矩阵）开放。
+    mode=reasoning/reply/both 分别只生成思考链、只生成回复（可携带
+    reasoning_seed 作为人工已确认的思考依据）或两者。已存在未提交的
+    LLM 草稿时按模式合并更新（此时返回 200）；否则新建（201）。
     """
     from ..services.llm_draft_service import LlmDraftService
 
     task = _get_task(db, task_id, user)
+    generation_instruction = normalize_generation_instruction(payload.generation_instruction)
+    merging = any(
+        draft.source == "llm" and draft.state == "editing"
+        for draft in _service.drafts(db, task=task)
+    )
     generator = LlmDraftService()
-    row = await generator.generate(db, task=task, owner=user, llm_config_id=payload.llm_config_id)
+    row = await generator.generate(
+        db,
+        task=task,
+        owner=user,
+        llm_config_id=payload.llm_config_id,
+        mode=payload.mode,
+        generation_instruction=generation_instruction,
+        include_caller_system=payload.include_caller_system,
+        excluded_context_item_ids=payload.excluded_context_item_ids,
+        include_attachments=payload.include_attachments,
+        reasoning_seed=payload.reasoning_seed,
+    )
     db.commit()
     db.refresh(row)
+    response.status_code = 200 if merging else 201
     return _draft_view(row)
 
 
@@ -672,6 +866,8 @@ def _inbox_item(
         human_deadline_at=iso_utc(task.human_deadline_at),
         created_at=iso_utc(task.created_at) or "",
         prompt_preview=_preview_text(prompt),
+        api_key_name=task.api_key_name_snapshot,
+        display_name=_task_display_name(task),
         has_tools=bool(tool_names),
         unread=seen is None,
         seen_at=iso_utc(seen.seen_at) if seen else None,
@@ -705,72 +901,171 @@ def mark_task_seen(
 
 
 # ----------------------------------------------------------------------
-# 对话投影（M14）
+# 请求视图（RequestView）
 # ----------------------------------------------------------------------
 
 
-def _conversation_message_view(msg: dict[str, Any]) -> ConversationMessage:
-    blocks = [
-        ConversationBlock(
-            type=str(block.get("type", "text")),
-            text=block.get("text"),
-            name=block.get("name"),
-            media_type=block.get("media_type"),
-            tool_call_id=block.get("tool_call_id"),
-        )
-        for block in msg.get("blocks", [])
-    ]
-    return ConversationMessage(
-        index=int(msg["index"]),
-        role=str(msg["role"]),
-        blocks=blocks,
-        preview=str(msg.get("preview", "")),
-        length=int(msg.get("length", 0)),
-        has_more=bool(msg.get("has_more", False)),
-    )
-
-
-@router.get("/{task_id}/conversation", response_model=ConversationPage)
-def get_conversation(
+@router.get("/{task_id}/request-view", response_model=RequestViewResponse)
+def get_request_view(
     task_id: int,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
-) -> ConversationPage:
-    """多轮上下文按需加载（不改变 normalized_request_json）。"""
+) -> RequestViewResponse:
+    """分区后的本次请求视图（只投影本次请求，不做会话历史语义）。
+
+    管理员可只读查看；确认警告、生成草稿、提交回复仍仅限所有者。
+    """
     task = _get_task(db, task_id, user)
-    owner_or_admin = task.owner_user_id == user.id or user.role is UserRole.ADMIN
-    if not owner_or_admin:
-        raise DomainError(DomainErrorCode.FORBIDDEN, "无权查看该任务上下文", status_code=403)
-    messages = load_projected_task_messages(task.normalized_request_json)
-    return ConversationPage(
-        task_id=str(task.id),
-        messages=[_conversation_message_view(msg) for msg in messages],
-        total=len(messages),
-    )
+    view = _view_service.get_request_view(db, task)
+    return _request_view_response(view)
 
 
-@router.get("/{task_id}/conversation/messages/{index}")
-def get_conversation_message(
+@router.get("/{task_id}/request-view/blocks/{block_id}")
+def get_request_view_block(
     task_id: int,
-    index: int,
+    block_id: str,
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> dict[str, Any]:
-    """按需返回单条完整消息（preview 800 字，has_more 截断时单独取）。"""
+    """按需返回附件或超长内容块的完整内容（base64 仅在此端点出现）。"""
     task = _get_task(db, task_id, user)
-    if task.owner_user_id != user.id and user.role is not UserRole.ADMIN:
-        raise DomainError(DomainErrorCode.FORBIDDEN, "无权查看该任务上下文", status_code=403)
-    messages = load_projected_task_messages(task.normalized_request_json)
-    if index < 0 or index >= len(messages):
-        raise DomainError(DomainErrorCode.NOT_FOUND, "消息不存在", status_code=404)
-    msg = messages[index]
-    # 完整消息：不再受 preview 截断限制
-    full_text = "\n".join(str(b.get("text") or "") for b in msg.get("blocks", []) if b.get("text"))
-    return {
-        "task_id": str(task.id),
-        "index": index,
-        "role": msg["role"],
-        "blocks": msg["blocks"],
-        "full_text": full_text,
-        "length": msg["length"],
-    }
+    return _view_service.get_block(db, task, block_id)
+
+
+def _request_view_response(view: dict[str, Any]) -> RequestViewResponse:
+    task_view = view["task"]
+    return RequestViewResponse(
+        task=RequestViewTask(**task_view),
+        current_input=[_context_item_view(item) for item in view["current_input"]],
+        caller_system=CallerSystemView(
+            items=[_context_item_view(item) for item in view["caller_system"]["items"]],
+            item_count=view["caller_system"]["item_count"],
+            character_count=view["caller_system"]["character_count"],
+            collapsed_by_default=view["caller_system"]["collapsed_by_default"],
+        ),
+        attached_context=[_context_item_view(item) for item in view["attached_context"]],
+        attachments=[_content_block_view(block) for block in view["attachments"]],
+        caller_tools=CallerToolsView(
+            definitions=[
+                ToolDefinitionView(
+                    name=tool["name"],
+                    description=tool["description"],
+                    input_schema=tool["input_schema"],
+                    source_type=tool["source_type"],
+                    is_generatable=tool["is_generatable"],
+                )
+                for tool in view["caller_tools"]["definitions"]
+            ],
+            choice=view["caller_tools"]["choice"],
+            required_name=view["caller_tools"]["required_name"],
+            parallel_allowed=view["caller_tools"]["parallel_allowed"],
+        ),
+        tool_call_warning=ToolCallWarningView(**view["tool_call_warning"]),
+        raw_request_available=view["raw_request_available"],
+    )
+
+
+# ----------------------------------------------------------------------
+# 一次性 Tool Call 风险告知（§7.2）
+# ----------------------------------------------------------------------
+
+
+@router.post("/{task_id}/tool-call-warning/acknowledge", response_model=WarningAcknowledgeView)
+def acknowledge_tool_call_warning(
+    task_id: int,
+    body: AcknowledgeBody | None = None,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> WarningAcknowledgeView:
+    """幂等确认本任务的 Caller Tool 风险告知（每 RequestTask 一次）。
+
+    仅任务所有者可确认；任务没有 Caller Tool 时 400
+    caller_tools_not_available；管理员不能代确认。
+    """
+    task = _get_task(db, task_id, user)
+    if task.owner_user_id != user.id or user.role is UserRole.ADMIN:
+        raise DomainError(
+            DomainErrorCode.FORBIDDEN, "仅任务所有者能确认工具风险告知", status_code=403
+        )
+    if catalog_for_task(task).is_empty:
+        raise DomainError(
+            DomainErrorCode.VALIDATION_FAILED,
+            "当前请求没有声明 Caller Tool，无需确认",
+            status_code=400,
+            public_code="caller_tools_not_available",
+        )
+    from ..core.logging import log_event
+
+    row = _service.repo.acknowledge_tool_call_warning(db, task_id=task.id, owner_user_id=user.id)
+    from ..repositories.system import AuditRepository
+
+    AuditRepository().add(
+        db,
+        action=AuditAction.TASK_TOOL_CALL_WARNING_ACKNOWLEDGED,
+        resource_type="request_task",
+        resource_id=str(task.id),
+        actor_user_id=user.id,
+        owner_user_id=task.owner_user_id,
+    )
+    log_event(
+        "info",
+        "task.tool_call_warning.acknowledged",
+        "任务已确认 Caller Tool 风险告知",
+        task_id=task.id,
+        user_id=user.id,
+    )
+    db.commit()
+    return WarningAcknowledgeView(
+        task_id=str(task.id),
+        acknowledged=True,
+        acknowledged_at=iso_utc(row.tool_call_warning_acknowledged_at) or "",
+    )
+
+
+# ----------------------------------------------------------------------
+# 指定工具参数生成（§7.4）
+# ----------------------------------------------------------------------
+
+
+@router.post(
+    "/{task_id}/tools/{tool_name}/arguments/generate",
+    response_model=ToolArgumentsGenerateView,
+)
+async def generate_tool_arguments(
+    task_id: int,
+    tool_name: str,
+    payload: ToolArgumentsGenerateInput,
+    user: User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+) -> ToolArgumentsGenerateView:
+    """使用指定 LLM 配置为指定 Caller Tool 生成参数建议。
+
+    结果只是可编辑建议：不保存草稿、不创建 Tool Call、不提交任务、更不
+    执行工具（网关零执行）。首次校验失败自动修复一次，仍失败返回 502
+    generated_tool_arguments_invalid。
+    """
+    from ..services.tool_argument_generation_service import ToolArgumentGenerationService
+
+    task = _get_task(db, task_id, user)
+    generation_instruction = normalize_generation_instruction(payload.generation_instruction)
+    service = ToolArgumentGenerationService()
+    result = await service.generate(
+        db,
+        task=task,
+        owner=user,
+        tool_name=tool_name,
+        llm_config_id=payload.llm_config_id,
+        generation_instruction=generation_instruction,
+        include_caller_system=payload.include_caller_system,
+        excluded_context_item_ids=payload.excluded_context_item_ids,
+        include_attachments=payload.include_attachments,
+        current_arguments=payload.current_arguments,
+    )
+    db.commit()
+    return ToolArgumentsGenerateView(
+        tool_name=tool_name,
+        arguments=result["arguments"],
+        llm_config_id=str(result["llm_config_id"]),
+        schema_valid=True,
+        warnings=result.get("warnings", []),
+    )

@@ -1,0 +1,44 @@
+name: Quality gates
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.11.23"
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+      - run: uv lock --check
+      - run: uv run --locked ruff format --check app tests
+      - run: uv run --locked ruff check app tests
+      - run: uv run --locked python -m pytest -q
+      - run: npm ci
+        working-directory: admin
+      - run: npm test
+        working-directory: admin
+      - run: npm run build
+        working-directory: admin
+      - run: git diff --check

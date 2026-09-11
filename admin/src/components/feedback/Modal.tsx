@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { OverlayHeader, useEscapeKey } from "./Overlay";
+import { OverlayHeader, useDialogFocus } from "./Overlay";
 
 interface ModalProps {
   title: string;
@@ -10,7 +10,7 @@ interface ModalProps {
 }
 
 export function Modal({ title, description, onClose, children, width = "max-w-xl" }: ModalProps) {
-  useEscapeKey(onClose);
+  const dialogRef = useDialogFocus(onClose);
 
   return (
     <div
@@ -18,7 +18,9 @@ export function Modal({ title, description, onClose, children, width = "max-w-xl
       onMouseDown={(event) => event.target === event.currentTarget && onClose()}
     >
       <section
-        className={`w-full ${width} overflow-hidden rounded-lg border border-slate-200 bg-white shadow-modal animate-scale-in`}
+        ref={dialogRef}
+        tabIndex={-1}
+        className={`w-full ${width} max-h-[calc(100dvh-2rem)] overflow-y-auto rounded-lg border border-slate-200 bg-white shadow-modal animate-scale-in`}
         role="dialog"
         aria-modal="true"
         aria-label={title}

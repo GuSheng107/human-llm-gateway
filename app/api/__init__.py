@@ -33,7 +33,6 @@ from .llm_configs import router as llm_configs_router
 from .logs import router as logs_router
 from .mcp import router as mcp_router
 from .tasks import router as tasks_router
-from .tools import router as tools_router
 from .users import router as users_router
 from .v1_models import router as v1_models_router
 
@@ -43,6 +42,7 @@ def create_app() -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         from ..connectors import connection_manager as manager
         from ..connectors.registry import default_registry
+        from ..core.background import run_blocking_to_completion
         from ..core.config import get_settings
         from ..core.db import SessionLocal
         from ..core.readiness import protocols_ready
@@ -50,16 +50,25 @@ def create_app() -> FastAPI:
         from ..services.connection_service import ConnectionService
         from ..services.connection_watchdog import connection_watchdog
         from ..services.data_retention import data_retention
+        from ..services.task_lifecycle import cancel_active_tasks
         from ..services.task_sweeper import task_sweeper
 
         with SessionLocal() as db:
             BootstrapService().initialize(db, get_settings())
+        await asyncio.to_thread(cancel_active_tasks, "server_restart")
         readiness = application.state.readiness
         readiness.mark_bootstrap_complete()
         # 结构化日志异步落库线程 + 普通 logging 告警接入 app_logs。
         from ..core.logging import install_persistence, stop_log_persistence
 
         install_persistence()
+        # 启动清理必须在服务就绪前完成，避免后台线程与首批请求争用 SQLite。
+        try:
+            await run_blocking_to_completion(data_retention._cleanup)
+        except Exception:  # noqa: BLE001 - 保留策略失败不阻断核心服务启动
+            from ..core.logging import log_event
+
+            log_event("error", "data_retention.startup_failed", "启动时高频数据清理失败")
         # 连接器运行时装配与启动恢复（desired_running 的连接重新拉起）。
         service = ConnectionService()
         manager.set_state_recorder(service.runtime_state_recorder())
@@ -89,15 +98,20 @@ def create_app() -> FastAPI:
                     pass
             # 优雅关闭：停止全部连接器实例，并刷完日志队列。
             await manager.stop_all()
+            await asyncio.to_thread(cancel_active_tasks, "server_shutdown")
             stop_log_persistence()
 
     app = FastAPI(title="Human LLM Gateway", version="0.6.0", lifespan=lifespan)
     from ..core.readiness import ReadinessState
 
     app.state.readiness = ReadinessState()
+    from ..core.metrics import MetricsMiddleware, MetricsState
+
+    app.state.metrics = MetricsState()
     app.add_middleware(RequestIdMiddleware)
     # 请求体大小上限必须在鉴权与解析之前生效，因此注册在最外层。
     app.add_middleware(BodySizeLimitMiddleware)
+    app.add_middleware(MetricsMiddleware, state=app.state.metrics)
     install_error_handlers(app)
 
     app.include_router(auth_router)
@@ -117,17 +131,27 @@ def create_app() -> FastAPI:
     app.include_router(assistant_router)
     app.include_router(logs_router)
     app.include_router(mcp_router)
-    app.include_router(tools_router)
     app.include_router(inference_router)
 
     @app.get("/healthz")
     def health() -> dict[str, Any]:
+        """进程存活探针；不依赖数据库、连接器或工具执行状态。"""
         from ..core.config import get_settings
 
         return {"status": "ok", "service": get_settings().app_name}
 
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics() -> Any:
+        from fastapi.responses import Response
+
+        return Response(
+            app.state.metrics.render(),
+            media_type="text/plain; version=0.0.4; charset=utf-8",
+        )
+
     @app.get("/readyz")
     def readiness() -> Any:
+        """启动就绪探针；只读取启动缓存，不检查工具执行状态。"""
         from fastapi.responses import JSONResponse
 
         from ..core.config import get_settings

@@ -17,6 +17,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -32,7 +33,7 @@ from ..domain.errors import DomainError, DomainErrorCode
 class UpstreamChunk:
     """流式增量：text / reasoning / tool_call 片段（协议无关）。"""
 
-    __slots__ = ("reasoning", "text", "tool_call")
+    __slots__ = ("reasoning", "status_code", "text", "tool_call")
 
     def __init__(
         self,
@@ -40,10 +41,12 @@ class UpstreamChunk:
         text: str = "",
         reasoning: str = "",
         tool_call: dict[str, Any] | None = None,
+        status_code: int | None = None,
     ) -> None:
         self.text = text
         self.reasoning = reasoning
         self.tool_call = tool_call
+        self.status_code = status_code
 
 
 def _raise_upstream(status_code: int) -> DomainError:
@@ -124,6 +127,40 @@ def _anthropic_messages_url(base_url: str) -> str:
     if cleaned.endswith("/v1"):
         return cleaned + "/messages"
     return cleaned + "/v1/messages"
+
+
+def endpoint_label(base_url: str, protocol: object) -> str:
+    """Return the resolved upstream host/path without query strings or credentials."""
+    parsed_base = urlsplit(base_url)
+    clean_base_url = urlunsplit(
+        (
+            parsed_base.scheme,
+            parsed_base.netloc,
+            parsed_base.path.rstrip("/"),
+            "",
+            "",
+        )
+    )
+    protocol_value = getattr(protocol, "value", protocol)
+    if protocol_value == "openai_responses":
+        endpoint = _responses_url(clean_base_url)
+    elif protocol_value == "anthropic_messages":
+        endpoint = _anthropic_messages_url(clean_base_url)
+    else:
+        endpoint = _chat_completions_url(clean_base_url)
+    parsed = urlsplit(endpoint)
+    if parsed.netloc:
+        host = parsed.hostname or ""
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        if port is not None:
+            host = f"{host}:{port}"
+        return f"{parsed.scheme}://{host}{parsed.path}"
+    return parsed.path or parsed.netloc
 
 
 def _anthropic_headers(api_key: str) -> dict[str, str]:
@@ -256,7 +293,9 @@ async def stream_chat_completions(
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
             async for chunk in _iter_sse_data(resp, budget):
-                yield _parse_chat_delta(chunk)
+                parsed = _parse_chat_delta(chunk)
+                parsed.status_code = resp.status_code
+                yield parsed
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
@@ -287,6 +326,7 @@ async def stream_responses(
             async for chunk in _iter_sse_data(resp, budget):
                 parsed = _parse_responses_event(chunk)
                 if parsed is not None:
+                    parsed.status_code = resp.status_code
                     yield parsed
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
@@ -350,6 +390,7 @@ async def stream_anthropic_messages(
             async for event in _iter_sse(resp, budget):
                 chunk = _parse_anthropic_event(event, tool_json_buffers)
                 if chunk is not None:
+                    chunk.status_code = resp.status_code
                     yield chunk
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc

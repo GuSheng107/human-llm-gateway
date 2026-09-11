@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -116,6 +117,17 @@ class ConnectionRepository:
         row = session.get(ImConnection, connection_id)
         if row is not None:
             session.delete(row)
+
+    def delete_related_rows(self, session: Session, connection_id: int) -> None:
+        """删除连接的投递/回执子行（outbox 与 inbound_receipts 无级联）。"""
+        from .models import ConnectorOutbox, InboundReceipt
+
+        session.execute(
+            sa_delete(ConnectorOutbox).where(ConnectorOutbox.connection_id == connection_id)
+        )
+        session.execute(
+            sa_delete(InboundReceipt).where(InboundReceipt.connection_id == connection_id)
+        )
 
     def set_desired_running(self, session: Session, connection_id: int, desired: bool) -> None:
         session.execute(

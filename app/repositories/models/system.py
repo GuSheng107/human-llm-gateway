@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -70,7 +71,7 @@ class AppLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     level: Mapped[str] = mapped_column(String(10), default="info", nullable=False)
     event: Mapped[str] = mapped_column(String(100), default="", nullable=False)
-    message: Mapped[str] = mapped_column(String(1000), default="", nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="", nullable=False)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     logger: Mapped[str | None] = mapped_column(String(100), nullable=True)
     user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
@@ -78,6 +79,11 @@ class AppLog(Base):
     api_key_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     connection_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 详情信封（LogDetailEnvelope JSON，已脱敏、完整不截断）：
+    # 列表查询必须列投影/defer，不得把 detail_json 读入内存后丢弃。
+    detail_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail_size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    detail_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utc_now, nullable=False
     )

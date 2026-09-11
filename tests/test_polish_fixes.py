@@ -1,6 +1,6 @@
-"""观察项修复验证：IM 事件归属、llm 策略跳过 IM 投递、前端草稿去重契约。
+"""观察项修复验证：IM 事件归属、llm 策略跳过 IM 投递、IM 纯文本回复语义。
 
-后端两项 + 前端 dsl.test.ts（vitest，14 例）配套。
+后端三项（前端配套用例随前端工作包补齐）。
 """
 
 from __future__ import annotations
@@ -236,3 +236,37 @@ def test_im_reply_events_carry_owner_user_id(client, created_user, created_key) 
         late = _events(task_id, TaskEventType.REPLY_REJECTED_LATE)
         assert late, "晚到应有 reply_rejected_late 事件"
         assert all(e.actor_user_id == created_user.user_id for e in late)
+
+
+def test_im_plain_text_reply_semantics(client, created_user, created_key) -> None:
+    """IM 回复为纯文本语义：整段正文即 final_text，围栏语法不再解析。"""
+    from types import SimpleNamespace
+
+    from app.connectors.base import InboundMessage
+    from app.services.connection_service import ConnectionService
+
+    conn_id = _make_connection(client, created_user.headers, "tool-conn")
+    task_id = _make_task(created_key.id, created_user.user_id, delivery="web", strategy="human")
+    with database.SessionLocal() as session:
+        task = session.get(RequestTask, task_id)
+        row = session.get(ImConnection, conn_id)
+        service = ConnectionService()
+        # 含旧 DSL 围栏的文本不再按工具解析，整段作为 final_text 落库。
+        result = service._submit_task_reply(
+            session,
+            row=row,
+            message=InboundMessage(
+                external_message_id="fence-as-text",
+                sender_external_id="sender",
+                reply_to_public_id=task.public_id,
+                text='::: tool caller-id search\n{"query":"hi"}\n:::',
+            ),
+            receipt=SimpleNamespace(task_id=None),
+        )
+        session.commit()
+        assert result.value == "accepted"
+        session.refresh(task)
+        assert task.response_payload_json is not None
+        draft = json.loads(task.response_payload_json)
+        assert draft.get("tool_calls") in (None, [])
+        assert "::: tool" in (draft.get("final_text") or "")

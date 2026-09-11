@@ -140,6 +140,18 @@ class AssistantRole(StrEnum):
     SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
+    SUMMARY = "summary"
+
+
+class AssistantMessageKind(StrEnum):
+    """消息种类：normal = 普通对话；summary = 由压缩流程生成的早期总结。
+
+    SUMMARY 不属于常规 user/assistant 对话角色，只是上下文压缩时插入的
+    历史摘要标记；统计用量与历史窗口时纳入计算，但渲染为“历史已压缩”提示。
+    """
+
+    NORMAL = "normal"
+    SUMMARY = "summary"
 
 
 class OutboxDeliveryState(StrEnum):
@@ -179,16 +191,6 @@ class ActorType(StrEnum):
     IM = "im"
     UPSTREAM = "upstream"
     CALLER = "caller"
-
-
-class ToolExecutionState(StrEnum):
-    """工具沙箱执行状态（M12）。"""
-
-    RUNNING = "running"
-    SUCCEEDED = "succeeded"
-    FAILED = "failed"
-    TIMED_OUT = "timed_out"
-    LIMIT_EXCEEDED = "limit_exceeded"
 
 
 class AuditResult(StrEnum):
@@ -236,9 +238,5 @@ class AuditAction(StrEnum):
     API_KEY_UPDATED = "api_key.updated"
     API_KEY_DELETED = "api_key.deleted"
     TASK_REPLY_SUBMITTED = "task.reply_submitted"
-    TOOL_WHITELIST_CREATED = "tool_whitelist.created"
-    TOOL_WHITELIST_UPDATED = "tool_whitelist.updated"
-    TOOL_WHITELIST_DELETED = "tool_whitelist.deleted"
-    TOOL_EXECUTED = "tool.executed"
-    TOOL_EXECUTION_DENIED = "tool.execution_denied"
+    TASK_TOOL_CALL_WARNING_ACKNOWLEDGED = "task.tool_call_warning_ack"
     MCP_TOOL_CALLED = "mcp_tool.called"

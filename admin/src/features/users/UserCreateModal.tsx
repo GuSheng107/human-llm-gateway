@@ -3,6 +3,7 @@ import { FormField } from "../../components/form/FormField";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Modal } from "../../components/feedback/Modal";
 import { Button } from "../../components/ui/Button";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 export function UserCreateModal({
   onClose,
@@ -28,7 +29,7 @@ export function UserCreateModal({
         ...(password ? { password } : {}),
       });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "创建失败");
+      setError(friendlyErrorMessage(caught, "创建失败"));
     } finally {
       setSubmitting(false);
     }

@@ -1,4 +1,4 @@
-"""API Key 用例：创建（明文只展示一次）、策略配置与生命周期。
+"""API Key 用例：创建、所有者安全取回、策略配置与生命周期。
 
 Key 决定请求归属、回复入口、回复策略和可用模型集合；
 停用或删除立即阻止新请求，已准入任务按创建快照继续完成。
@@ -66,7 +66,7 @@ class ApiKeyService:
         model_group_id: int | None = None,
         fake_model_ids: list[int] | None = None,
     ) -> tuple[ApiKey, str]:
-        """创建 Key；返回 (行, 明文)。明文只在创建响应展示一次。"""
+        """创建 Key；返回明文，并加密保存供所有者在管理页取回。"""
         begin_immediate_if_sqlite(session)
         name = (name or "").strip()
         if not name or len(name) > 100:
@@ -301,6 +301,12 @@ class ApiKeyService:
                 raise DomainError(
                     DomainErrorCode.VALIDATION_FAILED,
                     "LLM 配置必须是自己的有效配置",
+                    status_code=400,
+                )
+            if not config.is_enabled:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED,
+                    "LLM 配置已停用，不能绑定到 API Key",
                     status_code=400,
                 )
             fields["llm_config_id"] = llm_config_id

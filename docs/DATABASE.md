@@ -296,8 +296,8 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `description` | text nullable | 非敏感说明 |
 | `sort_order` | integer | 默认 0 |
 | `is_enabled` | boolean | 默认 true |
-| `endpoint_types` | json | 对外开放的推理端点协议列表（`openai_chat` / `openai_responses` / `anthropic_messages`，可多选、非空；未显式指定默认全开）。调用方只能经列表内协议发起推理，其余入口按 `model_not_found` 处理 |
-| `capabilities` | json | 能力标签白名单（vision/tools/thinking/audio/video/streaming 等）：调用请求触发模型未声明的能力时在准入前返回协议兼容 400 |
+| `endpoint_types` | json | 非空原生端点数组，可同时包含 OpenAI Chat、OpenAI Responses、Anthropic Messages；未指定时默认仅 `openai_chat`。该字段只描述模型目录，不参与推理准入 |
+| `capabilities` | json | 模型广场能力展示标签（vision/tools/thinking/audio/video/streaming 等），不参与推理准入 |
 | `created_by_user_id` | integer | FK users，用于审计 |
 | `created_at` / `updated_at` | datetime | 非空 |
 
@@ -319,6 +319,7 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `name` | varchar(100) | 非空 |
 | `description` | varchar(500) nullable | 说明 |
 | `is_enabled` | boolean | 默认 true |
+| `is_public` | boolean | 管理员创建的公开平台分组为 true；普通用户创建的私有分组为 false |
 | `created_at` / `updated_at` | datetime | 非空 |
 
 唯一索引 `(owner_user_id, lower(name))`。
@@ -332,7 +333,7 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `fake_model_id` | integer | FK fake_models，RESTRICT |
 | `created_at` | datetime | 非空 |
 
-唯一约束 `(model_group_id, fake_model_id)`。Service 必须验证成员属于组所有者的可见模型集合；模型后来停用或删除时，自然从有效结果排除。
+唯一约束 `(model_group_id, fake_model_id)`。管理员可以整体替换分组成员；普通用户不能整体覆盖，只能在自己管理的模型创建/编辑时提交 `group_ids`。Service 必须验证分组为当前用户可见的公开分组或自己的私有分组，并过滤其他用户私有模型；模型后来停用或删除时，自然从有效结果排除。
 
 ## 6. API Key
 
@@ -345,11 +346,12 @@ LLM Secret 和 Header 值永不出现在读取响应中。管理员可查看协�
 | `name` | varchar(100) | 非空 |
 | `key_hash` | varchar(255) | 非空，唯一 |
 | `key_prefix` | varchar(8) | 非空、有索引，固定为 `sk-` 加 5 个 base64url 字符，用于鉴权候选查找与列表识别 |
+| `key_ciphertext` | text nullable | 使用 APP_SECRET 和 `api-key` purpose 加密；仅所有者按需取回，历史无密文 Key 允许为空 |
 | `is_enabled` | boolean | 默认 true |
 | `delivery_mode` | enum | web/im |
 | `im_connection_id` | integer nullable | FK im_connections |
 | `reply_strategy` | enum | human/llm/human_fallback_llm |
-| `llm_config_id` | integer nullable | FK llm_configs |
+| `llm_config_id` | integer nullable | FK llm_configs；新建会话必须传正整数且绑定当前用户启用配置，历史遗留空值仅允许只读 |
 | `human_timeout_seconds` | integer | 默认 300，CHECK 10-1800 |
 | `model_group_id` | integer nullable | FK model_groups |
 | `last_used_at` | datetime nullable | 最近使用 |
@@ -406,9 +408,11 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `public_id` | varchar(64) | 非空，唯一，供 UI/IM/协议日志使用 |
 | `response_public_id` | varchar(64) nullable | OpenAI Responses 对外响应 ID，唯一；在任务创建事务中生成（仅 `protocol = openai_responses` 非空，条件约束保证），格式为 `resp_` + 32 位小写 hex（CSPRNG 生成） |
 | `previous_task_id` | integer nullable | FK request_tasks，同一 API Key 的历史响应链 |
+| `origin_trace_id` | varchar(64) nullable | 创建任务时绑定的入站 trace；用于从任务详情回溯原始请求链路，建立索引 |
 | `owner_user_id` | integer | FK users，非空 |
 | `api_key_id` | integer | FK api_keys，非空，ON DELETE RESTRICT |
 | `api_key_prefix_snapshot` | varchar(8) | 创建任务时 8 字符 Key 前缀快照 |
+| `api_key_name_snapshot` | varchar(100) | 创建任务时 API Key 名称快照；任务标题不随 Key 重命名变化 |
 | `fake_model_id` | integer nullable | FK fake_models，删除时 SET NULL |
 | `requested_model` | varchar(255) | Fake Model 字符串快照 |
 | `protocol` | enum | 三种入站协议 |
@@ -445,11 +449,11 @@ effective = grouped                       if key has no api_key_fake_models rows
 
 `previous_response_id` 原始值留在 `raw_payload_json`，解析成功后写入 `previous_task_id`。引用必须属于同一 `api_key_id` 且指向已完成响应；规范化请求保存等价展开后的上下文。历史清理必须保留仍被引用任务的最小请求/回复快照，不能留下悬空链。
 
-`api_key_id` 物理 FK 由 `ON DELETE RESTRICT` 保护；API Key 被历史任务引用时无法物理删除，需先解除引用或由 retention job 按完整依赖关系清理。`api_key_prefix_snapshot` 仅作为历史展示快照，不替代 FK；平时不把历史任务的 `api_key_id` 设为 NULL。
+`api_key_id` 物理 FK 由 `ON DELETE RESTRICT` 保护；API Key 被历史任务引用时无法物理删除，需先解除引用或由 retention job 按完整依赖关系清理。`api_key_prefix_snapshot` 和 `api_key_name_snapshot` 仅作为历史展示快照，不替代 FK；平时不把历史任务的 `api_key_id` 设为 NULL。工作台显示名由 `api_key_name_snapshot` 与 `requested_model` 组合生成，保证 Key 改名后历史任务仍可识别。
 
 `response_public_id` 使用 `resp_` + 32 位小写 hex（CSPRNG，例如 `resp_a10c46f728e24da0970ba9e7189f429d`）。这是网关在自己命名空间内签发的协议兼容 ID，不是冒充真实 OpenAI response ID；任务内部仍以 integer PK 为主键。生成时机是任务创建事务，而不是响应成功之后：发送第一个 Responses 响应事件（包括 `response.created` 和失败终态 `response.failed`）之前该 ID 必须已经持久化，全程沿用同一 ID。数据库条件约束保证 `protocol = openai_responses` 的任务 `response_public_id` 非空，Chat 和 Anthropic 任务保持为空。只有 COMPLETED 状态的响应可被后续 `previous_response_id` 引用；失败或取消的响应保留 ID，但不能成为历史链父节点。
 
-`response_payload_json` 是 IM DSL、Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构：
+`response_payload_json` 是 Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构（IM 纯文本回复的整段正文以 final_text 写入该结构）：
 
 ```json
 {
@@ -491,7 +495,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 | `source_llm_config_id` | integer nullable | 生成草稿的配置 |
 | `state` | enum | editing/submitted/discarded |
 | `reasoning_text` | text nullable | 思考内容 |
-| `tool_calls_json` | text | JSON 数组，默认 `[]` |
+| `tool_calls_json` | text | JSON 数组，默认 `[]`；调用 ID 由服务端按顺序生成 `call_01`、`call_02`，参数必须为对象并符合请求声明的 Schema |
 | `final_text` | text nullable | 最终文本 |
 | `version` | integer | 乐观版本 |
 | `created_at` / `updated_at` | datetime | 非空 |
@@ -768,17 +772,17 @@ WHERE id = :task_id
 - `/v1/models` 和推理准入使用同一有效模型查询。
 - `previous_response_id` 只能引用同一 API Key 的完成响应，历史链不会因清理产生悬空引用。
 - `previous_response_id` 展开遵守链深、条目数和字节数三重上限，超限整请求 400 且不部分截断。
-- IM DSL 与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
-- Secret、Token、完整 Key 和密码不以明文落库或进入日志。
+- IM（纯文本）与 Web 回复写入同一个 ReplyDraft JSON Schema，首个提交后无撤销路径。
+- Secret、Token、完整 Key 和密码不以明文落库或进入日志；完整 Key 只以加密密文保存。
 - 初始化环境变量密码不符合策略时启动失败；首个管理员 `must_change_password=true` 且登录后处于受限会话。
 - 当前数据库只使用一套 Schema 和 metadata。
 
 ## 16. M14 工作台数据
 
-`task_inbox_states` 以任务 ID 为主键保存任务所有者的已读时间和最后已读事件 ID。它只服务于工作台展示，不改变 `request_tasks` 的业务状态；重复标记已读必须幂等。任务上下文继续从 `normalized_request_json` 投影，原始请求和推理路径不受展示接口影响。
+`task_inbox_states` 以任务 ID 为主键保存任务所有者的已读时间和最后已读事件 ID。它只服务于工作台展示，不改变 `request_tasks` 的业务状态；重复标记已读必须幂等。任务上下文继续从 `normalized_request_json` 的 `context` 唯一投影，`messages`/`input` 仅作为原始诊断字段不再次拼接，避免重复展示；`instructions`/`system_blocks` 单独标记为 technical，正文标记为 content。图片块统一投影为带 `url`、`media_type`、`source_type` 的 `image`，浏览器加载失败时仍显示原始地址。
 
 `task_drafts.version` 每次编辑成功递增。更新必须使用条件版本更新，版本不匹配返回冲突，避免多个页面覆盖草稿。
 
 ## 17. 高频数据保留
 
-后台数据保留任务在启动时执行一次，之后每七天执行一次，删除七天前的应用日志、审计日志、助手会话/消息、已过期登录会话、任务事件、收件箱状态、工具执行记录、IM 回执和已完成/失败的投递记录。请求任务、任务原始请求和正式回复草稿不因该任务清理。
+后台数据保留任务在启动时执行一次，之后每七天执行一次，删除七天前的应用日志、审计日志、助手会话/消息、已过期登录会话、任务事件、收件箱状态、IM 回执和已完成/失败的投递记录。请求任务、任务原始请求和正式回复草稿不因该任务清理。

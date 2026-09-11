@@ -20,6 +20,7 @@ import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
 import type { Invitation, InvitationCreated } from "../../types/governance";
 import { InvitationFormModal } from "./InvitationFormModal";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const DEFAULT_PAGE_SIZE = 20;
 
@@ -47,7 +48,7 @@ export function InvitationsPage() {
       setItems(result.items);
       setTotal(result.total);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }

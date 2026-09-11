@@ -122,7 +122,7 @@ def _load_task(task_id: int) -> RequestTask | None:
         return session.get(RequestTask, task_id)
 
 
-def _finalize(task_id: int, state: TaskState) -> None:
+def _finalize(task_id: int, state: TaskState, public_error: DomainErrorCode | None = None) -> None:
     from ..core.db import SessionLocal
 
     with SessionLocal() as session:
@@ -135,7 +135,9 @@ def _finalize(task_id: int, state: TaskState) -> None:
                 if state is TaskState.TIMED_OUT
                 else None
             )
-            _service.finalize(session, task, state, allowed_sources=allowed)
+            _service.finalize(
+                session, task, state, allowed_sources=allowed, public_error=public_error
+            )
             session.commit()
 
 
@@ -157,13 +159,26 @@ def _mark_responding(task_id: int) -> None:
             session.commit()
 
 
+async def _reject_unsupported_forward(task_id: int, error: str | None) -> None:
+    if error != DomainErrorCode.UNSUPPORTED_PARAMETER.value:
+        return
+    await run_in_threadpool(
+        _finalize, task_id, TaskState.FAILED, DomainErrorCode.UNSUPPORTED_PARAMETER
+    )
+    raise DomainError(
+        DomainErrorCode.UNSUPPORTED_PARAMETER,
+        "The request contains parameters that are not supported by this model.",
+        status_code=400,
+    )
+
+
 async def _run_direct_forward(task_id: int, *, stream: bool = False) -> None:
-    """llm 策略：任务创建后立即转发；失败走 FAILED 终态（对外 500 通用错误）。
+    """llm 策略：立即转发；不支持的参数返回 400，其余失败返回通用 500。
 
     stream=True 时上游以 SSE 流式接收（增量聚合后仍按完整结果原子落库，
     再由等待循环进入伪流式输出）。
-    转发本身不抛错：失败时 finalize(FAILED) 并记录事件/审计，
-    等待循环读到 FAILED 后向调用方返回通用 500。
+    失败时先推进 FAILED 并释放名额；字段矩阵拒绝保留协议错误类别，
+    上游和基础设施错误不向调用方暴露内部消息。
     """
     import asyncio as _asyncio
 
@@ -198,13 +213,14 @@ async def _run_direct_forward(task_id: int, *, stream: bool = False) -> None:
             task_id=task_id,
             error_code=error or "unknown",
         )
+        await _reject_unsupported_forward(task_id, error)
         await run_in_threadpool(_finalize, task_id, TaskState.FAILED)
 
 
 async def _run_fallback(task_id: int) -> _Outcome | None:
     """human_fallback_llm 超时转发：成功返回 Outcome，失败返回 None（走终态）。
 
-    转发失败不重试；失败详情写事件与审计，对外仍为通用超时错误。
+    转发失败不重试；字段矩阵拒绝返回 400，其余失败返回通用超时错误。
     """
     from ..core.db import SessionLocal
     from ..services.llm_forward_service import LlmForwardService
@@ -234,6 +250,7 @@ async def _run_fallback(task_id: int) -> _Outcome | None:
             task_id=task_id,
             error_code=error or "unknown",
         )
+        await _reject_unsupported_forward(task_id, error)
         return None
     row = await run_in_threadpool(_load_task, task_id)
     if row is None or not row.response_payload_json:

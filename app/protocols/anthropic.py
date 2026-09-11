@@ -104,7 +104,12 @@ def content_blocks(draft: ReplyDraft) -> list[dict[str, Any]]:
                 "input": call.arguments,
             }
         )
-    blocks.append({"type": "text", "text": draft.final_text or ""})
+    # 仅 Tool Call 时不生成空 text block（§8.2）；Anthropic 允许 content
+    # 只包含 tool_use 块。
+    if draft.final_text:
+        blocks.append({"type": "text", "text": draft.final_text})
+    elif not blocks:
+        blocks.append({"type": "text", "text": ""})
     return blocks
 
 

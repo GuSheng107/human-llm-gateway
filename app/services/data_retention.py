@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import delete, or_
 
+from ..core.background import run_blocking_to_completion
 from ..core.constants import DATA_RETENTION_DAYS, DATA_RETENTION_INTERVAL_SECONDS
 from ..core.logging import bind_trace_id, log_event, new_trace_id, reset_request_id
 from ..core.time import utc_now
@@ -23,7 +24,6 @@ from ..repositories.models import (
     InboundReceipt,
     TaskEvent,
     TaskInboxState,
-    ToolExecution,
 )
 
 logger = logging.getLogger(__name__)
@@ -90,9 +90,6 @@ class DataRetentionService:
             counts["task_inbox_states"] = _deleted(
                 session.execute(delete(TaskInboxState).where(TaskInboxState.updated_at < cutoff))
             )
-            counts["tool_executions"] = _deleted(
-                session.execute(delete(ToolExecution).where(ToolExecution.created_at < cutoff))
-            )
             counts["inbound_receipts"] = _deleted(
                 session.execute(delete(InboundReceipt).where(InboundReceipt.created_at < cutoff))
             )
@@ -127,16 +124,16 @@ class DataRetentionService:
             reset_request_id(token)
 
     async def run(self) -> None:
-        """启动时先清理一次，之后每七天执行一轮。"""
+        """启动清理由 lifespan 串行完成；运行期每七天执行一轮。"""
         while True:
+            await asyncio.sleep(DATA_RETENTION_INTERVAL_SECONDS)
             try:
-                await asyncio.get_running_loop().run_in_executor(None, self._cleanup)
+                await run_blocking_to_completion(self._cleanup)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("data retention cycle failed")
                 log_event("error", "data_retention.cycle_failed", "高频数据清理失败")
-            await asyncio.sleep(DATA_RETENTION_INTERVAL_SECONDS)
 
 
 data_retention = DataRetentionService()

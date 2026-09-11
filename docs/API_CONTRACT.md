@@ -12,8 +12,8 @@
 | `/api/*` | 登录后的管理后台 API | 用户会话 Token |
 | `/v1/*` | 外部 LLM 兼容 API | 用户创建的 API Key |
 | `/connectors/*` | IM/Webhook/WebSocket/HTTP 连接器入口 | 每个连接独立凭据 |
-| `/healthz` | 进程存活检查，不访问数据库或连接器 | 无 |
-| `/readyz` | 就绪检查；启动校验和后台协调器均正常时返回 200 | 无 |
+| `/healthz` | 进程存活检查，不检查数据库、连接器或工具执行状态 | 无 |
+| `/readyz` | 就绪检查；启动校验和后台协调器正常时返回 200 | 无 |
 | `/metrics` | 预留 Prometheus 指标接口 | 尚未开放 |
 
 管理 API 与推理 API 使用不同的鉴权依赖和错误映射。用户登录 Token 不能调用 `/v1/*`，外部 API Key 不能调用 `/api/*`。
@@ -26,10 +26,12 @@
 | `GET /api/tasks/inbox` | 获取当前用户待回复任务和未读状态 | 登录用户 |
 | `GET /api/tasks/inbox-summary` | 获取待处理和未读数量 | 登录用户 |
 | `POST /api/tasks/{task_id}/seen` | 标记任务已读，可同步最后事件 ID | 任务所有者 |
-| `GET /api/tasks/{task_id}/conversation` | 获取任务对话投影和预览 | 所有者/管理员 |
-| `GET /api/tasks/{task_id}/conversation/messages/{index}` | 按需获取单条完整消息 | 所有者/管理员 |
+| `GET /api/tasks/{task_id}/request-view` | 请求视图：分区后的本次请求与警告状态 | 所有者/管理员只读 |
+| `GET /api/tasks/{task_id}/request-view/blocks/{block_id}` | 按需获取附件或超长块的完整内容 | 所有者/管理员只读 |
+| `POST /api/tasks/{task_id}/tool-call-warning/acknowledge` | 确认本任务的 Caller Tool 风险告知（幂等） | 任务所有者 |
+| `POST /api/tasks/{task_id}/tools/{tool_name}/arguments/generate` | 小助手按 Schema 生成调用方工具参数 | 任务所有者 |
 
-草稿 `PATCH` 必须携带 `expected_version`；版本不匹配返回 `409 draft_version_conflict`。回复统一使用回复工作台。
+草稿 `PATCH` 必须携带 `expected_version`；版本不匹配返回 `409 draft_version_conflict`。手动草稿生成使用统一的 `POST /api/tasks/{task_id}/drafts/generate` 契约（generation_instruction、include_caller_system、excluded_context_item_ids、include_attachments、reasoning_seed、mode∈reasoning/reply/both）。回复统一使用回复工作台。
 
 ### 1.1 `/readyz` 就绪条件
 
@@ -42,6 +44,8 @@
 5. 任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。
 
 `/readyz` 不检查任何用户 IM 连接是否在线、不检查真实 LLM 连通性、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
+
+用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。`/healthz` 和 `/readyz` 不检查工具执行状态。
 
 ### 1.2 `/metrics` 指标契约（预留设计，当前未开放）
 
@@ -270,11 +274,11 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/llm-configs` | 用户查看自己的配置；管理员只能查看所有者和脱敏元数据。 |
-| POST | `/api/llm-configs` | 用户创建配置。 |
+| POST | `/api/llm-configs` | 用户创建配置；`enabled=true` 时会先执行真实生成连通性测试，失败返回 400 不落库。 |
 | GET | `/api/llm-configs/{id}` | 查看自己的非敏感详情。 |
-| PATCH | `/api/llm-configs/{id}` | 修改配置；省略 Secret 表示保留。 |
+| PATCH | `/api/llm-configs/{id}` | 修改配置；省略 Secret 表示保留。连接相关字段（协议/地址/模型/密钥/超时）变化或重新启用时必须通过连通性测试，否则回滚；仅修改高级参数不触发测试。 |
 | DELETE | `/api/llm-configs/{id}` | 被有效 API Key 或活动任务引用时返回 409，否则清空 Secret 后物理删除。 |
-| POST | `/api/llm-configs/{id}/test` | 使用最小请求测试连通性，不回显 Secret。 |
+| POST | `/api/llm-configs/{id}/test` | 真实生成连通性测试（要求模型返回非空回复），不回显 Secret。 |
 
 主要字段：
 
@@ -301,35 +305,32 @@ Webhook `inbound_token`、WebSocket `connection_token` 和 HTTP 轮询 `pull_tok
 | 方法 | 路径 | 权限 | 说明 |
 | --- | --- | --- | --- |
 | GET | `/api/fake-models` | 登录用户 | 用户看系统模型和自己的私有模型；管理员看全部治理列表。 |
-| POST | `/api/fake-models` | 登录用户 | 管理员创建系统模型，普通用户创建自己的私有模型。 |
+| POST | `/api/fake-models` | 登录用户 | 管理员创建系统模型，普通用户创建自己的私有模型；`group_ids` 可在同一请求中分配模型所属分组。 |
 | GET | `/api/fake-models/{id}` | 登录用户 | 返回权限范围内详情。 |
-| PATCH | `/api/fake-models/{id}` | 登录用户 | 用户修改自己的私有模型；管理员治理全部并维护系统模型。 |
+| PATCH | `/api/fake-models/{id}` | 登录用户 | 用户修改自己的私有模型；管理员治理全部并维护系统模型，`group_ids` 原子替换该模型的分组关系。 |
 | DELETE | `/api/fake-models/{id}` | 登录用户 | 用户删除自己的私有模型；管理员可治理删除。 |
 
 Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型或回复策略。管理员创建的系统模型对全部用户可见；普通用户创建的私有模型只对所有者可见，其他普通用户即使猜到 ID 也返回 404。管理员治理私有模型时不能把它改绑或转授给其他用户。
 
-每个 Fake Model 声明 `endpoint_types`（可多选、非空；创建时未提供则默认三种协议全开）与 `capabilities` 能力标签。推理请求在两个维度被强制限制：
-
-- **端点门禁**：请求协议不在模型 `endpoint_types` 内时返回协议兼容的 404 `model_not_found`，与模型不存在/不可用不可区分。
-- **能力门禁**：请求触发模型未声明的能力时在任务创建前返回协议兼容的 400 `invalid_request_error`。判定项：`vision`（Chat `image_url` / Responses `input_image` / Anthropic `image`/`document`、`file`/`input_file` 内容块）、`audio`（`input_audio`）、`tools`（`tools` / `tool_choice`）、`thinking`（Chat `reasoning_effort` / Responses `reasoning` / Anthropic `thinking`）、`streaming`（`stream=true`）。`previous_response_id` 展开的历史上下文同样参与检测，不允许借历史链绕过。纯文本、无工具、非流式请求不依赖任何能力标签。
+每个 Fake Model 暴露非空的 `endpoint_types` 数组，元素可为 `openai_chat`、`openai_responses` 或 `anthropic_messages`，表示模型目录中的一个或多个原生端点。例如 GPT 同时支持 OpenAI Chat Completions 与 Responses，可返回两个值；Claude 原生模型通常只返回 Anthropic Messages。`capabilities` 是同类展示标签，两者都不参与推理准入。调用方可通过网关支持的任一协议请求当前 API Key 有效集合中的任意 Fake Model，包括 Claude Code 经 `/v1/messages` 调用原生端点为 OpenAI 的模型。模型是否可用只由可见范围、分组、Key 选择和启用状态决定。
 
 ### 7.2 模型分组（M5）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | `/api/model-groups` | 用户查看或创建自己的分组；管理员可治理全部。 |
-| GET/PATCH/DELETE | `/api/model-groups/{id}` | 用户维护自己的分组。 |
-| PUT | `/api/model-groups/{id}/models` | 用当前用户可见的完整 Fake Model ID 集合原子替换成员。 |
+| GET/POST | `/api/model-groups` | 用户查看自己的分组和管理员公开分组，或创建自己的私有分组；管理员可治理全部。 |
+| GET/PATCH/DELETE | `/api/model-groups/{id}` | GET 可查看自己/公开分组；PATCH/DELETE 仅分组所有者或管理员。响应包含 `is_public`、`can_manage`、`can_assign_model`。 |
+| PUT | `/api/model-groups/{id}/models` | 仅管理员可用当前治理模型 ID 集合原子替换成员；普通用户返回 403。普通用户通过 Fake Model 创建/编辑请求的 `group_ids` 分配自己的模型。 |
 
-模型分组是第一层可复用筛选：未绑定分组时，候选集为用户可见的全部有效模型；绑定后，候选集为其中仍属于分组的模型。分组不能引用其他用户的私有模型。
+模型分组是第一层可复用筛选：未绑定分组时，候选集为用户可见的全部有效模型；绑定后，候选集为其中仍属于分组的模型。管理员创建的分组为公开平台分组；普通用户只能把自己的私有模型分配到自己的分组或公开平台分组，不能把其他用户的私有模型带入自己的可见集合，也不能整体覆盖分组成员。管理台会分页拉取全部分组，避免只展示第一页。
 
 ## 8. API Key API
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/api-keys` | 用户看自己的 Key；管理员看脱敏全局列表。 |
-| POST | `/api/api-keys` | 用户创建 Key，明文只返回一次。 |
-| GET | `/api/api-keys/{id}` | 返回配置和 Key 前缀。 |
+| GET | `/api/api-keys` | 用户看自己的 Key 并可取回完整明文；管理员看脱敏全局列表。 |
+| POST | `/api/api-keys` | 用户创建 Key，成功响应返回完整明文。 |
+| GET | `/api/api-keys/{id}` | 所有者返回配置、前缀和完整 Key；管理员只返回前缀。 |
 | PATCH | `/api/api-keys/{id}` | 修改名称、状态、入口和策略。 |
 | DELETE | `/api/api-keys/{id}` | 立即阻止新请求并物理删除 Key；被历史任务引用时 RESTRICT 返回 409，已准入任务按创建快照继续完成。 |
 
@@ -351,8 +352,8 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 规则：
 
-- 新 Key 固定为 `sk-` 加 `secrets.token_urlsafe(32)` 生成的 43 个 base64url 字符；数据库仅保存哈希和前 8 字符 `key_prefix`，不接受其他格式。
-- Key 明文只出现在创建接口的成功响应中；列表和详情只返回 8 字符前缀。
+- 新 Key 固定为 `sk-` 加 `secrets.token_urlsafe(32)` 生成的 43 个 base64url 字符；数据库保存鉴权哈希、前 8 字符 `key_prefix` 和使用 APP_SECRET 加密的可恢复密文，不接受其他格式。
+- Key 所有者的创建、列表、详情和修改响应可返回完整 Key；管理员监管他人 Key 时 `key` 固定为 null。
 - `delivery_mode` 为 `web` 或 `im`；`im` 必须选择当前用户有效连接。
 - 任务无论入口为何都在 Web 可见且可回复。
 - `reply_strategy` 为 `human`、`llm` 或 `human_fallback_llm`。
@@ -367,18 +368,18 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/tasks` | 用户查看自己的任务；管理员查看脱敏全局任务。 |
-| GET | `/api/tasks/{id}` | 任务详情：所有者可查看完整提示词（不截断）、时间线、草稿和结果；原始请求 JSON 不随详情返回。 |
+| GET | `/api/tasks/{id}` | 任务详情：所有者可查看完整提示词（不截断）、时间线、草稿和结果；返回稳定 `display_name`（API Key 名称快照 + 请求模型）及完整 `tool_definitions`；返回 `origin_trace_id` 供跳转日志；原始请求 JSON 不随详情返回。 |
 | GET | `/api/tasks/{id}/raw-request` | 原始请求 JSON 按需加载（仅所有者与管理员）；超大请求不随详情页传输。 |
 | GET | `/api/tasks/{id}/events` | 分页查看任务事件。 |
 | POST | `/api/tasks/{id}/drafts` | 新建或保存人工草稿。 |
 | PATCH | `/api/tasks/{id}/drafts/{draft_id}` | 更新未提交草稿。 |
 | DELETE | `/api/tasks/{id}/drafts/{draft_id}` | 删除未提交草稿。 |
-| POST | `/api/tasks/{id}/drafts/generate` | 选择 LLM 配置生成持久化草稿。 |
+| POST | `/api/tasks/{id}/drafts/generate` | 选择 LLM 配置生成持久化草稿；可用 `selected_tool_names` 传入工作台当前按顺序选择的工具。 |
 | POST | `/api/tasks/{id}/reply` | 原子提交完整回复，首个有效提交获胜。 |
 
 管理员只能查看允许的任务元数据和脱敏请求，不可调用草稿或回复写接口。
 
-回复请求使用统一的协议无关 `ReplyDraft` 表示。Web 编辑器直接读写该结构，IM DSL 解析器也必须生成完全相同的结构：
+回复请求使用统一的协议无关 `ReplyDraft` 表示。Web 编辑器直接读写该结构；IM 纯文本回复的整段正文以 `final_text` 写入同一结构：
 
 ```json
 {
@@ -395,18 +396,33 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 }
 ```
 
-`arguments` 必须是合法 JSON 值。系统为不同协议生成对应 tool call 结构，但绝不执行。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
+`arguments` 必须是 JSON 对象，并符合请求中对应工具的 JSON Schema（required、type、enum、properties 等约束）。工具调用名称、顺序和数量必须来自调用方声明；服务端忽略客户端/上游携带的 ID，按顺序生成稳定的 `call_01`、`call_02`……。用户可以使用调用方声明的 tool，但网关不执行任何工具。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
+
+`POST /api/tasks/{id}/drafts/generate` 的 `selected_tool_names` 语义如下：省略表示沿用请求工具的旧生成语义；传入空数组表示本次生成不提供工具；传入非空数组时，上游只收到这些完整工具定义，且顺序保持一致，单个工具会被设置为指定调用。生成返回后必须校验上游调用的数量、顺序、名称、参数对象和 Schema；校验失败的草稿不得落库。`mode=reasoning` 始终不提供工具。
+
+任务详情的 `tool_definitions` 为：
+
+```json
+[
+  {
+    "name": "lookup",
+    "description": "查询信息",
+    "parameters": {"type": "object", "properties": {"id": {"type": "integer"}}, "required": ["id"]},
+    "source_type": "openai_function"
+  }
+]
+```
 
 ## 10. Web 小助手 API（M8）
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET/POST | `/api/assistant/sessions` | 查看或创建自己的会话。 |
+| GET/POST | `/api/assistant/sessions` | 查看或创建自己的会话；POST 必须提供正整数 `llm_config_id`，且配置属于当前用户并处于启用状态。 |
 | GET | `/api/assistant/sessions/{id}` | 查看自己的会话与消息。 |
 | DELETE | `/api/assistant/sessions/{id}` | 删除自己的会话和消息。 |
 | POST | `/api/assistant/sessions/{id}/messages` | 使用选定 LLM 配置发送文本和当前页面上下文快照。 |
 
-每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。M8 第一阶段不提供可执行系统工具。
+每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。没有自己的启用 LLM 配置时，前端禁用发送和新建会话入口；历史会话仍可阅读。历史会话绑定的配置后来停用或删除时同样只读，发送返回 400。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
 
 ## 11. 设置、日志与审计
 
@@ -414,11 +430,13 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | --- | --- | --- | --- |
 | GET/PATCH | `/api/settings` | 管理员 | 基础非 Secret 设置。 |
 | GET | `/api/audit-logs` | 管理员 | 按操作者、资源、动作和时间筛选。 |
-| GET | `/api/app-logs` | 登录用户 | 按级别、事件、traceId（request_id）、task/key/connection ID 筛选；`with_context=true` 返回脱敏上下文与异常详情。 |
+| GET | `/api/logs` | 登录用户 | 合并审计与应用日志，按级别、分类、事件、traceId（request_id）和时间窗筛选，返回脱敏上下文。 |
 
-应用日志全员开放但按归属过滤：非管理员只能看到自己资源（用户/Key/连接/任务）范围内的日志。trace_id 即 request_id，日志页可按 traceId 检索一次请求的完整处理链路。
+应用日志全员开放但按归属过滤：非管理员只能看到自己资源（用户/Key/连接/任务）范围内的日志。trace_id 即 request_id，日志页可按 traceId 检索一次请求的完整处理链路。`category` 按应用事件的点号前缀筛选（例如 `llm`、`assistant`、`http`），`event` 为模糊匹配；`level` 只筛选应用日志的 `debug`、`error`、`warning`、`info` 等级。每行返回 `kind`、`category`、`event`、`context` 和资源关联字段，审计 `context` 来自脱敏 `metadata_json`，应用日志 `context` 来自脱敏 `context_json`。
 
-结构化日志（`log_event`）与普通 logging 告警/异常（含看门狗、连接器与 IM 后台任务的 `logger.exception`）全部落入 `app_logs`；落库走异步批量队列，不阻塞事件循环。
+结构化日志（`log_event`）与普通 logging 告警/异常（含看门狗、连接器与 IM 后台任务的 `logger.exception`）全部落入 `app_logs`；落库走异步批量队列，不阻塞事件循环。HTTP 和 WebSocket 请求分别在上下文建立时绑定 trace；`/healthz`、`/readyz`、根路径、静态资源和日志查询本身不写访问噪声日志。
+
+推理链路记录 `llm.upstream.request`、`llm.upstream.response`、`llm.upstream.error`；Web 小助手记录 `assistant.upstream_call_started`、`assistant.upstream_call_completed`、`assistant.upstream_call_failed`，上游日志包含脱敏 endpoint、真实模型名、协议、stream、状态、耗时和 usage。IM 回复提交记录 `im.reply_submitted`，策略拒绝或晚到回复记录 `im.reply_rejected`。
 
 普通用户在任务时间线中只能看到自己的相关业务事件，不能直接读取全局应用日志。
 
@@ -531,9 +549,9 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | Prompt Cache | 供应商扩展 | 供应商扩展 | `cache_control` | 同协议原样透传；跨协议没有明确等价项时返回 400。 |
 | 托管工具和文件能力 | 供应商专有类型 | file search/computer 等 item | 供应商专有 block | 只有目标适配器明确实现同等能力才转换；默认返回 400，系统绝不执行。 |
 | `service_tier` 等计费层参数 | 供应商字段 | 供应商字段 | 供应商字段 | 同协议透传；跨协议未逐项声明等价时返回 400。 |
-| `background`（Responses 后台模式） | 无 | 供应商字段 | 无 | 网关不提供后台响应生命周期接口（无 `GET/cancel` 响应端点），透传会使 RequestTask 无法正确收尾；显式提交非 `null` 值（含 `background=false`）返回 400 `unsupported_parameter`。 |
-| `conversation`（Responses 服务端会话引用） | 无 | 供应商字段 | 无 | 引用上游服务端持久状态，不能机械转给用户自己的真实上游；显式提交非 `null` 值返回 400 `unsupported_parameter`。 |
-| `store`（响应持久化开关） | 供应商字段 | 供应商字段 | 无 | 网关始终完整持久化 RequestTask，`store` 不是网关数据库的存储开关；显式提交 `true`/`false` 返回 400 `unsupported_parameter`，避免“看似兼容、语义不同”；JSON `null` 视同未提交，不返回 400。 |
+| `background`（Responses 后台模式） | 无 | 供应商字段 | 无 | 网关不提供后台响应生命周期接口（无 `GET/cancel` 响应端点），透传会使 RequestTask 无法正确收尾；显式 `background=true` 返回 400 `unsupported_parameter`。 |
+| `conversation`（Responses 服务端会话引用） | 无 | 供应商字段 | 无 | 引用上游服务端持久状态，不能机械转给用户自己的真实上游；显式提交返回 400 `unsupported_parameter`。 |
+| `store`（响应持久化开关） | 供应商字段 | 供应商字段 | 无 | Responses 接受 `store=false` 以兼容无状态客户端：同协议转发时原样保留，网关自行响应或跨协议时作为“无 Responses API 可检索状态”消费；网关内部 RequestTask 留存是独立的审计与人工处理契约，不受该字段控制。`store=true` 因未提供 retrieve/cancel 生命周期端点而返回 400 `unsupported_parameter`。Chat 显式提交 `store` 仍返回 400。 |
 | 未知扩展字段 | 原样保留 | 原样保留 | 原样保留 | 同协议原样透传；跨协议返回 400 `unsupported_parameter`。 |
 
 转换适配器必须为每个非透传字段记录字段名、处理类型和结果，不记录字段值。新增支持前先更新此矩阵和契约测试。
@@ -572,7 +590,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 最低要求：`model` 为非空字符串，`input` 为有效字符串或输入项数组。`instructions`、tools 和所有扩展字段完整保存。
 
-`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。显式提交 `background`、`conversation` 或 `store`（非 `null`）按 12.6 矩阵返回 400 `unsupported_parameter`；本网关不提供后台响应 retrieve/cancel 等生命周期端点。
+`previous_response_id` 按 12.5 由网关解析；调用方不需要知道真实上游 response ID。显式提交 `background`、`conversation` 或 `store=true` 按 12.6 矩阵返回 400 `unsupported_parameter`；`store=false` 用于兼容 OpenCode 等无状态客户端，不改变网关内部 RequestTask 留存策略。本网关不提供后台响应 retrieve/cancel 等生命周期端点。
 
 ### 14.2 输出项
 

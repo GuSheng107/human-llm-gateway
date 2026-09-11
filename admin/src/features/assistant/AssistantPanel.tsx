@@ -4,17 +4,25 @@ import {
   createAssistantSession,
   deleteAssistantSession,
   getAssistantSession,
+  patchAssistantSession,
   sendAssistantMessage,
   streamAssistantMessage,
 } from "../../api/assistant";
 import { ApiError } from "../../api/client";
 import { listLlmConfigs } from "../../api/llmConfigs";
+import { MarkdownText } from "../../components/data-display/MarkdownText";
 import { notify } from "../../components/feedback/Toast";
 import { confirmAction } from "../../components/feedback/ConfirmDialog";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
-import type { AssistantMessage, LlmConfig } from "../../types/gateway";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
+import type {
+  AssistantMessage,
+  AssistantSession,
+  AssistantSessionUsage,
+  LlmConfig,
+} from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 import { currentEditBridge } from "./bridge";
 import { buildContextSnapshot, featureForRoute } from "./contextRegistry";
@@ -24,17 +32,22 @@ const CONTEXT_FEATURE_LABELS: Record<string, string> = {
   console: "控制台",
   task_list: "任务记录",
   task_detail: "任务回复",
+  replies: "回复工作台",
   api_keys: "API 管理",
   llm_configs: "LLM 管理",
   connections: "消息网关",
   models: "模型广场",
+  logs: "日志查询",
   invitations: "邀请码",
   users: "用户管理",
   account: "账号设置",
+  adminConnections: "IM 连接监管",
 };
 
-/** 默认 LLM 偏好持久化 key（新建会话 / 直接发消息时使用）。 */
+/** LLM 配置偏好持久化 key（新建会话 / 直接发消息时使用）。 */
 const DEFAULT_LLM_KEY = "hlg_assistant_default_llm";
+/** 上下文使用比例 >= 此值时进度条转红。 */
+const USAGE_WARN_RATIO = 0.8;
 
 const WELCOME_CARDS: { title: string; prompt: string }[] = [
   {
@@ -51,51 +64,125 @@ const WELCOME_CARDS: { title: string; prompt: string }[] = [
   },
 ];
 
+/** 流式阶段——用于动态状态文案与气泡。 */
+type StreamStage = "idle" | "compressing" | "thinking" | "replying";
+
+interface RenameTarget {
+  id: string;
+  title: string;
+}
+
 export function AssistantPanel() {
   const { user } = useAuth();
   const { open, setOpen, sessions, activeSessionId, setActiveSessionId, refreshSessions } =
     useAssistant();
   const location = useLocation();
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
+  const [usage, setUsage] = useState<AssistantSessionUsage | null>(null);
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
+  const [streamStage, setStreamStage] = useState<StreamStage>("idle");
   const [llmConfigs, setLlmConfigs] = useState<LlmConfig[]>([]);
   const [preferredConfigId, setPreferredConfigId] = useState<string>(() =>
     localStorage.getItem(DEFAULT_LLM_KEY) ?? "",
   );
   const [streamingText, setStreamingText] = useState<string | null>(null);
-  const [insertPreview, setInsertPreview] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  const sessionMenuRef = useRef<HTMLDivElement>(null);
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = currentEditBridge();
   const feature = featureForRoute(location.pathname);
 
+  /** 打开面板时强制刷新 LLM 配置与会话列表——配置是异步可变的。 */
   useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
     listLlmConfigs(1)
-      .then((page) => setLlmConfigs(page.items.filter((cfg) => cfg.is_enabled)))
-      .catch(() => setLlmConfigs([]));
-  }, []);
+      .then((page) => {
+        if (cancelled) return;
+        const available = page.items.filter((cfg) => cfg.is_enabled);
+        setLlmConfigs(available);
+        setPreferredConfigId((current) => {
+          if (current && available.some((cfg) => cfg.id === current)) return current;
+          if (current) localStorage.removeItem(DEFAULT_LLM_KEY);
+          return "";
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setLlmConfigs([]);
+      });
+    void refreshSessions();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, refreshSessions]);
 
   useEffect(() => {
     if (!activeSessionId) {
       setMessages([]);
+      setUsage(null);
       return;
     }
+    let cancelled = false;
     getAssistantSession(activeSessionId)
-      .then((detail) => setMessages(detail.messages))
-      .catch(() => setMessages([]));
+      .then((detail) => {
+        if (cancelled) return;
+        setMessages(detail.messages);
+        setUsage(detail.usage ?? null);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setMessages([]);
+        setUsage(null);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [activeSessionId]);
 
   useEffect(() => {
     if (listRef.current) {
       listRef.current.scrollTop = listRef.current.scrollHeight;
     }
-  }, [messages, open, streamingText]);
+  }, [messages, open, streamingText, streamStage]);
 
-  const activeSession = useMemo(
+  useEffect(() => {
+    if (renameTarget && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renameTarget]);
+
+  /** 点击面板外关闭会话下拉。 */
+  useEffect(() => {
+    if (!sessionMenuOpen) return;
+    const onClick = (event: MouseEvent) => {
+      if (sessionMenuRef.current && !sessionMenuRef.current.contains(event.target as Node)) {
+        setSessionMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onClick);
+    return () => document.removeEventListener("mousedown", onClick);
+  }, [sessionMenuOpen]);
+
+  const activeSession = useMemo<AssistantSession | null>(
     () => sessions.find((s) => s.id === activeSessionId) ?? null,
     [sessions, activeSessionId],
   );
+
+  const preferredConfig = useMemo(
+    () => llmConfigs.find((cfg) => cfg.id === preferredConfigId) ?? null,
+    [llmConfigs, preferredConfigId],
+  );
+  const activeSessionCanSend = Boolean(
+    activeSession && llmConfigs.some((cfg) => cfg.id === activeSession.llm_config_id),
+  );
+  const canCreateSession = preferredConfig !== null;
+  const canSend = activeSession ? activeSessionCanSend : canCreateSession;
 
   const context = useMemo(
     () => (feature ? buildContextSnapshot(location.pathname, location.search) : null),
@@ -108,23 +195,50 @@ export function AssistantPanel() {
     else localStorage.removeItem(DEFAULT_LLM_KEY);
   };
 
-  /** 确保存在可用会话：无会话时按默认 LLM 自动创建。 */
+  /** 确保存在可用会话；历史绑定已停用/删除的配置只能阅读。 */
   const ensureSession = useCallback(async (): Promise<string | null> => {
-    if (activeSessionId) return activeSessionId;
-    if (!preferredConfigId) {
-      notify("请先在顶部选择默认 LLM");
+    if (activeSessionId && activeSession) {
+      if (activeSessionCanSend) return activeSessionId;
+      notify("当前会话绑定的 LLM 配置已停用或删除，只能查看历史");
+      return null;
+    }
+    if (!preferredConfig) {
+      notify("请先选择可用的 LLM 配置");
       return null;
     }
     try {
-      const created = await createAssistantSession("新会话", Number(preferredConfigId));
+      const created = await createAssistantSession("新会话", Number(preferredConfig.id));
       await refreshSessions();
       setActiveSessionId(created.id);
       return created.id;
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "创建会话失败");
+      notifyError(caught, "创建会话失败");
       return null;
     }
-  }, [activeSessionId, preferredConfigId, refreshSessions, setActiveSessionId]);
+  }, [activeSession, activeSessionCanSend, activeSessionId, preferredConfig, refreshSessions, setActiveSessionId]);
+
+  /** 局部替换最后一条 assistant 消息为内联错误。 */
+  const appendInlineError = useCallback(
+    (text: string, code: string, traceId: string | null) => {
+      const id = `local-error-${Date.now()}`;
+      setMessages((prev) => [
+        ...prev,
+        {
+          id,
+          role: "assistant",
+          kind: "normal",
+          text,
+          page_context: null,
+          upstream_metadata: { error: true, code, trace_id: traceId ?? "" },
+          trace_id: traceId ?? null,
+          error_code: code,
+          created_at: new Date().toISOString(),
+        },
+      ]);
+      void refreshSessions();
+    },
+    [refreshSessions],
+  );
 
   const submit = useCallback(
     async (event?: FormEvent) => {
@@ -135,11 +249,14 @@ export function AssistantPanel() {
       if (!sessionId) return;
       setSending(true);
       setStreamingText("");
+      setStreamStage("thinking");
+      const localUserId = `local-${Date.now()}`;
       setMessages((prev) => [
         ...prev,
         {
-          id: `local-${Date.now()}`,
+          id: localUserId,
           role: "user",
+          kind: "normal",
           text,
           page_context: context,
           upstream_metadata: null,
@@ -147,29 +264,46 @@ export function AssistantPanel() {
         },
       ]);
       setInput("");
+      let compressed = false;
       try {
         await streamAssistantMessage(
           sessionId,
           { text, page_context: context },
           {
-            onDelta: (delta) => setStreamingText((prev) => (prev ?? "") + delta),
-            onDone: (message) => {
-              setStreamingText(null);
-              setMessages((prev) => [...prev, message]);
-              void refreshSessions();
+            onCompress: () => {
+              compressed = true;
+              setStreamStage("compressing");
             },
-            onError: (code, message) => {
+            onDelta: (delta) => {
+              setStreamStage("replying");
+              setStreamingText((prev) => (prev ?? "") + delta);
+            },
+            onDone: (message, _traceId) => {
               setStreamingText(null);
-              notify(`回复失败（${code}）：${message}`);
+              setStreamStage("idle");
+              setMessages((prev) => [...prev, message]);
+              if (compressed) {
+                notify("历史已压缩");
+                compressed = false;
+              }
+              void refreshSessions();
+              // 刷新 usage（压缩/回复后比例会变化）
+              getAssistantSession(sessionId)
+                .then((detail) => setUsage(detail.usage ?? null))
+                .catch(() => undefined);
+            },
+            onError: (code, messageText, traceId) => {
+              setStreamingText(null);
+              setStreamStage("idle");
+              appendInlineError(`⚠️ ${messageText}`, code, traceId);
             },
           },
         );
-        // 流中 error 已由回调处理；此处兜底 done 未达（异常截断）。
         setStreamingText((prev) => (prev === "" ? null : prev));
       } catch (caught) {
         setStreamingText(null);
+        setStreamStage("idle");
         if (caught instanceof ApiError && caught.status === 404) {
-          // 流式端点不存在（旧后端）：回退非流式。
           try {
             const reply = await sendAssistantMessage(sessionId, {
               text,
@@ -178,36 +312,29 @@ export function AssistantPanel() {
             setMessages((prev) => [...prev, reply]);
             void refreshSessions();
           } catch (fallbackError) {
-            notify(fallbackError instanceof Error ? fallbackError.message : "发送失败");
+            appendInlineError(
+              friendlyErrorMessage(fallbackError, "发送失败"),
+              "fallback_failed",
+              null,
+            );
           }
         } else {
-          notify(caught instanceof Error ? caught.message : "发送失败");
+          appendInlineError(
+            friendlyErrorMessage(caught, "发送失败"),
+            "send_failed",
+            null,
+          );
         }
       } finally {
         setSending(false);
       }
     },
-    [input, sending, context, ensureSession, refreshSessions],
+    [input, sending, context, ensureSession, refreshSessions, appendInlineError],
   );
 
   const copyMessage = async (message: AssistantMessage) => {
     await copyText(message.text, "回复");
   };
-
-  const applyInsert = useCallback(() => {
-    const target = currentEditBridge();
-    if (!target || insertPreview === null) {
-      setInsertPreview(null);
-      return;
-    }
-    target.apply({
-      reasoning: null,
-      final_text: insertPreview,
-      tool_calls: [],
-    });
-    setInsertPreview(null);
-    notify("已覆盖编辑器内容");
-  }, [insertPreview]);
 
   const removeSession = useCallback(async () => {
     if (!activeSessionId) return;
@@ -216,12 +343,53 @@ export function AssistantPanel() {
       await deleteAssistantSession(activeSessionId);
       setActiveSessionId(null);
       setMessages([]);
+      setUsage(null);
       await refreshSessions();
-      notify("会话已删除");
+      notify("会话已删除", "success");
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
+      notifyError(caught, "删除失败");
     }
   }, [activeSessionId, refreshSessions, setActiveSessionId]);
+
+  const submitRename = useCallback(async () => {
+    if (!renameTarget) return;
+    const next = renameTarget.title.trim();
+    if (!next) {
+      setRenameTarget(null);
+      return;
+    }
+    if (next === activeSession?.title) {
+      setRenameTarget(null);
+      return;
+    }
+    try {
+      const updated = await patchAssistantSession(renameTarget.id, { title: next });
+      setRenameTarget(null);
+      await refreshSessions();
+      notify("会话已重命名", "success");
+      // 直接更新本地，确保下拉中显示
+      if (updated && activeSessionId === updated.id) {
+        setActiveSessionId(updated.id);
+      }
+    } catch (caught) {
+      notifyError(caught, "重命名失败");
+    }
+  }, [renameTarget, activeSession?.title, activeSessionId, refreshSessions, setActiveSessionId]);
+
+  const createNewSession = useCallback(async () => {
+    if (!preferredConfig) {
+      notify("请先选择可用的 LLM 配置");
+      return;
+    }
+    try {
+      const created = await createAssistantSession("新会话", Number(preferredConfig.id));
+      await refreshSessions();
+      setActiveSessionId(created.id);
+      setSessionMenuOpen(false);
+    } catch (caught) {
+      notifyError(caught, "创建失败");
+    }
+  }, [preferredConfig, refreshSessions, setActiveSessionId]);
 
   if (!user || user.role === "admin") {
     // 管理员无个人业务场景（无 LLM 配置），不展示助手。
@@ -229,6 +397,23 @@ export function AssistantPanel() {
   }
 
   const showWelcome = messages.length === 0 && !streamingText;
+  const usageRatio = usage?.ratio ?? 0;
+  const usagePercent = Math.min(100, Math.round(usageRatio * 100));
+  const usageBarClass =
+    usageRatio >= USAGE_WARN_RATIO
+      ? "bg-red-500"
+      : usageRatio >= 0.6
+        ? "bg-amber-400"
+        : "bg-primary";
+
+  const statusText =
+    streamStage === "compressing"
+      ? "压缩历史中…"
+      : streamStage === "replying"
+        ? "回复中…"
+        : streamStage === "thinking"
+          ? "思考中…"
+          : null;
 
   return (
     <>
@@ -274,27 +459,101 @@ export function AssistantPanel() {
             </span>
           </header>
 
-          <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-2 text-xs">
-            <select
-              value={activeSessionId ?? ""}
-              onChange={(event) => setActiveSessionId(event.target.value || null)}
-              className="field-input h-8 min-w-0 flex-1 py-0 text-xs"
-              aria-label="选择会话"
-            >
-              <option value="">无会话</option>
-              {sessions.map((s) => (
-                <option key={s.id} value={s.id}>
-                  {s.title}
-                </option>
-              ))}
-            </select>
+          <div className="relative flex items-center gap-2 border-b border-slate-100 px-4 py-2 text-xs">
+            <div ref={sessionMenuRef} className="relative min-w-0 flex-1">
+              <button
+                type="button"
+                onClick={() => setSessionMenuOpen((prev) => !prev)}
+                className="field-input flex h-8 w-full items-center justify-between truncate px-2 py-0 text-xs"
+                aria-label="选择会话"
+                aria-expanded={sessionMenuOpen}
+              >
+                <span className="truncate">
+                  {activeSession ? activeSession.title : "无会话"}
+                </span>
+                <Icon name="chevronRight" className="h-3 w-3 rotate-90 text-slate-400" />
+              </button>
+              {sessionMenuOpen && (
+                <div className="absolute left-0 right-0 top-full z-20 mt-1 max-h-72 overflow-y-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+                  <button
+                    type="button"
+                    onClick={() => void createNewSession()}
+                    disabled={!canCreateSession}
+                    className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-primary hover:bg-slate-50"
+                  >
+                    <Icon name="plus" className="h-3 w-3" />
+                    新建会话
+                  </button>
+                  <div className="my-1 h-px bg-slate-100" />
+                  {sessions.length === 0 && (
+                    <div className="px-3 py-2 text-xs text-slate-400">暂无历史会话</div>
+                  )}
+                  {sessions.map((s) => {
+                    const isActive = s.id === activeSessionId;
+                    const isRenaming = renameTarget?.id === s.id;
+                    return (
+                      <div
+                        key={s.id}
+                        className={`flex items-center gap-1 px-2 py-1 hover:bg-slate-50 ${
+                          isActive ? "bg-primary/5" : ""
+                        }`}
+                      >
+                        {isRenaming ? (
+                          <input
+                            ref={renameInputRef}
+                            value={renameTarget.title}
+                            onChange={(event) =>
+                              setRenameTarget({ id: s.id, title: event.target.value })
+                            }
+                            onBlur={() => void submitRename()}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter") {
+                                event.preventDefault();
+                                void submitRename();
+                              } else if (event.key === "Escape") {
+                                event.preventDefault();
+                                setRenameTarget(null);
+                              }
+                            }}
+                            className="field-input h-6 min-h-0 flex-1 px-1 py-0 text-xs"
+                          />
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveSessionId(s.id);
+                                setSessionMenuOpen(false);
+                              }}
+                              className="flex-1 truncate text-left text-xs text-slate-700"
+                            >
+                              {s.title}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setRenameTarget({ id: s.id, title: s.title })
+                              }
+                              className="rounded p-1 text-slate-400 hover:text-primary"
+                              aria-label="重命名会话"
+                            >
+                              <Icon name="code" className="h-3 w-3" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
             <select
               value={preferredConfigId}
               onChange={(event) => changeDefaultLlm(event.target.value)}
               className="field-input h-8 w-32 py-0 text-xs"
-              aria-label="默认 LLM 配置"
+              aria-label="选择 LLM 配置"
             >
-              <option value="">默认 LLM</option>
+              <option value="">选择 LLM 配置</option>
               {llmConfigs.map((cfg) => (
                 <option key={cfg.id} value={cfg.id}>
                   {cfg.name}
@@ -304,26 +563,43 @@ export function AssistantPanel() {
             <Button
               variant="ghost"
               className="h-8 px-2 text-xs"
-              disabled={!preferredConfigId}
-              onClick={() => {
-                void (async () => {
-                  try {
-                    const created = await createAssistantSession(
-                      "新会话",
-                      Number(preferredConfigId),
-                    );
-                    await refreshSessions();
-                    setActiveSessionId(created.id);
-                    notify("会话已创建");
-                  } catch (caught) {
-                    notify(caught instanceof Error ? caught.message : "创建失败");
-                  }
-                })();
-              }}
+              disabled={!canCreateSession}
+              onClick={() => void createNewSession()}
             >
               <Icon name="plus" className="h-3 w-3" />
             </Button>
           </div>
+
+          {!canSend && (
+            <div className="border-b border-amber-100 bg-amber-50 px-4 py-2 text-[11px] leading-relaxed text-amber-800">
+              {activeSession
+                ? "当前会话绑定的 LLM 配置已停用或删除，可查看历史，但不能发送消息。"
+                : llmConfigs.length === 0
+                  ? "暂无可用 LLM 配置，请先创建并启用配置。"
+                  : "请选择一个 LLM 配置后再新建会话或发送消息。"}
+            </div>
+          )}
+
+          {usage && activeSessionId && (
+            <div className="border-b border-slate-100 bg-slate-50/60 px-4 py-1.5 text-[11px] text-slate-500">
+              <div className="flex items-center justify-between">
+                <span>上下文使用</span>
+                <span className="font-mono text-slate-400">
+                  {usage.estimated_tokens} / {usage.limit_tokens} token
+                </span>
+              </div>
+              <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                <div
+                  className={`h-full ${usageBarClass} transition-all`}
+                  style={{ width: `${usagePercent}%` }}
+                />
+              </div>
+              <div className="mt-0.5 flex items-center justify-between text-[10px] text-slate-400">
+                <span>{usage.message_count} 条消息</span>
+                {usage.compressing && <span className="text-primary">正在压缩…</span>}
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center gap-2 border-b border-slate-100 bg-slate-50/60 px-4 py-1.5 text-[11px] text-slate-400">
             <Icon name="link" className="h-3 w-3" />
@@ -360,6 +636,7 @@ export function AssistantPanel() {
                       key={card.title}
                       type="button"
                       onClick={() => setInput(card.prompt)}
+                      disabled={!canSend}
                       className="block w-full rounded-lg border border-slate-200 bg-white px-3.5 py-3 text-left transition hover:border-primary/50 hover:shadow-card"
                     >
                       <span className="block text-xs font-medium text-slate-700">
@@ -381,21 +658,48 @@ export function AssistantPanel() {
               </div>
             )}
 
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={message.role === "user" ? "flex justify-end" : "flex justify-start"}
-              >
-                <div
-                  className={
-                    message.role === "user"
-                      ? "max-w-[85%] rounded-xl rounded-br-sm bg-primary/10 px-3 py-2 text-xs leading-relaxed text-slate-700"
-                      : "max-w-[85%] rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs leading-relaxed text-slate-700"
-                  }
-                >
-                  <p className="whitespace-pre-wrap break-words">{message.text}</p>
-                  {message.role === "assistant" && (
-                    <div className="mt-1.5 flex items-center gap-2 text-[11px]">
+            {messages.map((message) => {
+              if (message.kind === "summary") {
+                return (
+                  <div key={message.id} className="flex justify-center">
+                    <div className="rounded-full bg-amber-50 px-3 py-1 text-[11px] text-amber-600 ring-1 ring-amber-200">
+                      📦 历史已压缩（保留早期摘要 + 最近 6 条原文）
+                    </div>
+                  </div>
+                );
+              }
+              const isError = !!message.error_code || !!message.upstream_metadata?.error;
+              if (message.role === "user") {
+                return (
+                  <div key={message.id} className="flex justify-end">
+                    <div className="max-w-[85%] rounded-xl rounded-br-sm bg-primary/10 px-3 py-2 text-xs leading-relaxed text-slate-700">
+                      <p className="whitespace-pre-wrap break-words">{message.text}</p>
+                      {message.page_context && (
+                        <div className="mt-1 text-[10px] text-slate-400">
+                          页面：{message.page_context.route}
+                          {message.page_context.feature &&
+                            `（${CONTEXT_FEATURE_LABELS[message.page_context.feature] ?? message.page_context.feature}）`}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div key={message.id} className="flex justify-start">
+                  <div
+                    className={`max-w-[85%] rounded-xl rounded-bl-sm px-3 py-2 text-xs leading-relaxed ${
+                      isError
+                        ? "bg-red-50 text-red-700 ring-1 ring-red-100"
+                        : "bg-slate-100 text-slate-700"
+                    }`}
+                  >
+                    {isError ? (
+                      <p className="whitespace-pre-wrap break-words">{message.text}</p>
+                    ) : (
+                      <MarkdownText text={message.text} />
+                    )}
+                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
                       <button
                         type="button"
                         onClick={() => void copyMessage(message)}
@@ -403,38 +707,35 @@ export function AssistantPanel() {
                       >
                         复制
                       </button>
-                      {bridge && (
-                        <button
-                          type="button"
-                          onClick={() => setInsertPreview(message.text)}
-                          className="text-primary hover:underline"
+                      {message.trace_id && (
+                        <span
+                          className="cursor-pointer text-slate-300 hover:text-slate-500"
+                          title="点击复制 traceId"
+                          onClick={() => void copyText(message.trace_id ?? "", "traceId")}
                         >
-                          插入到回复编辑器
-                        </button>
+                          trace: {message.trace_id.slice(0, 12)}…
+                        </span>
                       )}
                     </div>
-                  )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
 
-            {streamingText !== null && (
+            {(streamingText !== null || statusText) && (
               <div className="flex justify-start">
                 <div className="max-w-[85%] rounded-xl rounded-bl-sm bg-slate-100 px-3 py-2 text-xs leading-relaxed text-slate-700">
-                  <p className="whitespace-pre-wrap break-words">
-                    {streamingText || "思考中…"}
-                    {streamingText && (
+                  {streamingText ? (
+                    <p className="whitespace-pre-wrap break-words">
+                      {streamingText}
                       <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-primary align-middle" />
-                    )}
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {sending && streamingText === null && (
-              <div className="flex justify-start">
-                <div className="rounded-xl bg-slate-100 px-3 py-2 text-xs text-slate-400">
-                  思考中…
+                    </p>
+                  ) : (
+                    <p className="text-slate-400">
+                      {statusText}
+                      <span className="ml-0.5 inline-block h-3 w-1 animate-pulse bg-slate-400 align-middle" />
+                    </p>
+                  )}
                 </div>
               </div>
             )}
@@ -444,6 +745,7 @@ export function AssistantPanel() {
             <textarea
               value={input}
               onChange={(event) => setInput(event.target.value)}
+              disabled={!canSend || sending}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
@@ -453,33 +755,15 @@ export function AssistantPanel() {
                   setOpen(false);
                 }
               }}
-              placeholder="输入问题…（Enter 发送）"
+              placeholder={canSend ? "输入问题…（Enter 发送）" : "选择可用 LLM 配置后才能发送"}
               rows={2}
               className="field-input min-h-[44px] flex-1 resize-none text-xs"
             />
-            <Button type="submit" loading={sending} disabled={!input.trim()}>
+            <Button type="submit" loading={sending} disabled={!canSend || !input.trim()}>
               发送
             </Button>
           </form>
         </aside>
-      )}
-
-      {insertPreview !== null && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4">
-          <div className="w-full max-w-lg rounded-lg bg-white p-5 shadow-xl">
-            <h3 className="text-sm font-semibold text-slate-800">插入到回复编辑器</h3>
-            <p className="mt-1 text-xs text-red-500">将覆盖当前编辑内容，无法撤回。</p>
-            <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-slate-100 bg-slate-50 p-3 text-xs text-slate-600">
-              {insertPreview}
-            </pre>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setInsertPreview(null)}>
-                取消
-              </Button>
-              <Button onClick={applyInsert}>确认覆盖</Button>
-            </div>
-          </div>
-        </div>
       )}
     </>
   );

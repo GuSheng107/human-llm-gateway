@@ -79,7 +79,7 @@ class WeComIlinkConnector(Connector):
             self._thread_error = ConnectorError(ERROR_AUTH, "iLink 会话已过期，请重新扫码登录")
 
         def _on_error(exc: Exception) -> None:
-            logger.info(
+            logger.warning(
                 "ilink monitor error",
                 extra={"connection_id": self.ctx.connection_id, "error": type(exc).__name__},
             )
@@ -151,7 +151,7 @@ class WeComIlinkConnector(Connector):
                 try:
                     client.stop()
                 except Exception:  # 关闭失败不阻塞停止流程
-                    logger.info("ilink stop failed", exc_info=True)
+                    logger.warning("ilink stop failed", exc_info=True)
             self._pending_qrcode = None
         if self._thread is not None:
             await asyncio.to_thread(self._thread.join, timeout=10)

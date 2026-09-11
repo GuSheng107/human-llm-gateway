@@ -53,21 +53,23 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
     assert pro["context_window"] == 1_000_000
     assert "tools" in pro["capabilities"]
     assert pro["billing_tier"] == "pay_as_you_go"
-    # 未显式指定端点的模型默认三种协议全开。
-    assert sorted(pro["endpoint_types"]) == [
-        "anthropic_messages",
-        "openai_chat",
-        "openai_responses",
-    ]
+    assert pro["endpoint_types"] == ["openai_chat"]
     claude = seeded["claude-fable-5"]
     assert claude["endpoint_types"] == ["anthropic_messages"]
-    for model_id in ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4"):
+    for model_id in (
+        "gpt-6-astra",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+        "gpt-5.5",
+        "gpt-5.4",
+    ):
         gpt = seeded[model_id]
         assert gpt["endpoint_types"] == ["openai_chat", "openai_responses"]
         assert gpt["context_window"] == 1_050_000
         assert gpt["max_output_tokens"] == 128_000
 
-    # 端点筛选（包含语义：模型多端点时按任一匹配）。
+    # 多值原生端点按包含关系筛选。
     anthropic_only = client.get(
         "/api/fake-models", headers=admin_headers, params={"endpoint_type": "anthropic_messages"}
     ).json()
@@ -78,7 +80,7 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
         "claude-sonnet-5",
         "claude-haiku-4-5",
     } <= anthropic_ids
-    # GPT 种子仅开放 OpenAI 双协议，不应出现在 anthropic 筛选中。
+    # OpenAI 种子不包含 Anthropic，不应出现在筛选中。
     assert "gpt-5.5" not in anthropic_ids
     openai_only = client.get(
         "/api/fake-models", headers=admin_headers, params={"endpoint_type": "openai_responses"}
@@ -114,25 +116,20 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
             "capabilities": ["tools", "vision"],
             "billing_tier": "subscription",
             "endpoint_types": ["openai_chat", "openai_responses"],
-            "tags": ["测试", "多模态"],
         },
     ).json()
     assert created["input_price_per_million"] == 1.5
     assert created["billing_tier"] == "subscription"
     assert created["endpoint_types"] == ["openai_chat", "openai_responses"]
-    assert created["tags"] == ["测试", "多模态"]
 
     updated = client.patch(
         f"/api/fake-models/{created['id']}",
         headers=admin_headers,
-        json={"input_price_per_million": 2.5, "tags": ["更新"]},
+        json={"input_price_per_million": 2.5},
     ).json()
     assert updated["input_price_per_million"] == 2.5
-    assert updated["tags"] == ["更新"]
 
-    # 标签筛选 + 搜索（model_id/显示名/描述/标签）。
-    by_tag = client.get("/api/fake-models", headers=admin_headers, params={"tag": "更新"}).json()
-    assert {item["model_id"] for item in by_tag["items"]} == {"market-test-model"}
+    # 搜索（model_id/显示名/描述）。
     by_search = client.get(
         "/api/fake-models", headers=admin_headers, params={"search": "广场测试"}
     ).json()
@@ -245,56 +242,54 @@ def test_user_can_manage_own_private_model_and_admin_creates_system(client, admi
     assert duplicate.status_code == 409
 
 
-def test_model_group_membership_is_limited_to_visible_models(client, admin_headers) -> None:
+def test_model_group_membership_is_assigned_from_model_editor(client, admin_headers) -> None:
     headers = _create_user(client, admin_headers, "group-user")
     other = _create_user(client, admin_headers, "group-user-2")
     owner_private = _model(client, headers, "group-visible")
     foreign_private = _model(client, other, "group-foreign")
+    owner_second = _model(client, headers, "group-visible-2")
 
     group = client.post("/api/model-groups", headers=headers, json={"name": "常用模型"}).json()
     assert group["model_ids"] == []
+    assert group["is_public"] is False
+    assert group["can_manage"] is True
+    assert group["can_assign_model"] is True
 
-    updated = client.put(
+    blocked = client.put(
         f"/api/model-groups/{group['id']}/models",
         headers=headers,
         json={"fake_model_ids": [999999]},
     )
-    # 不存在的模型 id 属于无效成员。
-    assert updated.status_code == 400
+    assert blocked.status_code == 403
 
-    updated = client.put(
-        f"/api/model-groups/{group['id']}/models",
+    invalid = client.patch(
+        f"/api/fake-models/{owner_private['id']}",
         headers=headers,
-        json={"fake_model_ids": [int(owner_private["id"]), int(foreign_private["id"])]},
+        json={"group_ids": [999999]},
     )
-    assert updated.status_code == 400
-    assert "可见" in updated.json()["error"]["message"]
+    assert invalid.status_code == 400
 
-    updated = client.put(
-        f"/api/model-groups/{group['id']}/models",
+    foreign_update = client.patch(
+        f"/api/fake-models/{foreign_private['id']}",
         headers=headers,
-        json={"fake_model_ids": [int(owner_private["id"])]},
+        json={"group_ids": [int(group["id"])]},
     )
-    assert updated.status_code == 200
-    assert updated.json()["model_ids"] == ["group-visible"]
+    assert foreign_update.status_code == 404
 
-    # 系统模型也在可见集合内，可加入分组。
-    system_ids = [
-        int(item["id"])
-        for item in client.get("/api/fake-models", headers=headers).json()["items"]
-        if item["scope"] == "system"
-    ]
-    updated = client.put(
-        f"/api/model-groups/{group['id']}/models",
+    updated = client.patch(
+        f"/api/fake-models/{owner_private['id']}",
         headers=headers,
-        json={"fake_model_ids": [int(owner_private["id"]), *system_ids]},
+        json={"group_ids": [int(group["id"])]},
     )
     assert updated.status_code == 200
-    assert set(updated.json()["model_ids"]) == {"group-visible"} | {
-        item["model_id"]
-        for item in client.get("/api/fake-models", headers=headers).json()["items"]
-        if item["scope"] == "system"
-    }
+    updated = client.patch(
+        f"/api/fake-models/{owner_second['id']}",
+        headers=headers,
+        json={"group_ids": [int(group["id"])]},
+    )
+    assert updated.status_code == 200
+    group_detail = client.get(f"/api/model-groups/{group['id']}", headers=headers).json()
+    assert set(group_detail["model_ids"]) == {"group-visible", "group-visible-2"}
 
     first_page = client.get(
         "/api/fake-models",
@@ -306,7 +301,7 @@ def test_model_group_membership_is_limited_to_visible_models(client, admin_heade
         headers=headers,
         params={"group_id": group["id"], "page": 2, "page_size": 1},
     ).json()
-    assert first_page["total"] == len(updated.json()["model_ids"])
+    assert first_page["total"] == 2
     assert len(first_page["items"]) == 1
     assert len(second_page["items"]) == 1
     assert first_page["items"][0]["id"] != second_page["items"][0]["id"]
@@ -361,14 +356,7 @@ def test_group_ownership_isolation(client, admin_headers) -> None:
 
 
 def test_endpoint_types_validation(client, admin_headers) -> None:
-    """端点协议：显式传空数组或未知值拒绝；创建后可多选更新。"""
-    empty = client.post(
-        "/api/fake-models",
-        headers=admin_headers,
-        json={"model_id": "no-endpoint", "endpoint_types": []},
-    )
-    assert empty.status_code == 400
-
+    """原生端点可多选、会去重，且拒绝空列表和未知协议。"""
     unknown = client.post(
         "/api/fake-models",
         headers=admin_headers,
@@ -380,25 +368,35 @@ def test_endpoint_types_validation(client, admin_headers) -> None:
         "/api/fake-models",
         headers=admin_headers,
         json={
-            "model_id": "dual-endpoint",
-            "endpoint_types": ["openai_chat", "anthropic_messages"],
+            "model_id": "multi-endpoint",
+            "endpoint_types": ["anthropic_messages", "anthropic_messages"],
         },
     ).json()
-    assert created["endpoint_types"] == ["openai_chat", "anthropic_messages"]
+    assert created["endpoint_types"] == ["anthropic_messages"]
 
     updated = client.patch(
         f"/api/fake-models/{created['id']}",
         headers=admin_headers,
-        json={"endpoint_types": ["openai_responses", "openai_responses"]},
+        json={"endpoint_types": ["openai_chat", "openai_responses"]},
     ).json()
-    assert updated["endpoint_types"] == ["openai_responses"]
+    assert updated["endpoint_types"] == ["openai_chat", "openai_responses"]
 
-    cleared = client.patch(
+    invalid_update = client.patch(
+        f"/api/fake-models/{created['id']}",
+        headers=admin_headers,
+        json={"endpoint_types": ["not_a_protocol"]},
+    )
+    assert invalid_update.status_code == 400
+
+    empty_update = client.patch(
         f"/api/fake-models/{created['id']}",
         headers=admin_headers,
         json={"endpoint_types": []},
     )
-    assert cleared.status_code == 400
+    assert empty_update.status_code == 400
+
+    defaulted = _model(client, admin_headers, "default-endpoint")
+    assert defaulted["endpoint_types"] == ["openai_chat"]
 
 
 def test_function_calling_capability_merged_into_tools(client, admin_headers) -> None:

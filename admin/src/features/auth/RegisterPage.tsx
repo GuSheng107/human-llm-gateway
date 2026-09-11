@@ -9,6 +9,7 @@ import { PasswordStrength, passwordValid } from "../../components/form/PasswordS
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { notify } from "../../components/feedback/Toast";
 import { Button } from "../../components/ui/Button";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
@@ -66,7 +67,7 @@ export function RegisterPage() {
       notify("注册成功，请登录");
       navigate("/login", { replace: true });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "注册失败");
+      setError(friendlyErrorMessage(caught, "注册失败"));
       setCaptchaCode("");
       setCaptchaKey((key) => key + 1);
     } finally {

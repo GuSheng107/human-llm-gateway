@@ -20,10 +20,6 @@ from unittest.mock import patch
 
 from app.services.llm_test_service import ConnTestOutcome
 
-# ----------------------------------------------------------------------
-# 辅助
-# ----------------------------------------------------------------------
-
 
 def _bearer(plaintext: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {plaintext}"}
@@ -610,15 +606,20 @@ def test_connectivity_test_disabled_returns_400(client, created_user) -> None:
 
 
 def test_connectivity_test_runner_url_normalization() -> None:
-    """URL 拼接：OpenAI /models、Anthropic /v1/messages 由 base_url 直拼。"""
+    """URL 拼接：OpenAI chat/completions、Anthropic /v1/messages 由 base_url 直拼。"""
     from app.services.llm_test_service import (
         _normalize_anthropic_url,
-        _normalize_openai_models_url,
+        _normalize_openai_chat_url,
     )
 
     assert (
-        _normalize_openai_models_url("https://api.example.com/v1/")
-        == "https://api.example.com/v1/models"
+        _normalize_openai_chat_url("https://api.example.com/v1/")
+        == "https://api.example.com/v1/chat/completions"
+    )
+    # full-url 形态（base_url 已是完整端点）不重复拼接。
+    assert (
+        _normalize_openai_chat_url("https://api.example.com/v1/chat/completions")
+        == "https://api.example.com/v1/chat/completions"
     )
     assert (
         _normalize_anthropic_url("https://api.anthropic.com/")
@@ -751,3 +752,132 @@ def test_thinking_applied_per_protocol() -> None:
     body = _apply_config({}, cfg)
     assert body["thinking"]["type"] == "enabled"
     assert body["thinking"]["budget_tokens"] == 4096
+
+
+# ----------------------------------------------------------------------
+# 保存即测试：启用必须经过真实生成连通性测试
+# ----------------------------------------------------------------------
+
+
+def _fail_outcome() -> ConnTestOutcome:
+    return _mock_outcome(
+        success=False,
+        reason_code="empty_reply",
+        detail="模型未返回有效内容",
+        http_status=200,
+    )
+
+
+def test_create_enabled_with_failed_connectivity_rejected(client, created_user) -> None:
+    """启用创建时连通性测试失败 -> 400，且不产生任何配置。"""
+
+    async def fake(**kwargs: Any) -> ConnTestOutcome:
+        return _fail_outcome()
+
+    with patch("app.api.llm_configs.run_connectivity_test", side_effect=fake):
+        resp = client.post(
+            "/api/llm-configs",
+            headers=created_user.headers,
+            json=_create_body(name="gate-fail"),
+        )
+    assert resp.status_code == 400, resp.text
+    assert "连通性测试未通过" in resp.json()["error"]["message"]
+
+    listed = client.get("/api/llm-configs", headers=created_user.headers).json()
+    assert all(item["name"] != "gate-fail" for item in listed["items"])
+
+
+def test_create_disabled_skips_connectivity_test(client, created_user) -> None:
+    """停用态保存不做连通性测试，测试失败也不影响保存。"""
+
+    async def fake(**kwargs: Any) -> ConnTestOutcome:
+        return _fail_outcome()
+
+    with patch("app.api.llm_configs.run_connectivity_test", side_effect=fake) as runner:
+        resp = client.post(
+            "/api/llm-configs",
+            headers=created_user.headers,
+            json=_create_body(name="gate-disabled", enabled=False),
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["is_enabled"] is False
+    assert runner.await_count == 0
+
+
+def test_create_enabled_with_passed_test_records_success(client, created_user) -> None:
+    """启用创建且测试通过 -> 成功并记录 last_test_result=success。"""
+    resp = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_create_body(name="gate-pass"),
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["is_enabled"] is True
+    assert resp.json()["last_test_result"] == "success"
+    assert resp.json()["last_tested_at"]
+
+
+def test_enable_disabled_config_requires_passed_test(client, created_user) -> None:
+    """停用配置重新启用：测试失败 -> 400 且保持停用。"""
+    created = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_create_body(name="gate-enable", enabled=False),
+    ).json()
+
+    async def fake(**kwargs: Any) -> ConnTestOutcome:
+        return _fail_outcome()
+
+    with patch("app.api.llm_configs.run_connectivity_test", side_effect=fake):
+        resp = client.patch(
+            f"/api/llm-configs/{created['id']}",
+            headers=created_user.headers,
+            json={"enabled": True},
+        )
+    assert resp.status_code == 400, resp.text
+    detail = client.get(f"/api/llm-configs/{created['id']}", headers=created_user.headers).json()
+    assert detail["is_enabled"] is False
+
+
+def test_edit_advanced_params_only_skips_retest(client, created_user) -> None:
+    """仅修改高级参数（采样/思考/extra_body）时不再触发连通性测试，改动正常保存。"""
+    created = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_create_body(name="gate-advanced"),
+    ).json()
+
+    async def fail(**kwargs: Any) -> ConnTestOutcome:
+        raise AssertionError("仅高级参数变更不应触发连通性测试")
+
+    with patch("app.api.llm_configs.run_connectivity_test", side_effect=fail):
+        resp = client.patch(
+            f"/api/llm-configs/{created['id']}",
+            headers=created_user.headers,
+            json={"default_temperature": 0.5, "extra_body": {"x": 1}},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["default_temperature"] == 0.5
+
+
+def test_edit_connection_field_retests_and_blocks_on_failure(client, created_user) -> None:
+    """改动连接相关字段（如 base_url）-> 重新测试；失败则整体回滚，不丢原有配置。"""
+    created = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_create_body(name="gate-reconnect"),
+    ).json()
+
+    async def fake(**kwargs: Any) -> ConnTestOutcome:
+        return _fail_outcome()
+
+    with patch("app.api.llm_configs.run_connectivity_test", side_effect=fake):
+        resp = client.patch(
+            f"/api/llm-configs/{created['id']}",
+            headers=created_user.headers,
+            json={"base_url": "https://other.example.com/v1"},
+        )
+    assert resp.status_code == 400, resp.text
+    detail = client.get(f"/api/llm-configs/{created['id']}", headers=created_user.headers).json()
+    assert detail["base_url"] == "https://api.example.com/v1"
+    assert detail["is_enabled"] is True

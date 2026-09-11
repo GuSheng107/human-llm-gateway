@@ -58,7 +58,7 @@ def _create_api_key(client, headers, **payload) -> tuple[dict, str]:
 
 
 def test_api_key_plaintext_visible_to_owner_not_admin(client, admin_headers) -> None:
-    """Owner 视角列表返回完整明文；admin 监管视角只可见前缀。"""
+    """所有者可从列表、详情和更新响应取回完整 Key；管理员只能看前缀。"""
     headers = _create_user(client, admin_headers, "key-user")
     response, body = _create_api_key(client, headers, name="完整明文")
     assert response.status_code == 201, response.text
@@ -66,13 +66,25 @@ def test_api_key_plaintext_visible_to_owner_not_admin(client, admin_headers) -> 
     assert plaintext.startswith("sk-")
     assert len(plaintext) == 46
 
-    # Owner 本人：列表直接带完整明文 key，可显示可复制。
+    # Owner 本人：后续管理响应仍带完整明文，可显示和复制。
     listed = client.get("/api/api-keys", headers=headers).json()
     item = listed["items"][0]
     assert "plaintext" not in item
     assert item["key_prefix"] == plaintext[:8]
     assert len(item["key_prefix"]) == 8
     assert item["key"] == plaintext
+    detail = client.get(f"/api/api-keys/{item['id']}", headers=headers)
+    assert detail.status_code == 200
+    assert detail.json()["key"] == plaintext
+    updated = client.patch(
+        f"/api/api-keys/{item['id']}", headers=headers, json={"name": "完整明文"}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["key"] == plaintext
+    with database.SessionLocal() as session:
+        ciphertext = session.get(ApiKey, int(item["id"])).key_ciphertext
+        assert ciphertext
+        assert plaintext not in ciphertext
 
     # Admin 监管：能看到该 Key 记录，但不返回完整明文。
     admin_listed = client.get("/api/api-keys", headers=admin_headers).json()
@@ -80,12 +92,6 @@ def test_api_key_plaintext_visible_to_owner_not_admin(client, admin_headers) -> 
     assert admin_items, "admin 应能看到所有用户的 Key"
     assert admin_items[0]["key"] is None
     assert admin_items[0]["key_prefix"] == plaintext[:8]
-
-
-def response_text(payload) -> str:
-    import json
-
-    return json.dumps(payload, ensure_ascii=False)
 
 
 def test_delivery_mode_and_strategy_validation(client, admin_headers) -> None:
@@ -144,6 +150,19 @@ def test_delivery_mode_and_strategy_validation(client, admin_headers) -> None:
     )
     assert human_with_llm.status_code == 400
 
+    # 已停用的 LLM 配置不能绑定到 Key。
+    disabled_config_id = _llm_config_id(user_id, enabled=False)
+    disabled_binding = client.post(
+        "/api/api-keys",
+        headers=headers,
+        json={
+            "name": "disabled-llm-key",
+            "reply_strategy": "llm",
+            "llm_config_id": disabled_config_id,
+        },
+    )
+    assert disabled_binding.status_code == 400
+
     # 别人的连接/配置不能引用。
     other_headers = _create_user(client, admin_headers, "key-user-3")
     other_id = int(client.get("/api/auth/me", headers=other_headers).json()["id"])
@@ -195,6 +214,7 @@ def test_disabled_or_deleted_key_blocks_new_requests_but_admitted_task_continues
             owner_user_id=user_id,
             api_key_id=key_id,
             api_key_prefix_snapshot=created["key_prefix"],
+            api_key_name_snapshot=created["name"],
             requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json="{}",
@@ -248,7 +268,7 @@ def _connection_id(owner_user_id: int) -> int:
         return row.id
 
 
-def _llm_config_id(owner_user_id: int) -> int:
+def _llm_config_id(owner_user_id: int, *, enabled: bool = True) -> int:
     from app.core.config import get_settings
     from app.core.security import encrypt_secret
 
@@ -256,13 +276,14 @@ def _llm_config_id(owner_user_id: int) -> int:
         secret = encrypt_secret("sk-test", get_settings().app_secret, "llm-secret")
         config = LlmConfig(
             owner_user_id=owner_user_id,
-            name=f"upstream-{owner_user_id}",
+            name=f"upstream-{owner_user_id}-{'on' if enabled else 'off'}",
             protocol="openai_chat",
             base_url="https://example.test/v1",
             real_model="gpt-test",
             secret_ciphertext=secret,
             encryption_key_version=1,
             timeout_seconds=60,
+            is_enabled=enabled,
         )
         session.add(config)
         session.commit()
@@ -298,26 +319,32 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
     headers = _create_user(client, admin_headers, "key-user-8")
     listed = client.get("/api/fake-models", headers=headers).json()["items"]
     by_id = {item["model_id"]: int(item["id"]) for item in listed}
+    platform_group = client.post(
+        "/api/model-groups",
+        headers=admin_headers,
+        json={"name": "平台分组筛选"},
+    ).json()
+    assert platform_group["is_public"] is True
+    assigned = client.patch(
+        f"/api/fake-models/{by_id['deepseek-v4-pro']}",
+        headers=admin_headers,
+        json={"group_ids": [int(platform_group["id"])]},
+    )
+    assert assigned.status_code == 200, assigned.text
     private = client.post(
-        "/api/fake-models", headers=headers, json={"model_id": "narrow-private"}
+        "/api/fake-models",
+        headers=headers,
+        json={
+            "model_id": "narrow-private",
+            "group_ids": [int(platform_group["id"])],
+        },
     ).json()
     by_id["narrow-private"] = int(private["id"])
-
-    group = client.post(
-        "/api/model-groups",
-        headers=headers,
-        json={"name": "分组筛选"},
-    ).json()
-    client.put(
-        f"/api/model-groups/{group['id']}/models",
-        headers=headers,
-        json={"fake_model_ids": [by_id["deepseek-v4-pro"], by_id["narrow-private"]]},
-    )
 
     grouped_key = client.post(
         "/api/api-keys",
         headers=headers,
-        json={"name": "grouped", "model_group_id": int(group["id"])},
+        json={"name": "grouped", "model_group_id": int(platform_group["id"])},
     ).json()
     models = client.get(
         "/v1/models", headers={"Authorization": f"Bearer {grouped_key['plaintext']}"}
@@ -330,7 +357,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
         headers=headers,
         json={
             "name": "outside-group",
-            "model_group_id": int(group["id"]),
+            "model_group_id": int(platform_group["id"]),
             "fake_model_ids": [by_id["deepseek-v4-flash"]],
         },
     )
@@ -341,7 +368,7 @@ def test_v1_models_respects_group_and_key_selection_narrowing(client, admin_head
         headers=headers,
         json={
             "name": "selected",
-            "model_group_id": int(group["id"]),
+            "model_group_id": int(platform_group["id"]),
             "fake_model_ids": [by_id["deepseek-v4-pro"]],
         },
     ).json()
@@ -468,6 +495,7 @@ def test_deleted_model_or_group_keep_history_task_snapshot(client, admin_headers
             owner_user_id=user_id,
             api_key_id=int(created["id"]),
             api_key_prefix_snapshot=created["key_prefix"],
+            api_key_name_snapshot=created["name"],
             requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json="{}",

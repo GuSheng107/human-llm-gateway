@@ -1,96 +1,116 @@
-import { type FormEvent, useCallback, useEffect, useState } from "react";
-import {
-  listAppLogs,
-  listAuditLogs,
-  type AppLogItem,
-  type AuditLogItem,
-} from "../../api/logs";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
+import { listLogs, type LogItem } from "../../api/logs";
 import { Card } from "../../components/data-display/Card";
 import { Pagination } from "../../components/data-display/Pagination";
-import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
-import { Modal } from "../../components/feedback/Modal";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
-import { useAuth } from "../auth/AuthContext";
+import { friendlyErrorMessage } from "../../utils/notify";
+import { LogDetailModal } from "./LogDetailModal";
 
 const DEFAULT_PAGE_SIZE = 20;
-const LOG_RETENTION_DAYS = 7;
+type Level = "debug" | "error" | "warning" | "info";
 
-type Tab = "audit" | "app";
+const LEVEL_META: Record<Level, { label: string; className: string }> = {
+  debug: { label: "DEBUG", className: "border-slate-200 bg-slate-50 text-slate-500" },
+  error: { label: "ERROR", className: "border-red-200 bg-red-50 text-red-700" },
+  warning: { label: "WARNING", className: "border-amber-200 bg-amber-50 text-amber-700" },
+  info: { label: "INFO", className: "border-slate-200 bg-slate-100 text-slate-600" },
+};
+
+const KIND_LABEL: Record<LogItem["kind"], string> = { audit: "审计", app: "应用" };
 
 function formatTime(value: string): string {
-  return value ? new Date(value).toLocaleString() : "-";
+  if (!value) return "-";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function LevelBadge({ level }: { level: string }) {
+  const meta = LEVEL_META[level as Level];
+  return (
+    <span
+      className={`inline-flex rounded border px-2 py-0.5 text-[10px] font-semibold ${
+        meta?.className ?? "border-slate-200 bg-slate-50 text-slate-500"
+      }`}
+    >
+      {meta?.label ?? level.toUpperCase()}
+    </span>
+  );
+}
+
+function DetailField({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <div className="min-w-0 rounded border border-slate-100 bg-slate-50/70 px-3 py-2">
+      <dt className="text-[10px] text-slate-400">{label}</dt>
+      <dd className="mt-1 break-all font-mono text-[11px] text-slate-700">{value || "-"}</dd>
+    </div>
+  );
 }
 
 export function LogsPage() {
-  const { user: currentUser } = useAuth();
-  const isAdmin = currentUser?.role === "admin";
-  const [tab, setTab] = useState<Tab>(isAdmin ? "audit" : "app");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const initialTraceId = searchParams.get("trace_id") ?? "";
+  const [items, setItems] = useState<LogItem[]>([]);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
   const [total, setTotal] = useState(0);
-  const [auditItems, setAuditItems] = useState<AuditLogItem[]>([]);
-  const [appItems, setAppItems] = useState<AppLogItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [detailEntryId, setDetailEntryId] = useState<string | null>(null);
+  const [detailTitle, setDetailTitle] = useState("");
 
-  // 审计筛选
-  const [auditAction, setAuditAction] = useState("");
-  const [auditResource, setAuditResource] = useState("");
-  const [auditHours, setAuditHours] = useState("");
-  // 应用筛选
-  const [appLevel, setAppLevel] = useState("");
-  const [appEvent, setAppEvent] = useState("");
-  const [appHours, setAppHours] = useState("");
-  const [appTraceId, setAppTraceId] = useState("");
-  const [detail, setDetail] = useState<AppLogItem | null>(null);
+  const [traceInput, setTraceInput] = useState(initialTraceId);
+  const initialCategory = searchParams.get("category") ?? "";
+  const initialEvent = searchParams.get("event") ?? "";
+  const initialLevel = (searchParams.get("level") as Level | null) ?? "";
+  const initialHours = searchParams.get("hours") ?? "";
+  const initialKind = (searchParams.get("kind") as "audit" | "app" | null) ?? "";
+  const [categoryInput, setCategoryInput] = useState(initialCategory);
+  const [eventInput, setEventInput] = useState(initialEvent);
+  const [levelInput, setLevelInput] = useState<Level | "">(initialLevel);
+  const [hoursInput, setHoursInput] = useState(initialHours);
+  const [kindInput, setKindInput] = useState<"audit" | "app" | "">(initialKind);
+  const [filters, setFilters] = useState<{
+    traceId: string;
+    category: string;
+    event: string;
+    level: Level | "";
+    hours: string;
+    kind: "audit" | "app" | "";
+  }>({
+    traceId: initialTraceId,
+    category: initialCategory,
+    event: initialEvent,
+    level: initialLevel,
+    hours: initialHours,
+    kind: initialKind,
+  });
 
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      if (tab === "audit") {
-        const result = await listAuditLogs({
-          page,
-          page_size: pageSize,
-          action: auditAction.trim() || undefined,
-          resource_type: auditResource.trim() || undefined,
-          hours: auditHours ? Number(auditHours) : undefined,
-        });
-        setAuditItems(result.items);
-        setTotal(result.total);
-      } else {
-        const result = await listAppLogs({
-          page,
-          page_size: pageSize,
-          level: appLevel || undefined,
-          event: appEvent.trim() || undefined,
-          request_id: appTraceId.trim() || undefined,
-          hours: appHours ? Number(appHours) : undefined,
-          with_context: true,
-        });
-        setAppItems(result.items);
-        setTotal(result.total);
-      }
+      const result = await listLogs({
+        page,
+        page_size: pageSize,
+        trace_id: filters.traceId.trim() || undefined,
+        category: filters.category.trim() || undefined,
+        event: filters.event.trim() || undefined,
+        level: filters.level || undefined,
+        hours: filters.hours ? Number(filters.hours) : undefined,
+        kind: filters.kind || undefined,
+      });
+      setItems(result.items);
+      setTotal(result.total);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载日志失败"));
     } finally {
       setLoading(false);
     }
-  }, [
-    tab,
-    page,
-    pageSize,
-    auditAction,
-    auditResource,
-    auditHours,
-    appLevel,
-    appEvent,
-    appHours,
-    appTraceId,
-  ]);
+  }, [filters, page, pageSize]);
 
   useEffect(() => {
     void load();
@@ -99,197 +119,204 @@ export function LogsPage() {
   const submitSearch = (event: FormEvent) => {
     event.preventDefault();
     setPage(1);
-    void load();
+    setFilters({
+      traceId: traceInput,
+      category: categoryInput,
+      event: eventInput,
+      level: levelInput,
+      hours: hoursInput,
+      kind: kindInput,
+    });
+    const params = new URLSearchParams(searchParams);
+    const values: Record<string, string> = {
+      trace_id: traceInput.trim(),
+      category: categoryInput.trim(),
+      event: eventInput.trim(),
+      level: levelInput,
+      hours: hoursInput.trim(),
+      kind: kindInput,
+    };
+    for (const [key, value] of Object.entries(values)) {
+      if (value) params.set(key, value);
+      else params.delete(key);
+    }
+    setSearchParams(params, { replace: true });
+  };
+
+  const filterByTrace = (traceId: string) => {
+    setTraceInput(traceId);
+    setPage(1);
+    setFilters((current) => ({ ...current, traceId }));
+    const params = new URLSearchParams(searchParams);
+    params.set("trace_id", traceId);
+    setSearchParams(params, { replace: true });
   };
 
   return (
     <div className="space-y-5">
       <PageHeader
-        title="日志审计"
-        description={`日志保留 ${LOG_RETENTION_DAYS} 天 · 按 traceId 查询关联日志`}
+        title="日志查询"
+        description="按 traceId 回溯请求链路；日志保留 7 天，详情中的上下文已按服务端规则脱敏。"
       />
-
       <Card>
-        <div className="flex gap-1 border-b border-slate-100 px-4 pt-3">
-          {(
-            [
-              ...(isAdmin ? [{ key: "audit", label: "审计日志" } as const] : []),
-              { key: "app", label: "应用日志" } as const,
-            ]
-          ).map((item) => (
-            <button
-              key={item.key}
-              type="button"
-              onClick={() => {
-                setTab(item.key);
-                setPage(1);
-              }}
-              className={
-                tab === item.key
-                  ? "-mb-px border-b-2 border-primary px-3 py-2 text-xs font-medium text-primary"
-                  : "px-3 py-2 text-xs text-slate-400 hover:text-slate-600"
-              }
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
         {error && <ErrorBanner message={error} className="m-4" />}
-
-        <form onSubmit={submitSearch} className="flex flex-wrap gap-2 border-b border-slate-100 p-4">
-          {tab === "audit" ? (
-            <>
-              <input
-                value={auditAction}
-                onChange={(event) => setAuditAction(event.target.value)}
-                className="field-input min-w-0 flex-1 sm:max-w-[220px]"
-                placeholder="动作（如 api_key.created）"
-              />
-              <input
-                value={auditResource}
-                onChange={(event) => setAuditResource(event.target.value)}
-                className="field-input min-w-0 flex-1 sm:max-w-[180px]"
-                placeholder="资源类型（如 request_task）"
-              />
-            </>
-          ) : (
-            <>
-              <select
-                value={appLevel}
-                onChange={(event) => setAppLevel(event.target.value)}
-                className="field-input sm:w-32"
-              >
-                <option value="">全部级别</option>
-                <option value="info">info</option>
-                <option value="warning">warning</option>
-                <option value="error">error</option>
-              </select>
-              <input
-                value={appEvent}
-                onChange={(event) => setAppEvent(event.target.value)}
-                className="field-input min-w-0 flex-1 sm:max-w-[240px]"
-                placeholder="事件（如 inference.human_timeout）"
-              />
-              <input
-                value={appTraceId}
-                onChange={(event) => setAppTraceId(event.target.value)}
-                className="field-input min-w-0 flex-1 font-mono sm:max-w-[240px]"
-                placeholder="traceId（request_id）"
-              />
-            </>
-          )}
+        <form onSubmit={submitSearch} className="flex flex-wrap items-center gap-2 border-b border-slate-100 px-4 py-3">
+          <select
+            value={kindInput}
+            onChange={(event) => setKindInput(event.target.value as "audit" | "app" | "")}
+            className="field-input sm:w-28"
+            aria-label="日志类型"
+          >
+            <option value="">全部类型</option>
+            <option value="app">应用</option>
+            <option value="audit">审计</option>
+          </select>
+          <select
+            value={levelInput}
+            onChange={(event) => setLevelInput(event.target.value as Level | "")}
+            className="field-input sm:w-32"
+            aria-label="日志级别"
+          >
+            <option value="">全部级别</option>
+            <option value="debug">DEBUG</option>
+            <option value="error">ERROR</option>
+            <option value="warning">WARNING</option>
+            <option value="info">INFO</option>
+          </select>
+          <input
+            value={categoryInput}
+            onChange={(event) => setCategoryInput(event.target.value)}
+            placeholder="分类（如 llm）"
+            className="field-input min-w-[150px] flex-1 sm:max-w-[220px]"
+          />
+          <input
+            value={eventInput}
+            onChange={(event) => setEventInput(event.target.value)}
+            placeholder="事件（模糊匹配）"
+            className="field-input min-w-[180px] flex-1 sm:max-w-[280px]"
+          />
+          <input
+            value={traceInput}
+            onChange={(event) => setTraceInput(event.target.value)}
+            placeholder="trace_id（精确匹配）"
+            className="field-input min-w-[180px] flex-1 font-mono sm:max-w-[280px]"
+          />
           <input
             type="number"
             min={1}
             max={720}
-            value={appHours ? appHours : auditHours}
-            onChange={(event) =>
-              tab === "audit"
-                ? setAuditHours(event.target.value)
-                : setAppHours(event.target.value)
-            }
-            className="field-input sm:w-28"
+            value={hoursInput}
+            onChange={(event) => setHoursInput(event.target.value)}
             placeholder="近 N 小时"
+            className="field-input sm:w-28"
           />
-          <Button variant="ghost" type="submit">
+          <Button type="submit" variant="ghost">
             <Icon name="search" className="h-3.5 w-3.5" />
             筛选
           </Button>
         </form>
-
         <div className="overflow-x-auto">
-          {tab === "audit" ? (
-            <table className="w-full min-w-[900px] text-left text-xs">
-              <thead className="bg-slate-50 text-slate-400">
-                <tr>
-                  <th className="px-4 py-3 font-medium">时间</th>
-                  <th className="px-4 py-3 font-medium">操作者</th>
-                  <th className="px-4 py-3 font-medium">动作</th>
-                  <th className="px-4 py-3 font-medium">资源</th>
-                  <th className="px-4 py-3 font-medium">变更字段</th>
-                  <th className="px-4 py-3 font-medium">结果</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {auditItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/60">
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-400">
-                      {formatTime(item.created_at)}
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      {item.actor_username ?? "-"}
-                    </td>
-                    <td className="px-4 py-3 font-mono text-slate-600">{item.action}</td>
-                    <td className="px-4 py-3 font-mono text-slate-500">
-                      {item.resource_type}
-                      {item.resource_id ? `#${item.resource_id}` : ""}
-                    </td>
-                    <td className="max-w-[220px] truncate px-4 py-3 text-slate-400">
-                      {item.fields.length ? item.fields.join("、") : "-"}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={item.result} fallback={item.result} />
-                    </td>
-                  </tr>
-                ))}
-                {!loading && auditItems.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-12 text-center text-slate-400">
-                      暂无审计记录
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          ) : (
-            <table className="w-full min-w-[900px] text-left text-xs">
-              <thead className="bg-slate-50 text-slate-400">
-                <tr>
-                  <th className="px-4 py-3 font-medium">时间</th>
-                  <th className="px-4 py-3 font-medium">级别</th>
-                  <th className="px-4 py-3 font-medium">用户</th>
-                  <th className="px-4 py-3 font-medium">事件</th>
-                  <th className="px-4 py-3 font-medium">消息</th>
-                  <th className="px-4 py-3 font-medium">traceId</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {appItems.map((item) => (
-                  <tr key={item.id} className="hover:bg-slate-50/60">
-                    <td className="whitespace-nowrap px-4 py-3 text-slate-400">
-                      {formatTime(item.created_at)}
-                    </td>
-                    <td className="px-4 py-3">
-                      <StatusBadge status={item.level} fallback={item.level} />
-                    </td>
-                    <td className="px-4 py-3 text-slate-600">{item.username ?? "-"}</td>
-                    <td className="px-4 py-3 font-mono text-slate-600">{item.event || "-"}</td>
-                    <td className="max-w-[320px] truncate px-4 py-3 text-slate-500">
+          <table className="w-full min-w-[1120px] text-left text-xs">
+            <thead className="bg-slate-50 text-slate-400">
+              <tr>
+                <th className="w-16 px-4 py-3 text-center font-medium">行号</th>
+                <th className="px-4 py-3 font-medium">级别</th>
+                <th className="px-4 py-3 font-medium">类型</th>
+                <th className="px-4 py-3 font-medium">来源 / 事件</th>
+                <th className="px-4 py-3 font-medium">trace_id</th>
+                <th className="px-4 py-3 font-medium">时间</th>
+                <th className="px-4 py-3 font-medium">消息</th>
+                <th className="w-24 px-4 py-3 text-right font-medium">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {items.map((item, index) => (
+                <tr key={item.id} className="hover:bg-slate-50/60">
+                  <td className="px-4 py-3 text-center text-slate-400">
+                    {(page - 1) * pageSize + index + 1}
+                  </td>
+                  <td className="px-4 py-3"><LevelBadge level={item.level} /></td>
+                  <td className="px-4 py-3">
+                    <span className="rounded-full border border-primary-ghost bg-primary-faint px-2 py-0.5 text-[10px] text-primary">
+                      {item.category || KIND_LABEL[item.kind]}
+                    </span>
+                  </td>
+                  <td className="max-w-[240px] truncate px-4 py-3 font-mono text-slate-600">
+                    <span className="mr-1.5 text-slate-400">{KIND_LABEL[item.kind]}</span>
+                    {item.event || "-"}
+                  </td>
+                  <td className="max-w-[240px] break-all px-4 py-3 font-mono text-[11px]">
+                    {item.request_id ? (
                       <button
                         type="button"
-                        onClick={() => setDetail(item)}
-                        title="查看上下文详情"
-                        className="max-w-full truncate text-left hover:text-primary"
+                        title="按此 trace_id 过滤"
+                        onClick={() => filterByTrace(item.request_id ?? "")}
+                        className="text-primary hover:underline"
                       >
-                        {item.message}
+                        {item.request_id}
                       </button>
-                    </td>
-                    <td className="max-w-[220px] break-all px-4 py-3 font-mono text-[11px] text-slate-500">
-                      {item.request_id ?? "-"}
-                    </td>
-                  </tr>
-                ))}
-                {!loading && appItems.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-12 text-center text-slate-400">
-                      暂无应用日志
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
+                    ) : <span className="text-slate-300">-</span>}
+                  </td>
+                  <td className="whitespace-nowrap px-4 py-3 text-slate-400">
+                    {formatTime(item.created_at)}
+                  </td>
+                  <td className="max-w-[320px] truncate px-4 py-3 text-slate-500">
+                    <span className="flex items-center gap-1.5">
+                      {item.duration_ms != null && (
+                        <span
+                          className="shrink-0 rounded bg-slate-100 px-1 py-0.5 font-mono text-[9px] text-slate-500"
+                          title="上游耗时"
+                        >
+                          {item.duration_ms >= 1000
+                            ? `${(item.duration_ms / 1000).toFixed(1)}s`
+                            : `${item.duration_ms}ms`}
+                        </span>
+                      )}
+                      {item.status_code != null && (
+                        <span
+                          className={`shrink-0 rounded px-1 py-0.5 font-mono text-[9px] ${
+                            item.status_code >= 400
+                              ? "bg-red-50 text-red-600"
+                              : "bg-slate-100 text-slate-500"
+                          }`}
+                          title="HTTP 状态码"
+                        >
+                          {item.status_code}
+                        </span>
+                      )}
+                      <span className="min-w-0 truncate">{item.message || "-"}</span>
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDetailEntryId(item.id);
+                        setDetailTitle(
+                          `${KIND_LABEL[item.kind]} · ${item.event || item.message.slice(0, 30)}`,
+                        );
+                      }}
+                      className="text-primary hover:underline"
+                    >
+                      查看详情
+                      {item.has_detail && (
+                        <span
+                          className="ml-1 inline-block h-1.5 w-1.5 rounded-full bg-primary align-middle"
+                          title="含详情信封"
+                        />
+                      )}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {loading && (
+                <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">加载中…</td></tr>
+              )}
+              {!loading && items.length === 0 && (
+                <tr><td colSpan={8} className="px-4 py-12 text-center text-slate-400">暂无日志</td></tr>
+              )}
+            </tbody>
+          </table>
         </div>
         <div className="flex justify-end border-t border-slate-100 px-4 py-3">
           <Pagination
@@ -305,52 +332,19 @@ export function LogsPage() {
         </div>
       </Card>
 
-      {detail && (
-        <Modal
-          title={`日志详情 · ${detail.level}`}
-          description={`${detail.event || "-"}${detail.logger ? ` · ${detail.logger}` : ""}`}
-          onClose={() => setDetail(null)}
-          width="max-w-2xl"
-        >
-          <div className="max-h-[70vh] space-y-4 overflow-y-auto p-5">
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs md:grid-cols-3">
-              <div>
-                <dt className="text-slate-400">时间</dt>
-                <dd className="mt-0.5 text-slate-600">{formatTime(detail.created_at)}</dd>
-              </div>
-              <div>
-                <dt className="text-slate-400">traceId</dt>
-                <dd className="mt-0.5 break-all font-mono text-slate-600">
-                  {detail.request_id ?? "-"}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-slate-400">关联</dt>
-                <dd className="mt-0.5 font-mono text-slate-600">
-                  {[
-                    detail.user_id ? `user:${detail.user_id}` : "",
-                    detail.task_id ? `task:${detail.task_id}` : "",
-                    detail.api_key_id ? `key:${detail.api_key_id}` : "",
-                    detail.connection_id ? `conn:${detail.connection_id}` : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ") || "-"}
-                </dd>
-              </div>
-            </dl>
-            <div className="rounded-lg border border-slate-100 bg-slate-50/60 p-3 text-xs text-slate-600">
-              {detail.message}
-            </div>
-            {detail.context && Object.keys(detail.context).length > 0 && (
-              <div>
-                <p className="mb-1.5 text-xs font-medium text-slate-400">上下文（已脱敏）</p>
-                <pre className="max-h-72 overflow-auto rounded-lg bg-slate-900/95 p-3 text-[11px] leading-relaxed text-slate-200">
-                  {JSON.stringify(detail.context, null, 2)}
-                </pre>
-              </div>
-            )}
-          </div>
-        </Modal>
+      {detailEntryId && (
+        <LogDetailModal
+          entryId={detailEntryId}
+          title={detailTitle}
+          onClose={() => {
+            setDetailEntryId(null);
+            setDetailTitle("");
+          }}
+          onFilterByTrace={(traceId) => {
+            setDetailEntryId(null);
+            filterByTrace(traceId);
+          }}
+        />
       )}
     </div>
   );

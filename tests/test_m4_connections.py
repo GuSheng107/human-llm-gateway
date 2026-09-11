@@ -379,6 +379,73 @@ def test_delete_blocked_while_enabled_api_key_references_connection(client, admi
     assert client.delete(f"/api/im-connections/{connection_id}", headers=headers).status_code == 204
 
 
+def test_delete_connection_with_message_history_succeeds(client, admin_headers) -> None:
+    """有投递/入站消息历史的连接也能删除（子行随连接清理，不再 IntegrityError）。"""
+    headers = _create_user(client, admin_headers, "conn-owner-history")
+    created = _create_connection(client, headers, name="with-history")
+    connection_id = int(created["id"])
+    with database.SessionLocal() as session:
+        session.add(
+            InboundReceipt(
+                connection_id=connection_id,
+                external_message_id="msg-1",
+                sender_fingerprint="fp",
+                payload_hash="hash",
+                result_code="accepted",
+            )
+        )
+        session.commit()
+
+    deleted = client.delete(f"/api/im-connections/{connection_id}", headers=headers)
+    assert deleted.status_code == 204, deleted.text
+    with database.SessionLocal() as session:
+        remaining = session.query(InboundReceipt).filter_by(connection_id=connection_id).count()
+    assert remaining == 0
+
+
+def test_wecom_aibot_config_change_clears_binding(client, admin_headers) -> None:
+    """企微 Bot 编辑保存新配置后：绑定清空、停止运行，必须重新绑定才能启用。"""
+    headers = _create_user(client, admin_headers, "conn-owner-aibot")
+    created = _create_connection(
+        client,
+        headers,
+        name="aibot",
+        platform="wecom_aibot",
+        config={"bot_id": "bot-1", "secret": "secret-1"},
+    )
+    connection_id = int(created["id"])
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "external-user-1"
+        row.desired_running = True
+        session.commit()
+
+    updated = client.patch(
+        f"/api/im-connections/{connection_id}",
+        headers=headers,
+        json={"config": {"bot_id": "bot-2"}},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["bound"] is False
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.bound_external_user_id is None
+        assert row.desired_running is False
+
+    # 配置未变化（提交相同值）则不清除绑定。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "external-user-1"
+        session.commit()
+    unchanged = client.patch(
+        f"/api/im-connections/{connection_id}",
+        headers=headers,
+        json={"name": "aibot-renamed"},
+    )
+    assert unchanged.status_code == 200
+    assert unchanged.json()["bound"] is True
+
+
 def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
     client, admin_headers, monkeypatch
 ) -> None:
@@ -720,6 +787,20 @@ def test_websocket_rejects_oversized_message(client, admin_headers, monkeypatch)
             websocket.receive_text()
         assert disconnected.value.code == 1009
 
+    logs = client.get(
+        "/api/logs?category=http&event=http.access",
+        headers=admin_headers,
+    )
+    assert logs.status_code == 200
+    websocket_log = next(
+        item
+        for item in logs.json()["items"]
+        if item["context"]
+        and item["context"].get("kind") == "ws"
+        and item["context"].get("path", "").startswith("/connectors/ws/")
+    )
+    assert websocket_log["request_id"]
+
 
 def test_watchdog_check_disables_abnormal_enabled_connection(client, admin_headers) -> None:
     from app.domain.enums import ConnectionState
@@ -843,6 +924,7 @@ def _seed_key_and_task(
             owner_user_id=owner_user_id,
             api_key_id=key.id,
             api_key_prefix_snapshot=key.key_prefix,
+            api_key_name_snapshot=key.name,
             requested_model="deepseek-v4-pro",
             protocol=InferenceProtocol.OPENAI_CHAT,
             raw_payload_json='{"messages":[{"role":"user","content":"你好"}]}',

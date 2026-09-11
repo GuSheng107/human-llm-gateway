@@ -2,6 +2,7 @@ import { useState } from "react";
 import Cropper, { type Area } from "react-easy-crop";
 import { Modal } from "../../components/feedback/Modal";
 import { Button } from "../../components/ui/Button";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 export type AvatarCropShape = "round" | "rect";
 
@@ -88,7 +89,7 @@ export function AvatarCropModal({ image, onClose, onConfirm }: Props) {
       const source = await loadImage(image);
       await onConfirm(await renderAvatarPng(source, pixels, shape));
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "头像处理失败");
+      setError(friendlyErrorMessage(caught, "头像处理失败"));
     } finally {
       setSaving(false);
     }

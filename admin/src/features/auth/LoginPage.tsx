@@ -9,6 +9,7 @@ import { PasswordInput } from "../../components/form/PasswordInput";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { useAuth } from "./AuthContext";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const PARTICLES = [
   { left: "6%", top: "18%", size: 6, delay: "0s", duration: "7s" },
@@ -50,7 +51,7 @@ export function LoginPage() {
       setUser(user);
       navigate(result.must_change_password ? "/change-password" : "/console", { replace: true });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "登录失败");
+      setError(friendlyErrorMessage(caught, "登录失败"));
       setCaptchaCode("");
       setCaptchaKey((key) => key + 1);
     } finally {

@@ -5,9 +5,8 @@
 - `human_fallback_llm` 策略：人工等待超时后通过 claim_fallback 原子声明
   一次转发权（WAITING_HUMAN -> FORWARDING_LLM），失败即终态 TIMED_OUT，
   不重试。
-- 仅同协议转发（Chat/Responses -> openai_chat；Anthropic -> anthropic）；
-  跨协议返回 400 `unsupported_parameter`（完整字段矩阵见 docs/API_CONTRACT.md
-  §12.6，跨协议转换在后续阶段逐项开放）。
+- 同协议保留原始字段；跨协议按字段矩阵等价转换，不能等价的参数返回
+  400 `unsupported_parameter`（docs/API_CONTRACT.md §12.6）。
 - 身份 system 指令：从 Fake Model description 派生，追加在调用方已有
   system 内容之后（§12.4 请求保真）。
 - 上游响应解析为统一 ReplyDraft；响应 model 由既有渲染器改写为 Fake Model。
@@ -16,12 +15,14 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.constants import LLM_DEFAULT_MAX_TOKENS
+from ..core.logging import log_event
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -60,6 +61,40 @@ _IDENTITY_FALLBACK = (
 )
 
 
+def _response_status_code(payload: dict[str, Any]) -> int:
+    """Extract an optional status from an annotated payload; HTTP success defaults to 200."""
+    for key in ("status_code", "http_status"):
+        value = payload.get(key)
+        if isinstance(value, int) and 100 <= value <= 599:
+            return value
+        if isinstance(value, str) and value.isdigit() and 100 <= int(value) <= 599:
+            return int(value)
+    return 200
+
+
+def _duration_ms(started_at: float) -> float:
+    return round((time.monotonic() - started_at) * 1000, 1)
+
+
+# ----------------------------------------------------------------------
+# 转发链路日志详情（§11.5）：同一 request_id 下的完整脱敏诊断链路
+# ----------------------------------------------------------------------
+
+
+def _fwd_detail(
+    sections: list[dict[str, Any]],
+    links: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {"category": "llm_forward", "sections": sections, "links": links or []}
+
+
+def _decision_section(reason: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    data: dict[str, Any] = {"reason": reason}
+    if extra:
+        data.update(extra)
+    return {"key": "decision", "title": "转发决策", "format": "json", "data": data}
+
+
 def identity_system_message(fake_model: FakeModel | None, model_id: str) -> str:
     """从 Fake Model description 派生身份 system 指令（§12.4）。
 
@@ -77,9 +112,14 @@ def _inject_identity_chat(body: dict[str, Any], identity: str) -> dict[str, Any]
     messages = list(body.get("messages") or [])
     for index, message in enumerate(messages):
         if message.get("role") == "system":
+            content = message.get("content")
             merged = {
                 **message,
-                "content": f"{message.get('content') or ''}\n\n{identity}",
+                "content": (
+                    [*content, {"type": "text", "text": identity}]
+                    if isinstance(content, list)
+                    else f"{content or ''}\n\n{identity}"
+                ),
             }
             messages[index] = merged
             return {**body, "messages": messages}
@@ -131,6 +171,12 @@ class LlmForwardService:
                 "LLM 配置已删除，无法转发",
                 status_code=500,
             )
+        if not cfg.is_enabled:
+            raise DomainError(
+                DomainErrorCode.UPSTREAM_ERROR,
+                "LLM 配置已停用，无法转发",
+                status_code=500,
+            )
         fake_model = session.get(FakeModel, task.fake_model_id) if task.fake_model_id else None
         return cfg, fake_model
 
@@ -163,9 +209,35 @@ class LlmForwardService:
     async def _forward_inner(
         self, session: Session, task: RequestTask, *, reason: str, stream: bool
     ) -> tuple[bool, Any, str | None]:
-        """转发内核：声明 -> 上游（流式/非流式）-> 原子接受。"""
+        """转发内核：声明 -> 上游（流式/非流式）-> 原子接受。
+
+        后台 fallback 无 HTTP ContextVar 时，从 RequestTask.request_id 恢复并
+        bind_trace_id，使整条转发链共享同一 trace（§11.5）。
+        """
+        from ..core.logging import bind_trace_id, get_request_id, reset_request_id
+
+        bound_token = None
+        if get_request_id() is None:
+            bound_token = bind_trace_id(task.request_id)
+        try:
+            return await self._forward_inner_bound(session, task, reason=reason, stream=stream)
+        finally:
+            if bound_token is not None:
+                reset_request_id(bound_token)
+
+    async def _forward_inner_bound(
+        self, session: Session, task: RequestTask, *, reason: str, stream: bool
+    ) -> tuple[bool, Any, str | None]:
         # 原子声明转发权：WAITING_HUMAN -> FORWARDING_LLM（唯一入口）。
         if not self.tasks.claim_fallback(session, task.id):
+            log_event(
+                "warning",
+                "llm.forward_claim_lost",
+                "LLM 转发声明拒绝（任务已被他人裁决）",
+                task_id=task.id,
+                reason=reason,
+                detail=_fwd_detail([_decision_section(reason)]),
+            )
             return False, None, "claim_lost"
         session.commit()
         self._event(
@@ -176,14 +248,74 @@ class LlmForwardService:
             {"reason": reason},
         )
         session.commit()
+        log_event(
+            "info",
+            "llm.forward_claimed",
+            "LLM 转发已声明（任务切换到 FORWARDING_LLM）",
+            task_id=task.id,
+            reason=reason,
+            stream=stream,
+            detail=_fwd_detail([_decision_section(reason, {"stream": stream})]),
+        )
 
         try:
-            cfg, fake_model = self.resolve_config(session, task)
-            if stream:
-                chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
-            else:
-                draft = await self._call_upstream(session, task, cfg, fake_model)
+            import asyncio
+
+            from ..core.constants import LLM_MAX_STREAM_SECONDS
+
+            # httpx 的 timeout 只限制单次 I/O；流式和非流式都须有总预算。
+            async with asyncio.timeout(LLM_MAX_STREAM_SECONDS):
+                cfg, fake_model = self.resolve_config(session, task)
+                if stream:
+                    chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
+                else:
+                    draft = await self._call_upstream(session, task, cfg, fake_model)
+        except TimeoutError:
+            log_event(
+                "warning",
+                "llm.forward_timeout",
+                "LLM 转发总时长超限",
+                task_id=task.id,
+                detail=_fwd_detail(
+                    [
+                        _decision_section(reason, {"stream": stream}),
+                        {
+                            "key": "timeout",
+                            "title": "超时",
+                            "format": "json",
+                            "data": {
+                                "limit_seconds": LLM_MAX_STREAM_SECONDS,
+                                "stream": stream,
+                            },
+                        },
+                    ]
+                ),
+            )
+            return False, None, DomainErrorCode.REQUEST_TIMEOUT.value
         except DomainError as exc:
+            log_event(
+                "warning",
+                "llm.forward_failed",
+                "LLM 转发期间失败",
+                task_id=task.id,
+                reason=reason,
+                error_code=exc.code.value,
+                detail=_fwd_detail(
+                    [
+                        _decision_section(reason, {"stream": stream}),
+                        {
+                            "key": "upstream_error",
+                            "title": "上游错误",
+                            "format": "json",
+                            "data": {
+                                "error_code": exc.code.value,
+                                "message": str(exc),
+                                "status_code": getattr(exc, "status_code", None),
+                            },
+                        },
+                    ]
+                ),
+            )
             return False, None, exc.code.value
 
         if stream:
@@ -197,6 +329,41 @@ class LlmForwardService:
                 tool_calls=summary["tool_calls"],
                 final_text=summary["final_text"],
             )
+
+        # 协议重写前的结构检查：上游返回的 Tool Call 必须命中调用方当前请求
+        # 声明的 Caller Tool（名称/参数 Schema/ID 唯一）。不满足按转发失败，
+        # 绝不静默丢弃或把未声明工具回传给调用方（§8.1 / §8.3）。
+        if draft.tool_calls:
+            from .caller_tool_service import catalog_for_task, validate_structural
+
+            try:
+                validate_structural(
+                    catalog_for_task(task), [c.model_dump() for c in draft.tool_calls]
+                )
+            except DomainError:
+                log_event(
+                    "warning",
+                    "llm.forward_failed",
+                    "上游返回的 Tool Call 未通过 Caller Tool 校验",
+                    task_id=task.id,
+                    reason=reason,
+                    error_code="generated_tool_calls_invalid",
+                    detail=_fwd_detail(
+                        [
+                            _decision_section(reason, {"stream": stream}),
+                            {
+                                "key": "validation_error",
+                                "title": "Caller Tool 校验失败",
+                                "format": "json",
+                                "data": {
+                                    "error_code": "generated_tool_calls_invalid",
+                                    "tool_call_count": len(draft.tool_calls),
+                                },
+                            },
+                        ]
+                    ),
+                )
+                return False, None, "generated_tool_calls_invalid"
 
         payload = draft.model_dump_json(exclude_none=True)
         # 不依赖 ORM 缓存版本：以 claim 后的 DB 实际版本为准（SQLite RETURNING
@@ -212,6 +379,14 @@ class LlmForwardService:
             response_payload_json=payload,
         )
         if not accepted:
+            log_event(
+                "warning",
+                "llm.forward_reply_lost",
+                "LLM 转发完成后人工已获胜，回复被丢弃",
+                task_id=task.id,
+                reason=reason,
+                detail=_fwd_detail([_decision_section(reason, {"stream": stream})]),
+            )
             return False, None, "reply_lost"
         self._event(
             session,
@@ -228,6 +403,28 @@ class LlmForwardService:
             actor_user_id=task.owner_user_id,
             owner_user_id=task.owner_user_id,
             metadata={"reason": reason, "fields": ["response_payload"]},
+        )
+        log_event(
+            "info",
+            "llm.forward_completed",
+            "LLM 转发完成并被接受",
+            task_id=task.id,
+            reason=reason,
+            detail=_fwd_detail(
+                [
+                    _decision_section(reason, {"stream": stream}),
+                    {
+                        "key": "result_summary",
+                        "title": "结果摘要",
+                        "format": "json",
+                        "data": {
+                            "has_reasoning": bool(draft.reasoning),
+                            "tool_call_count": len(draft.tool_calls),
+                            "final_text_length": len(draft.final_text or ""),
+                        },
+                    },
+                ]
+            ),
         )
         session.commit()
         return True, draft, None
@@ -304,35 +501,140 @@ class LlmForwardService:
         cfg: LlmConfig,
         fake_model: FakeModel | None,
     ) -> ReplyDraft:
-        secret = _decrypt_config(cfg)
+        started_at = time.monotonic()
+        fields = {
+            "task_id": task.id,
+            "protocol": cfg.protocol.value,
+            "model": cfg.real_model,
+            "endpoint": llm_upstream.endpoint_label(cfg.base_url, cfg.protocol),
+            "stream": False,
+        }
         try:
-            normalized = json.loads(task.normalized_request_json or "{}")
-        except (ValueError, json.JSONDecodeError):
-            normalized = {}
-        body = self.build_upstream_request(task, cfg, fake_model, normalized)
-        if cfg.protocol is LLMProtocol.OPENAI_CHAT:
-            upstream = await llm_upstream.post_chat_completions(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
+            secret = _decrypt_config(cfg)
+            try:
+                normalized = json.loads(task.normalized_request_json or "{}")
+            except (ValueError, json.JSONDecodeError):
+                normalized = {}
+            body = self.build_upstream_request(task, cfg, fake_model, normalized)
+            try:
+                inbound_raw = json.loads(task.raw_payload_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                inbound_raw = None
+            log_event(
+                "info",
+                "llm.upstream.request",
+                "开始调用上游 LLM",
+                **fields,
+                detail=_fwd_detail(
+                    [
+                        {
+                            "key": "inbound_request",
+                            "title": "入站请求（脱敏）",
+                            "format": "json",
+                            "data": inbound_raw
+                            if isinstance(inbound_raw, dict)
+                            else {"raw_unavailable": True},
+                        },
+                        {
+                            "key": "conversion",
+                            "title": "转换说明",
+                            "format": "json",
+                            "data": {
+                                "inbound_protocol": task.protocol.value,
+                                "outbound_protocol": cfg.protocol.value,
+                                "fake_model": task.requested_model,
+                                "real_model": cfg.real_model,
+                                "identity_injected": True,
+                                "stream": False,
+                            },
+                        },
+                        {
+                            "key": "upstream_request",
+                            "title": "上游请求（脱敏）",
+                            "format": "json",
+                            "data": body,
+                        },
+                    ]
+                ),
             )
-            return _parse_chat_response(upstream)
-        if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
-            upstream = await llm_upstream.post_responses(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
+            if cfg.protocol is LLMProtocol.OPENAI_CHAT:
+                upstream = await llm_upstream.post_chat_completions(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+                result = _parse_chat_response(upstream)
+            elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                upstream = await llm_upstream.post_responses(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+                result = _parse_responses_response(upstream)
+            else:
+                upstream = await llm_upstream.post_anthropic_messages(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                )
+                result = _parse_anthropic_response(upstream)
+        except DomainError as exc:
+            log_event(
+                "warning",
+                "llm.upstream.error",
+                "上游 LLM 调用失败",
+                **fields,
+                error_code=exc.code.value,
+                status_code=exc.status_code,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
             )
-            return _parse_responses_response(upstream)
-        upstream = await llm_upstream.post_anthropic_messages(
-            base_url=cfg.base_url,
-            api_key=secret,
-            request_body=body,
-            timeout_seconds=cfg.timeout_seconds,
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                "llm.upstream.error",
+                "上游 LLM 调用异常",
+                **fields,
+                error_code=exc.__class__.__name__,
+                status_code=500,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
+            )
+            raise
+        log_event(
+            "info",
+            "llm.upstream.response",
+            "上游 LLM 调用成功",
+            **fields,
+            status_code=_response_status_code(upstream),
+            duration_ms=_duration_ms(started_at),
+            usage=upstream.get("usage") or {},
+            detail=_fwd_detail(
+                [
+                    {
+                        "key": "status",
+                        "title": "状态",
+                        "format": "json",
+                        "data": {
+                            "status_code": _response_status_code(upstream),
+                            "duration_ms": _duration_ms(started_at),
+                            "stream": False,
+                        },
+                    },
+                    {
+                        "key": "response_body",
+                        "title": "上游响应（脱敏）",
+                        "format": "json",
+                        "data": upstream,
+                    },
+                ]
+            ),
         )
-        return _parse_anthropic_response(upstream)
+        return result
 
     async def _call_upstream_stream(
         self,
@@ -344,37 +646,159 @@ class LlmForwardService:
         """流式接收上游增量（UpstreamChunk 列表），由内核统一聚合接受。"""
         from ..services.llm_upstream import UpstreamChunk
 
-        secret = _decrypt_config(cfg)
+        started_at = time.monotonic()
+        fields = {
+            "task_id": task.id,
+            "protocol": cfg.protocol.value,
+            "model": cfg.real_model,
+            "endpoint": llm_upstream.endpoint_label(cfg.base_url, cfg.protocol),
+            "stream": True,
+        }
         try:
-            normalized = json.loads(task.normalized_request_json or "{}")
-        except (ValueError, json.JSONDecodeError):
-            normalized = {}
-        body = self.build_upstream_request(task, cfg, fake_model, normalized)
-        chunks: list[UpstreamChunk] = []
-        if cfg.protocol is LLMProtocol.OPENAI_CHAT:
-            async for chunk in llm_upstream.stream_chat_completions(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
-            ):
-                chunks.append(chunk)
-        elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
-            async for chunk in llm_upstream.stream_responses(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
-            ):
-                chunks.append(chunk)
-        else:
-            async for chunk in llm_upstream.stream_anthropic_messages(
-                base_url=cfg.base_url,
-                api_key=secret,
-                request_body=body,
-                timeout_seconds=cfg.timeout_seconds,
-            ):
-                chunks.append(chunk)
+            secret = _decrypt_config(cfg)
+            try:
+                normalized = json.loads(task.normalized_request_json or "{}")
+            except (ValueError, json.JSONDecodeError):
+                normalized = {}
+            body = self.build_upstream_request(task, cfg, fake_model, normalized)
+            try:
+                inbound_raw = json.loads(task.raw_payload_json)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                inbound_raw = None
+            log_event(
+                "info",
+                "llm.upstream.request",
+                "开始调用上游 LLM",
+                **fields,
+                detail=_fwd_detail(
+                    [
+                        {
+                            "key": "inbound_request",
+                            "title": "入站请求（脱敏）",
+                            "format": "json",
+                            "data": inbound_raw
+                            if isinstance(inbound_raw, dict)
+                            else {"raw_unavailable": True},
+                        },
+                        {
+                            "key": "conversion",
+                            "title": "转换说明",
+                            "format": "json",
+                            "data": {
+                                "inbound_protocol": task.protocol.value,
+                                "outbound_protocol": cfg.protocol.value,
+                                "fake_model": task.requested_model,
+                                "real_model": cfg.real_model,
+                                "identity_injected": True,
+                                "stream": True,
+                            },
+                        },
+                        {
+                            "key": "upstream_request",
+                            "title": "上游请求（脱敏）",
+                            "format": "json",
+                            "data": body,
+                        },
+                    ]
+                ),
+            )
+            chunks: list[UpstreamChunk] = []
+            if cfg.protocol is LLMProtocol.OPENAI_CHAT:
+                async for chunk in llm_upstream.stream_chat_completions(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                ):
+                    chunks.append(chunk)
+            elif cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                async for chunk in llm_upstream.stream_responses(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                ):
+                    chunks.append(chunk)
+            else:
+                async for chunk in llm_upstream.stream_anthropic_messages(
+                    base_url=cfg.base_url,
+                    api_key=secret,
+                    request_body=body,
+                    timeout_seconds=cfg.timeout_seconds,
+                ):
+                    chunks.append(chunk)
+        except DomainError as exc:
+            log_event(
+                "warning",
+                "llm.upstream.error",
+                "上游 LLM 流式调用失败",
+                **fields,
+                error_code=exc.code.value,
+                status_code=exc.status_code,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
+            )
+            raise
+        except Exception as exc:
+            log_event(
+                "error",
+                "llm.upstream.error",
+                "上游 LLM 流式调用异常",
+                **fields,
+                error_code=exc.__class__.__name__,
+                status_code=500,
+                error=exc.__class__.__name__,
+                duration_ms=_duration_ms(started_at),
+            )
+            raise
+        status_code = next(
+            (
+                getattr(chunk, "status_code", None)
+                for chunk in chunks
+                if getattr(chunk, "status_code", None)
+            ),
+            200,
+        )
+        log_event(
+            "info",
+            "llm.upstream.response",
+            "上游 LLM 流式调用成功",
+            **fields,
+            status_code=status_code,
+            duration_ms=_duration_ms(started_at),
+            detail=_fwd_detail(
+                [
+                    {
+                        "key": "status",
+                        "title": "状态",
+                        "format": "json",
+                        "data": {
+                            "status_code": status_code,
+                            "duration_ms": _duration_ms(started_at),
+                            "stream": True,
+                            "chunk_count": len(chunks),
+                        },
+                    },
+                    {
+                        "key": "upstream_stream",
+                        "title": "上游流事件",
+                        "format": "jsonl",
+                        "data": "\n".join(
+                            json.dumps(
+                                {
+                                    "text": getattr(chunk, "text", ""),
+                                    "reasoning": getattr(chunk, "reasoning", ""),
+                                    "tool_call": getattr(chunk, "tool_call", None),
+                                    "status_code": getattr(chunk, "status_code", None),
+                                },
+                                ensure_ascii=False,
+                            )
+                            for chunk in chunks
+                        ),
+                    },
+                ]
+            ),
+        )
         return chunks
 
     # ------------------------------------------------------------------

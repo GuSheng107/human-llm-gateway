@@ -323,9 +323,9 @@ stateDiagram-v2
 协议层为每种请求生成两个表示：
 
 1. `raw_payload`：调用方原始 JSON，完整落库并用于同协议保真转发。
-2. `normalized_request`：模型、消息文本、tools、stream 等标准语义，用于展示、人工编辑和跨协议转换。
+2. `normalized_request`：模型、消息文本、tools、stream 等标准语义，用于展示、人工编辑和跨协议转换。`context` 是展示和推理的唯一展开来源；Chat/Anthropic 的 `messages`、Responses 的 `input` 仅作为原始诊断保留，不再次拼接。
 
-人工回复使用第三个统一表示 `normalized_reply`，包含 reasoning、tool calls 和 final text。Web 编辑器直接读写该结构；IM DSL 只负责把文本解析为同一结构；三个协议渲染器只从该结构生成 JSON/SSE。提交成功后结构不可撤销或覆盖。
+人工回复使用第三个统一表示 `normalized_reply`，包含 reasoning、tool calls 和 final text。Web 编辑器直接读写该结构；IM 回复当前为纯文本语义，整段正文作为 final text 写入同一结构（富文本回复后续迭代重构）；三个协议渲染器只从该结构生成 JSON/SSE。工具调用名称必须命中请求声明，参数必须是 JSON 对象并通过声明 Schema 校验；服务端按顺序生成 `call_01`、`call_02` 等 ID。提交成功后结构不可撤销或覆盖。
 
 未知字段保留在原始表示中。同协议默认原样透传；`previous_response_id` 等声明为网关控制的字段由服务层验证并等价展开。跨协议严格执行字段转换矩阵，无法等价表达的供应商专有字段返回 400，不能静默删除。
 
@@ -376,7 +376,7 @@ handle_inbound(platform_message)
 1. 解密当前用户的配置 Secret。
 2. 判断同协议透传或跨协议转换。
 3. 在原调用方 system 内容之后追加服务端身份指令。
-4. 保留调用方提供的 tools 和未知字段，不授予任何执行权限；按契约处理已声明的网关控制字段。
+4. 保留调用方提供的 tools 和未知字段，不授予任何执行权限；按契约处理已声明的网关控制字段。工作台显式选择工具时按选择顺序重建完整工具定义，未选工具不会进入上游；上游草稿在落库前再次校验数量、顺序、名称和参数 Schema。
 5. 调用真实 LLM，实施连接/读取/总超时。
 6. 改写响应模型标识为 Fake Model。
 7. 保存事件、用量摘要和脱敏错误。
@@ -405,7 +405,9 @@ flowchart LR
     API <--> Store
 ```
 
-未来加入系统工具时，工具注册、管理员白名单、用户权限检查、写操作确认和审计必须位于独立 ToolExecutionService；不能让上游任意 tool name 映射到本地命令。
+用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。网关只做名称校验和结果透传，不执行 tool。
+
+小助手会话创建必须绑定当前用户的启用 LLM 配置。没有可用个人配置时，前端禁用发送和新建会话；历史会话仍可阅读。历史会话绑定的配置停用或删除后不自动改绑，只读处理。
 
 ## 11. 数据一致性与并发
 
@@ -433,22 +435,25 @@ SQLite 阶段对关键写事务使用短事务和 `BEGIN IMMEDIATE`；网络、I
 
 ### 12.2 结构化日志
 
-所有日志使用统一结构，至少包含：`timestamp`、`level`、`event`、`request_id`、`user_id`、`task_id`、`api_key_id`、`connection_id`。缺失字段省略，不写空的伪值。
+所有日志使用统一结构，至少包含：`timestamp`、`level`、`event`、`request_id`、`user_id`、`task_id`、`api_key_id`、`connection_id`。缺失字段省略，不写空的伪值；结构化字段进入脱敏 `context_json`，统一日志查询返回为 `context`。
 
 日志只记录资源 ID、凭据前缀、供应商类型和脱敏错误类别，不记录完整请求 Secret、Authorization、Cookie、二维码或完整上游响应。
 
+HTTP 和 WebSocket 请求进入应用时绑定 trace。访问日志忽略 `/healthz`、`/readyz`、根路径、静态资源和日志查询路径。任务创建时保存入站 trace 到 `request_tasks.origin_trace_id`，任务详情可跳转日志页。LLM 转发记录 request/response/error；IM 回复记录 `im.reply_submitted` / `im.reply_rejected`；小助手上游调用记录 endpoint、model、stream、duration 和 usage，流式回复落库后记录 `assistant.reply_persisted`。
+
 ### 12.3 审计
 
-用户、邀请码、连接、API Key、LLM 配置、Fake Model、任务回复、fallback、管理员治理和未来工具执行都写入不可由普通用户修改的审计事件。动作使用稳定枚举；管理员可以看到操作者、动作、资源 ID、所有者、时间、结果和发生变更的字段名，但审计不保存请求正文、字段值、Secret 的旧值或新值及任何可恢复凭据的材料。
+用户、邀请码、连接、API Key、LLM 配置、Fake Model、任务回复、fallback、管理员治理和工具调用治理都写入不可由普通用户修改的审计事件。动作使用稳定枚举；管理员可以看到操作者、动作、资源 ID、所有者、时间、结果和发生变更的字段名，但审计不保存请求正文、字段值、Secret 的旧值或新值及任何可恢复凭据的材料。
 
 管理员账号不通过后台 API 创建或提升。首次管理员来自部署环境，后续管理员通过受控 CLI 创建；CLI 复用同一用户服务和审计，并拒绝禁用最后一个有效管理员。
 
 ## 13. 部署与运维架构
 
-- `/healthz` 只表示进程存活，不访问数据库或连接器。
+- `/healthz` 只表示进程存活，不检查数据库、连接器或工具执行状态。
 - `/readyz` 固定 5 项就绪条件，全部满足才返回 200：①应用 startup 已完成；②数据库初始化、`schema_version` 校验和启动阶段写入成功；③主加密密钥加载成功并能解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）；④三个协议 adapter/renderer registry 初始化成功；⑤任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。未满足时返回 503。
 - `/readyz` 不检查任何用户 IM 是否在线、不检查真实 LLM 连通、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
 - `/readyz` 本身不执行数据库、IM 或真实 LLM 探测，只读取启动缓存和后台协调器任务状态，避免 Kubernetes 每 5-10 秒的 readiness probe 与 SQLite 全库写锁产生高频竞争。
+- 用户可以使用调用方声明的 tool；若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。`/readyz` 不检查工具执行状态。
 - `/metrics` 使用 Prometheus exposition format，只暴露低基数指标；标签只允许有限枚举，禁止 `user_id`、`api_key_id`、`task_id`、`connection_id`、`model`、`base_url`、`error_message` 出现在 label 中。
 - SQLite 备份使用在线备份 API 或经过验证的 `VACUUM INTO` 流程，不在 WAL 写入期间直接复制单个数据库文件；发布前必须验证恢复。
 - 应用日志优先输出结构化 stderr，由 Docker、systemd 或部署平台轮转；数据库日志按保留期清理。
@@ -469,6 +474,8 @@ ROADMAP 的阶段编号是产品交付顺序，不代表所有前端开发严格
 
 - 普通 IM 连接接口只返回当前用户资源；管理员通过独立监管接口查看全部连接。
 - 回复工作台使用 `TaskInboxState` 保存未读和最后事件游标，任务对话由规范化请求按需投影。
+- 工作台只从规范化 `context` 投影一次对话；系统指令和 Agent 包裹内容标记为 technical 并默认折叠，用户正文标记为 content；图片统一为可渲染 URL，加载失败仍保留来源和地址。
+- 任务标题使用 `api_key_name_snapshot + requested_model`，不依赖会变化的 API Key 名称。
 - 日志、审计、HTTP 访问和看门狗事件共享 trace；高频运行数据按七日策略清理。
 - 管理台由 FastAPI 直接托管构建后的 `admin/dist`，生产入口为 `app.api:app`。
 
@@ -479,9 +486,11 @@ ROADMAP 的阶段编号是产品交付顺序，不代表所有前端开发严格
 - Fake Model 不引用 LLM 配置，LLM 配置也不发布为 Fake Model。
 - 用户私有 Fake Model 不会出现在其他用户或其 API Key 的候选集中。
 - 模型分组和 API Key 显式选择都只能收窄用户可见模型集合。
+- 管理员创建的模型分组公开，普通用户创建的分组私有；普通用户只能通过自己模型的 `group_ids` 加入自己的或公开分组，不能整体覆盖分组成员。
+- 工作台向前端返回完整的调用方工具定义；选中工具时前端依据 JSON Schema 递归生成包含全部声明属性的可编辑参数骨架，不编造业务示例值。
 - 所有推理请求保留完整原始 payload。
 - 同协议未知字段原样保留，网关控制字段和跨协议字段严格遵循契约矩阵。
-- IM DSL 与 Web 编辑器生成完全相同的规范化回复结构，提交后不可撤销。
+- IM 回复（纯文本）与 Web 编辑器生成完全相同的规范化回复结构，提交后不可撤销。
 - 邀请码、任务名额、首个回复和 fallback 有数据库原子测试。
 - 禁用用户会终止活动任务并幂等释放全部名额。
 - 人工伪流式在完整回复持久化之后开始。

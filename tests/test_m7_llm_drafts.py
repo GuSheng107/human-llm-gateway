@@ -50,7 +50,15 @@ def _create_llm_config(client, headers: dict[str, str], body: dict[str, Any]) ->
     return resp.json()
 
 
-def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hello") -> int:
+def _make_waiting_task(
+    client,
+    key_id: int,
+    user_id: int,
+    *,
+    content: str = "hello",
+    tool_names: list[str] | None = None,
+    tools: list[dict[str, Any]] | None = None,
+) -> int:
     """直接经编排服务创建一个 WAITING_HUMAN 任务（与 test_m6_tasks 同样的方式）。"""
     import app.core.db as database
     from app.domain.enums import InferenceProtocol
@@ -58,7 +66,20 @@ def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hel
     from app.repositories.models import ApiKey, User
     from app.services.inference_service import InferenceService
 
-    payload = {"model": "deepseek-v4-pro", "messages": [{"role": "user", "content": content}]}
+    payload: dict[str, Any] = {
+        "model": "deepseek-v4-pro",
+        "messages": [{"role": "user", "content": content}],
+    }
+    if tools is not None:
+        payload["tools"] = tools
+    elif tool_names:
+        payload["tools"] = [
+            {
+                "type": "function",
+                "function": {"name": name, "description": name, "parameters": {"type": "object"}},
+            }
+            for name in tool_names
+        ]
     raw = json.dumps(payload).encode()
     parsed = chat_protocol.parse_request(raw)
     with database.SessionLocal() as session:
@@ -85,7 +106,7 @@ def _make_waiting_task(client, key_id: int, user_id: int, *, content: str = "hel
 
 def test_generate_chat_with_openai_chat_llm(client, created_user, created_key) -> None:
     task_id = _make_waiting_task(
-        client, created_key.id, created_user.user_id, content="hello world"
+        client, created_key.id, created_user.user_id, content="hello world", tool_names=["search"]
     )
     cfg = _create_llm_config(
         client,
@@ -135,6 +156,170 @@ def test_generate_chat_with_openai_chat_llm(client, created_user, created_key) -
     assert body["tool_calls"][0]["arguments"] == {"q": "weather"}
 
 
+def test_generate_preserves_declared_tools_and_caller_tool_call_id(
+    client, created_user, created_key
+) -> None:
+    """草稿生成保留调用方声明的工具，上游返回的 Tool Call 保留其 ID。"""
+    search_tool = {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "description": "搜索天气",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    lookup_tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "description": "查询天气",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    task_id = _make_waiting_task(
+        client,
+        created_key.id,
+        created_user.user_id,
+        tools=[search_tool, lookup_tool],
+    )
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "查询结果",
+                        "tool_calls": [
+                            {
+                                "id": "upstream-arbitrary-id",
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"city":"北京"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"])},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    # 调用方 ID 保留，不服务端重排。
+    assert body["tool_calls"] == [
+        {"id": "upstream-arbitrary-id", "name": "lookup", "arguments": {"city": "北京"}}
+    ]
+    # 请求声明的两个工具都保留（不因选择而裁剪）。
+    sent_tool_names = [
+        (t.get("function") or {}).get("name", t.get("name"))
+        for t in captured["body"].get("tools") or []
+    ]
+    assert set(sent_tool_names) == {"search", "lookup"}
+
+
+def test_generate_reasoning_mode_strips_tools_from_upstream(
+    client, created_user, created_key
+) -> None:
+    """reasoning 模式不向上游提供工具（避免上游返回工具调用）。"""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "search",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, tools=[tool])
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {"choices": [{"message": {"role": "assistant", "content": "只输出推理"}}]}
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "reasoning"},
+        )
+    assert resp.status_code == 201, resp.text
+    assert "tools" not in captured["body"]
+    assert "tool_choice" not in captured["body"]
+    assert resp.json()["tool_calls"] == []
+
+
+def test_generate_rejects_tool_arguments_that_break_declared_schema(
+    client, created_user, created_key
+) -> None:
+    """上游返回参数违反声明 Schema 时，草稿不得落库（502）。"""
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "lookup",
+            "parameters": {
+                "type": "object",
+                "properties": {"city": {"type": "string"}},
+                "required": ["city"],
+                "additionalProperties": False,
+            },
+        },
+    }
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, tools=[tool])
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "lookup",
+                                    "arguments": '{"city": 123}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "both"},
+        )
+    assert resp.status_code == 502, resp.text
+    assert "不符合" in resp.json()["error"]["message"]
+    detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers).json()
+    assert detail["drafts"] == []
+
+
 def test_generate_draft_uses_active_draft_slot(client, created_user, created_key) -> None:
     """生成后 active_draft_id 指向 LLM 草稿。"""
     task_id = _make_waiting_task(client, created_key.id, created_user.user_id)
@@ -159,7 +344,11 @@ def test_generate_draft_uses_active_draft_slot(client, created_user, created_key
 
 
 def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key) -> None:
-    """已存在未提交 LLM 草稿时拒绝重复生成（幂等防护，避免连点多条草稿）。"""
+    """已存在未提交 LLM 草稿时重复生成 == 合并更新同一草稿（不再 409）。
+
+    三模式生成需要「先生成思考链、再按它生成回复」的序列，因此同任务
+    只允许一条 LLM 编辑态草稿，重复生成按模式合并并递增 version。
+    """
     task_id = _make_waiting_task(client, created_key.id, created_user.user_id)
     cfg = _create_llm_config(client, created_user.headers, _llm_body())
 
@@ -167,7 +356,9 @@ def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key)
 
     async def fake(**kwargs: Any) -> Any:
         call_count["n"] += 1
-        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        return {
+            "choices": [{"message": {"role": "assistant", "content": f"回复-{call_count['n']}"}}]
+        }
 
     with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
         first = client.post(
@@ -176,17 +367,20 @@ def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key)
             json={"llm_config_id": int(cfg["id"])},
         )
         assert first.status_code == 201
+        first_id = first.json()["id"]
+        assert first.json()["version"] == 1
 
         second = client.post(
             f"/api/tasks/{task_id}/drafts/generate",
             headers=created_user.headers,
             json={"llm_config_id": int(cfg["id"])},
         )
-        assert second.status_code == 409
-        assert "LLM 草稿" in second.json()["error"]["message"]
+        assert second.status_code == 200
+        assert second.json()["id"] == first_id
+        assert second.json()["final_text"] == "回复-2"
+        assert second.json()["version"] == 2
 
-    # 上游只被调用一次
-    assert call_count["n"] == 1
+    assert call_count["n"] == 2
 
     # 删除草稿后可重新生成
     draft_id = first.json()["id"]
@@ -202,7 +396,7 @@ def test_generate_rejects_duplicate_llm_draft(client, created_user, created_key)
             json={"llm_config_id": int(cfg["id"])},
         )
         assert third.status_code == 201
-    assert call_count["n"] == 2
+    assert call_count["n"] == 3
 
 
 def test_generate_draft_then_edit_then_submit(client, created_user, created_key) -> None:
@@ -255,7 +449,12 @@ def test_generate_draft_then_edit_then_submit(client, created_user, created_key)
 
 
 def _make_anthropic_waiting_task(
-    client, key_id: int, user_id: int, *, content: str = "hello"
+    client,
+    key_id: int,
+    user_id: int,
+    *,
+    content: str = "hello",
+    tool_names: list[str] | None = None,
 ) -> int:
     import app.core.db as database
     from app.domain.enums import InferenceProtocol
@@ -263,11 +462,20 @@ def _make_anthropic_waiting_task(
     from app.repositories.models import ApiKey, User
     from app.services.inference_service import InferenceService
 
-    payload = {
+    payload: dict[str, Any] = {
         "model": "deepseek-v4-pro",
         "max_tokens": 256,
         "messages": [{"role": "user", "content": content}],
     }
+    if tool_names:
+        payload["tools"] = [
+            {
+                "name": name,
+                "description": name,
+                "input_schema": {"type": "object", "properties": {}},
+            }
+            for name in tool_names
+        ]
     raw = json.dumps(payload).encode()
     parsed = anthropic_protocol.parse_request(raw)
     with database.SessionLocal() as session:
@@ -288,7 +496,9 @@ def _make_anthropic_waiting_task(
 
 
 def test_generate_anthropic_with_anthropic_llm(client, created_user, created_key) -> None:
-    task_id = _make_anthropic_waiting_task(client, created_key.id, created_user.user_id)
+    task_id = _make_anthropic_waiting_task(
+        client, created_key.id, created_user.user_id, tool_names=["lookup"]
+    )
     cfg = _create_llm_config(
         client,
         created_user.headers,
@@ -869,3 +1079,357 @@ def test_generate_draft_requires_owner_to_be_active(
         json={"llm_config_id": int(cfg["id"])},
     )
     assert resp.status_code in (401, 403)
+
+
+# ----------------------------------------------------------------------
+# M14+ 生成模式：reasoning / reply / both  + 上下文消息级勾选
+# ----------------------------------------------------------------------
+
+
+def _make_waiting_task_multi(
+    client, key_id: int, user_id: int, *, messages: list[dict[str, Any]]
+) -> int:
+    """直接经编排服务创建一个 WAITING_HUMAN 任务，支持传入多条历史消息。"""
+    import app.core.db as database
+    from app.domain.enums import InferenceProtocol
+    from app.protocols import chat_completions as chat_protocol
+    from app.repositories.models import ApiKey, User
+    from app.services.inference_service import InferenceService
+
+    payload = {"model": "deepseek-v4-pro", "messages": messages}
+    raw = json.dumps(payload).encode()
+    parsed = chat_protocol.parse_request(raw)
+    with database.SessionLocal() as session:
+        key = session.get(ApiKey, key_id)
+        owner = session.get(User, user_id)
+        task = InferenceService().create_task(
+            session,
+            key=key,
+            owner=owner,
+            protocol=InferenceProtocol.OPENAI_CHAT,
+            parsed=parsed,
+            raw_body=raw,
+            headers={},
+        )
+        session.commit()
+        assert task.id is not None
+        return task.id
+
+
+def test_generate_mode_reasoning_only_writes_into_reasoning(
+    client, created_user, created_key
+) -> None:
+    """mode=reasoning：上游返回正文与推理，归入草稿 reasoning；final_text=None。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "用户问题的详细推理",
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "reasoning"},
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["final_text"] is None
+    assert "推理" in (body["reasoning"] or "")
+    assert body["tool_calls"] == []
+
+
+def test_generate_mode_reply_preserves_user_reasoning_seed(
+    client, created_user, created_key
+) -> None:
+    """mode=reply + reasoning_seed：上游只看种子写回复，草稿保留种子作为 reasoning。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {"choices": [{"message": {"role": "assistant", "content": "已写好的回复"}}]}
+
+    seed = "用户手写的思考链：先确认输入再展开"
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={
+                "llm_config_id": int(cfg["id"]),
+                "mode": "reply",
+                "reasoning_seed": seed,
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["final_text"] == "已写好的回复"
+    assert body["reasoning"] == seed
+    # 种子被拼入上游 system 消息
+    sys_msg = captured["body"]["messages"][0]
+    assert sys_msg["role"] == "system"
+    assert seed in sys_msg["content"]
+
+
+def test_generate_excluded_context_item_ids_omits_history(
+    client, created_user, created_key
+) -> None:
+    """稳定 ctx ID 勾选：被排除的附带上下文不送入上游；current_input 不可排除。"""
+    messages = [
+        {"role": "system", "content": "你是助手"},
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答"},
+        {"role": "user", "content": "第二问"},
+    ]
+    task_id = _make_waiting_task_multi(
+        client, created_key.id, created_user.user_id, messages=messages
+    )
+    # 附带上下文：system 进 caller_system，latest user（第二问）是 current_input，
+    # "第一问" 是 attached_context 的第一条。
+    view = client.get(f"/api/tasks/{task_id}/request-view", headers=created_user.headers).json()
+    attached_ids = [item["id"] for item in view["attached_context"]]
+    assert attached_ids, "应有至少一条附带上下文"
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    captured: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> Any:
+        captured["body"] = kwargs["request_body"]
+        return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={
+                "llm_config_id": int(cfg["id"]),
+                "mode": "reply",
+                "excluded_context_item_ids": [attached_ids[0]],
+            },
+        )
+    assert resp.status_code == 201, resp.text
+    sent = captured["body"]["messages"]
+    joined = "\n".join(str(m.get("content", "")) for m in sent)
+    assert "第一问" not in joined
+    assert "第一答" in joined
+    assert "第二问" in joined
+
+
+def test_generate_invalid_context_item_id_returns_400(client, created_user, created_key) -> None:
+    """未知 ctx ID 直接 400 invalid_context_item，避免静默丢弃过滤。"""
+    task_id = _make_waiting_task_multi(
+        client,
+        created_key.id,
+        created_user.user_id,
+        messages=[
+            {"role": "user", "content": "a"},
+            {"role": "user", "content": "b"},
+        ],
+    )
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts/generate",
+        headers=created_user.headers,
+        json={
+            "llm_config_id": int(cfg["id"]),
+            "excluded_context_item_ids": ["ctx_does_not_exist"],
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "无效的上下文条目" in resp.json()["error"]["message"]
+
+
+def test_save_draft_with_undeclared_tool_call_rejected(client, created_user, created_key) -> None:
+    """草稿保存：tool_call 名称不在调用方声明工具内时拒绝 400。"""
+    task_id = _make_waiting_task(
+        client, created_key.id, created_user.user_id, content="hi", tool_names=["search"]
+    )
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "x", "arguments": {}}],
+            "final_text": "ok",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "caller_tool_not_declared"
+    assert "不在当前请求声明的 Caller Tool 中" in body["error"]["message"]
+
+
+def test_save_draft_with_tool_call_on_no_tool_task_rejected(
+    client, created_user, created_key
+) -> None:
+    """任务未声明任何 Caller Tool 时，携带工具调用保存应拒绝（caller_tools_not_available）。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "x", "arguments": {}}],
+            "final_text": "ok",
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "没有声明 Caller Tool" in resp.json()["error"]["message"]
+
+
+def test_save_draft_with_declared_tool_call_allowed(client, created_user, created_key) -> None:
+    """草稿保存：tool_call 名称命中调用方声明工具时放行。"""
+    task_id = _make_waiting_task(
+        client,
+        created_key.id,
+        created_user.user_id,
+        content="hi",
+        tool_names=["search"],
+    )
+    resp = client.post(
+        f"/api/tasks/{task_id}/drafts",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "search", "arguments": {"q": "x"}}],
+            "final_text": "ok",
+        },
+    )
+    assert resp.status_code == 201, resp.text
+
+
+def test_submit_reply_with_undeclared_tool_call_rejected(client, created_user, created_key) -> None:
+    """直接回复提交：tool_call 名称不在声明工具内时拒绝 400。"""
+    task_id = _make_waiting_task(
+        client, created_key.id, created_user.user_id, content="hi", tool_names=["search"]
+    )
+    resp = client.post(
+        f"/api/tasks/{task_id}/reply",
+        headers=created_user.headers,
+        json={
+            "reasoning": None,
+            "tool_calls": [{"id": "call_01", "name": "x", "arguments": {}}],
+            "final_text": "ok",
+            "source_draft_id": None,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "不在当前请求声明的 Caller Tool 中" in resp.json()["error"]["message"]
+
+
+def test_generate_rejects_tool_call_not_declared(client, created_user, created_key) -> None:
+    """LLM 草稿生成：上游返回未声明工具名时拒绝保存 400。"""
+    task_id = _make_waiting_task(client, created_key.id, created_user.user_id, content="hi")
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                        "tool_calls": [
+                            {
+                                "id": "call_01",
+                                "type": "function",
+                                "function": {"name": "x", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "both"},
+        )
+    assert resp.status_code == 502, resp.text
+    assert "不符合" in resp.json()["error"]["message"]
+
+
+def test_generate_persists_declared_tool_call(client, created_user, created_key) -> None:
+    """LLM 草稿生成：上游返回已声明工具名的调用正常落库。"""
+    task_id = _make_waiting_task(
+        client,
+        created_key.id,
+        created_user.user_id,
+        content="hi",
+        tool_names=["search"],
+    )
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+
+    async def fake(**kwargs: Any) -> Any:
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "ok",
+                        "tool_calls": [
+                            {
+                                "id": "call_01",
+                                "type": "function",
+                                "function": {"name": "search", "arguments": '{"q":"x"}'},
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+
+    with patch("app.services.llm_upstream.post_chat_completions", side_effect=fake):
+        resp = client.post(
+            f"/api/tasks/{task_id}/drafts/generate",
+            headers=created_user.headers,
+            json={"llm_config_id": int(cfg["id"]), "mode": "both"},
+        )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["tool_calls"] == [
+        {"id": "call_01", "name": "search", "arguments": {"q": "x"}}
+    ]
+
+
+def test_request_view_splits_current_input_and_attached_context(
+    client, created_user, created_key
+) -> None:
+    """RequestView 把最新 user 输入与早期消息分区，stable ID 稳定且不暴露下标。"""
+    task_id = _make_waiting_task_multi(
+        client,
+        created_key.id,
+        created_user.user_id,
+        messages=[
+            {"role": "user", "content": "第一问"},
+            {"role": "assistant", "content": "第一答"},
+        ],
+    )
+    resp = client.get(f"/api/tasks/{task_id}/request-view", headers=created_user.headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    current = body["current_input"]
+    attached = body["attached_context"]
+    assert len(current) == 1
+    assert len(attached) == 1
+    # 最新输入是 current_input；附带的早期消息是 attached_context。
+    assert any("第一答" in _blocks_text(item) for item in current) or any(
+        "第一答" in _blocks_text(item) for item in attached
+    )
+    # 稳定 ID 前缀为 ctx_，块 ID 前缀为 blk_，不暴露数组下标语义。
+    assert current[0]["id"].startswith("ctx_")
+    assert current[0]["blocks"][0]["id"].startswith("blk_")
+
+
+def _blocks_text(item: dict[str, Any]) -> str:
+    return "".join(str(block.get("text") or "") for block in item.get("blocks") or [])

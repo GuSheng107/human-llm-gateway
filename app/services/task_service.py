@@ -8,13 +8,14 @@ TaskRepository.first_reply_wins 做首个有效提交裁决，晚到回复只记
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.db import begin_immediate_if_sqlite
-from ..core.logging import get_request_id
+from ..core.logging import get_request_id, log_event
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -25,11 +26,25 @@ from ..domain.enums import (
     UserRole,
 )
 from ..domain.errors import DomainError, DomainErrorCode
-from ..domain.values import ReplyDraft
+from ..domain.values import ReplyDraft, ReplyToolCall
 from ..repositories.catalog import FakeModelRepository
 from ..repositories.models import FakeModel, RequestTask, TaskDraft, TaskEvent, User
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
+from .caller_tool_service import catalog_for_task, validate_full, validate_structural
+
+
+def assert_reply_tool_names_declared(
+    task: RequestTask, tool_calls: Sequence[ReplyToolCall]
+) -> None:
+    """人工写回的 tool_call 名称必须命中调用方在请求中声明的工具（结构校验）。
+
+    与真实 LLM 对齐：网关只校验、保存、渲染和返回，不执行，也不允许凭空
+    捏造未声明的工具名回传给调用方；未命中时拒绝 400。
+    """
+    if not tool_calls:
+        return
+    validate_structural(catalog_for_task(task), list(tool_calls))
 
 
 class TaskService:
@@ -90,6 +105,27 @@ class TaskService:
             return None
 
     @staticmethod
+    def validate_reply_draft(
+        task: RequestTask,
+        draft: ReplyDraft,
+        *,
+        strict: bool,
+    ) -> ReplyDraft:
+        """按请求声明校验草稿 Tool Call。
+
+        - strict=False（保存/更新草稿）：仅结构校验——名称声明、参数
+          object+Schema、call ID 唯一；tool_choice/并行约束不在此层。
+        - strict=True（最终提交）：结构校验 + tool_choice/并行约束。
+
+        Tool Call 保留调用方 ID，不做服务端重排（校验 ID 合法且唯一）。
+        """
+        calls = list(draft.tool_calls)
+        if calls:
+            catalog = catalog_for_task(task)
+            (validate_full if strict else validate_structural)(catalog, calls)
+        return draft
+
+    @staticmethod
     def fake_model_name(session: Session, task: RequestTask) -> str:
         if task.fake_model_id is None:
             return task.requested_model
@@ -114,6 +150,7 @@ class TaskService:
         get_active_draft + create_draft 的 TOCTOU 在并发保存时产生重复草稿。
         """
         self._assert_writable(task, owner)
+        draft = self.validate_reply_draft(task, draft, strict=False)
         begin_immediate_if_sqlite(session)
         payload = self._draft_payload(draft)
         updated = self.repo.update_active_draft_fields(
@@ -197,6 +234,7 @@ class TaskService:
         "刷新 / 强制覆盖"。不再兼容不带 expected_version 的旧语义。
         """
         self._assert_writable(task, owner)
+        draft = self.validate_reply_draft(task, draft, strict=False)
         begin_immediate_if_sqlite(session)
         row = self.repo.get_draft(session, draft_id)
         if row is None or row.task_id != task.id or row.owner_user_id != owner.id:
@@ -249,8 +287,14 @@ class TaskService:
         draft: ReplyDraft,
         source_draft_id: int | None = None,
     ) -> bool:
-        """首个有效提交获胜；晚到返回 False（调用方需记录晚到事件后抛 409）。"""
+        """首个有效提交获胜；晚到返回 False（调用方需记录晚到事件后抛 409）。
+
+        提交期完整校验 tool_choice/并行约束；含 Tool Call 的提交要求本任务
+        已确认风险告知（服务端兜底，自动 LLM 转发不受此约束）。
+        """
         self._assert_writable(task, owner)
+        draft = self.validate_reply_draft(task, draft, strict=True)
+        self._assert_tool_call_warning_acknowledged(session, task, draft)
         begin_immediate_if_sqlite(session)
         accepted = self.repo.first_reply_wins(
             session,
@@ -281,6 +325,14 @@ class TaskService:
                 owner_user_id=task.owner_user_id,
                 metadata={"fields": ["response_payload"], "source": "web"},
             )
+            log_event(
+                "info",
+                "task.reply_submitted",
+                "收到首个有效回复",
+                task_id=task.id,
+                owner_user_id=task.owner_user_id,
+                source_draft_id=source_draft_id,
+            )
             return True
         self._add_event(
             session,
@@ -299,10 +351,34 @@ class TaskService:
             owner_user_id=task.owner_user_id,
             metadata={"fields": ["response_payload"], "source": "web", "result": "late"},
         )
+        log_event(
+            "warning",
+            "task.reply_rejected_late",
+            "晚到回复被拒",
+            task_id=task.id,
+            owner_user_id=task.owner_user_id,
+            source_draft_id=source_draft_id,
+        )
         return False
 
     # ------------------------------------------------------------------
     # 内部
+
+    def _assert_tool_call_warning_acknowledged(
+        self, session: Session, task: RequestTask, draft: ReplyDraft
+    ) -> None:
+        """含 Tool Call 的最终提交要求本任务已确认风险告知（服务端兜底）。"""
+        if not draft.tool_calls:
+            return
+        inbox = self.repo.get_inbox_state(session, task_id=task.id)
+        if inbox is not None and inbox.tool_call_warning_acknowledged_at is not None:
+            return
+        raise DomainError(
+            DomainErrorCode.CONFLICT,
+            "首次使用调用方工具前需先确认风险告知",
+            status_code=409,
+            public_code="tool_call_warning_required",
+        )
 
     @staticmethod
     def _assert_owner(task: RequestTask, user: User) -> None:

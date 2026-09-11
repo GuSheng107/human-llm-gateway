@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..core.db import get_db
 from ..core.time import iso_utc
-from ..domain.enums import FakeModelScope
+from ..domain.enums import FakeModelScope, UserRole
 from ..repositories.models import FakeModel, ModelGroup, User
 from ..services.fake_model_service import FakeModelService, ModelGroupService
 from .common import StrictModel
@@ -44,7 +44,7 @@ class FakeModelCreate(StrictModel):
     billing_tier: str | None = None
     endpoint_types: list[str] | None = Field(default=None, max_length=8)
     logo_url: str | None = Field(default=None, max_length=512)
-    tags: list[str] = Field(default_factory=list, max_length=20)
+    group_ids: list[int] = Field(default_factory=list, max_length=100)
 
 
 class FakeModelUpdate(StrictModel):
@@ -62,7 +62,7 @@ class FakeModelUpdate(StrictModel):
     billing_tier: str | None = None
     endpoint_types: list[str] | None = Field(default=None, max_length=8)
     logo_url: str | None = Field(default=None, max_length=512)
-    tags: list[str] | None = Field(default=None, max_length=20)
+    group_ids: list[int] | None = Field(default=None, max_length=100)
 
 
 class FakeModelView(BaseModel):
@@ -85,7 +85,6 @@ class FakeModelView(BaseModel):
     billing_tier: str
     endpoint_types: list[str]
     logo_url: str | None
-    tags: list[str]
     created_at: str
 
 
@@ -119,6 +118,9 @@ class GroupView(BaseModel):
     description: str | None
     is_enabled: bool
     model_ids: list[str]
+    is_public: bool
+    can_manage: bool
+    can_assign_model: bool
     created_at: str
 
 
@@ -164,13 +166,18 @@ def _model_view(row: FakeModel) -> FakeModelView:
         billing_tier=row.billing_tier.value,
         endpoint_types=list(row.endpoint_types or []),
         logo_url=row.logo_url,
-        tags=list(row.tags or []),
         created_at=iso_utc(row.created_at) or "",
     )
 
 
-def _group_view(session: Session, row: ModelGroup) -> GroupView:
+def _group_view(session: Session, row: ModelGroup, user: User) -> GroupView:
     items = _models.catalog.group_items(session, row.id)
+    if user.role is not UserRole.ADMIN:
+        items = [
+            item
+            for item in items
+            if item.scope is FakeModelScope.SYSTEM or item.owner_user_id == user.id
+        ]
     return GroupView(
         id=str(row.id),
         owner_user_id=str(row.owner_user_id),
@@ -178,6 +185,11 @@ def _group_view(session: Session, row: ModelGroup) -> GroupView:
         description=row.description,
         is_enabled=row.is_enabled,
         model_ids=[item.model_id for item in items],
+        is_public=row.is_public,
+        can_manage=user.role is UserRole.ADMIN or row.owner_user_id == user.id,
+        can_assign_model=(
+            user.role is UserRole.ADMIN or row.is_public or row.owner_user_id == user.id
+        ),
         created_at=iso_utc(row.created_at) or "",
     )
 
@@ -196,14 +208,11 @@ def list_fake_models(
     billing_tier: str | None = Query(default=None, max_length=32),
     endpoint_type: str | None = Query(default=None, max_length=32),
     capability: str | None = Query(default=None, max_length=32),
-    tag: str | None = Query(default=None, max_length=64),
     group_id: int | None = Query(default=None, ge=1),
     include_disabled: bool = Query(default=False),
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> Any:
-    from ..domain.enums import UserRole
-
     filters = {
         key: value
         for key, value in {
@@ -211,7 +220,6 @@ def list_fake_models(
             "billing_tier": billing_tier,
             "endpoint_type": endpoint_type,
             "capability": capability,
-            "tag": tag,
         }.items()
         if value
     }
@@ -262,7 +270,7 @@ def create_fake_model(
         billing_tier=payload.billing_tier,
         endpoint_types=payload.endpoint_types,
         logo_url=payload.logo_url,
-        tags=payload.tags,
+        group_ids=payload.group_ids,
     )
     db.commit()
     db.refresh(row)
@@ -321,7 +329,10 @@ def list_model_groups(
 ) -> GroupPage:
     rows, total = _groups.list_for_user(db, user, page=page, page_size=page_size)
     return GroupPage(
-        items=[_group_view(db, row) for row in rows], page=page, page_size=page_size, total=total
+        items=[_group_view(db, row, user) for row in rows],
+        page=page,
+        page_size=page_size,
+        total=total,
     )
 
 
@@ -340,7 +351,7 @@ def create_model_group(
     )
     db.commit()
     db.refresh(row)
-    return _group_view(db, row)
+    return _group_view(db, row, user)
 
 
 def _get_group(db: Session, group_id: int, user: User) -> ModelGroup:
@@ -353,7 +364,7 @@ def get_model_group(
     user: User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ) -> GroupView:
-    return _group_view(db, _get_group(db, group_id, user))
+    return _group_view(db, _groups.get_visible(db, group_id, user), user)
 
 
 @groups_router.patch("/{group_id}", response_model=GroupView)
@@ -370,7 +381,7 @@ def update_model_group(
     updated = _groups.update(db, row=row, actor=user, fields=fields)
     db.commit()
     db.refresh(updated)
-    return _group_view(db, updated)
+    return _group_view(db, updated, user)
 
 
 @groups_router.put("/{group_id}/models", response_model=GroupView)
@@ -386,7 +397,7 @@ def replace_group_members(
     )
     db.commit()
     db.refresh(updated)
-    return _group_view(db, updated)
+    return _group_view(db, updated, user)
 
 
 @groups_router.delete("/{group_id}", status_code=204)

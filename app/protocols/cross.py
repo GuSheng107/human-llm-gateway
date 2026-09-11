@@ -628,6 +628,11 @@ def to_responses_request(normalized: dict[str, Any], real_model: str) -> dict[st
         )
         input_items.append({"role": role, "content": [{"type": "input_text", "text": text}]})
     body: dict[str, Any] = {"model": real_model, "input": input_items}
+    # Responses 的 store=false 表示不建立可经 Responses API 检索的上游状态。
+    # 网关内部 RequestTask 留存是独立的审计/人工处理契约。重建请求（例如
+    # previous_response_id 已由网关展开）时仍须保留调用方的无状态要求。
+    if normalized.get("store") is False:
+        body["store"] = False
     tools = _tools_to_chat(normalized)
     if tools:
         body["tools"] = tools

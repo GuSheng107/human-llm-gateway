@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.db import begin_immediate_if_sqlite
+from ..core.logging import log_event
 from ..core.security import generate_session_token, hash_session_token
 from ..core.time import utc_now
 from ..domain.errors import DomainError, DomainErrorCode
@@ -38,6 +39,12 @@ class AuthService:
         begin_immediate_if_sqlite(session)
         invitation = self.invitations.match_plaintext(session, invitation_code)
         if not self.invitations.invitations.atomic_consume(session, invitation.id):
+            log_event(
+                "warning",
+                "auth.register_failed",
+                "邀请码无效或已用尽",
+                username=username,
+            )
             raise DomainError(DomainErrorCode.INVALID_INVITATION, "邀请码无效", status_code=400)
         try:
             user = self.users.create_user(
@@ -50,14 +57,34 @@ class AuthService:
                 email=email,
             )
             session.commit()
+            log_event(
+                "info",
+                "auth.user_registered",
+                "新用户注册",
+                user_id=user.id,
+                username=user.username,
+                invitation_id=str(invitation.id),
+            )
             return user
         except IntegrityError as exc:
             session.rollback()
+            log_event(
+                "warning",
+                "auth.register_conflict",
+                "注册时用户名已存在",
+                username=username,
+            )
             raise DomainError(DomainErrorCode.CONFLICT, "用户名已存在", status_code=409) from exc
 
     def login(self, session: Session, username: str, password: str) -> tuple[str, datetime, User]:
         user = self.users.authenticate(session, username, password)
         if user is None:
+            log_event(
+                "warning",
+                "auth.login_failed",
+                "登录用户名或密码错误",
+                username=username,
+            )
             raise DomainError(DomainErrorCode.UNAUTHORIZED, "用户名或密码错误", status_code=401)
         token, prefix, token_hash = generate_session_token()
         expires_at = utc_now() + _SESSION_TTL
@@ -69,6 +96,13 @@ class AuthService:
             expires_at=expires_at,
         )
         session.commit()
+        log_event(
+            "info",
+            "auth.login_success",
+            "用户登录成功",
+            user_id=user.id,
+            username=user.username,
+        )
         return token, expires_at, user
 
     def logout(self, session: Session, token: str) -> None:
@@ -76,6 +110,12 @@ class AuthService:
         if row is not None:
             self.sessions.revoke(session, row.id)
             session.commit()
+            log_event(
+                "info",
+                "auth.logout",
+                "用户退出登录",
+                user_id=row.user_id,
+            )
 
     def get_user_by_token(self, session: Session, token: str) -> User | None:
         row = self.sessions.get_by_token_hash(session, hash_session_token(token))

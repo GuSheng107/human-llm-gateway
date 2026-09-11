@@ -75,15 +75,14 @@ class FakeModel(TimestampMixin, Base):
     billing_tier: Mapped[BillingTier] = mapped_column(
         sa_enum(BillingTier), default=BillingTier.PAY_AS_YOU_GO, nullable=False
     )
-    # 模型对外开放的推理端点（可多选）：调用方只能经列表内协议发起推理。
-    # 存储为 ModelEndpointType 值列表；空列表不允许（服务层校验）。
+    # 模型原生支持的端点协议（可多选）。该元数据用于目录展示与筛选，
+    # 不限制调用方通过网关支持的其他协议请求该 Fake Model。
     endpoint_types: Mapped[list[str]] = mapped_column(
         JSON,
-        default=lambda: [endpoint.value for endpoint in ModelEndpointType],
+        default=lambda: [ModelEndpointType.OPENAI_CHAT.value],
         nullable=False,
     )
     logo_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    tags: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     created_by_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
 
 

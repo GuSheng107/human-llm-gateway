@@ -16,11 +16,13 @@ from sqlalchemy.orm import Session
 from ..connectors.base import Connector, DeliveryEnvelope
 from ..connectors.manager import ConnectionManager
 from ..core.constants import IM_CONTENT_DETAIL_CHARS, IM_HINT_BAR_CHARS
+from ..core.logging import log_event
 from ..core.time import iso_utc
 from ..domain.connections import ERROR_CONFIG
 from ..domain.enums import ActorType, TaskEventType
 from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ImConnection, RequestTask
+from .caller_tool_service import catalog_for_task
 
 # 使用 outbox 可靠投递的平台（docs/DATABASE.md §4.2）
 OUTBOX_PLATFORMS = frozenset({"webhook", "http_poll", "websocket"})
@@ -126,6 +128,15 @@ class DeliveryService:
                 session, connection_id=connection.id, task_id=task.id, payload=payload
             )
         if connector is None:
+            log_event(
+                "warning",
+                "delivery.offline",
+                "投递时连接离线",
+                connection_id=connection.id,
+                task_id=task.id,
+                platform=connection.platform,
+                via_outbox=via_outbox,
+            )
             return DeliveryOutcome(
                 connection_id=connection.id,
                 platform=connection.platform,
@@ -173,6 +184,16 @@ class DeliveryService:
             if via_outbox:
                 self.repo.mark_outbox_failed(session, connection.id, task.id, str(error_code))
             self._add_event(session, task, connection, delivered=False, error_code=str(error_code))
+            log_event(
+                "warning",
+                "delivery.failed",
+                "IM 投递失败",
+                connection_id=connection.id,
+                task_id=task.id,
+                platform=connection.platform,
+                error_code=str(error_code),
+                via_outbox=via_outbox,
+            )
             return DeliveryOutcome(
                 connection_id=connection.id,
                 platform=connection.platform,
@@ -183,6 +204,15 @@ class DeliveryService:
         if via_outbox:
             self.repo.mark_outbox_delivered(session, connection.id, task.id)
         self._add_event(session, task, connection, delivered=True)
+        log_event(
+            "info",
+            "delivery.delivered",
+            "IM 投递成功",
+            connection_id=connection.id,
+            task_id=task.id,
+            platform=connection.platform,
+            via_outbox=via_outbox,
+        )
         return DeliveryOutcome(
             connection_id=connection.id,
             platform=connection.platform,
@@ -207,8 +237,25 @@ class DeliveryService:
         try:
             await connector.deliver(envelope)
             delivered = True
+            log_event(
+                "info",
+                "delivery.delivered",
+                "IM 投递成功（异步推送）",
+                connection_id=connection_id,
+                task_id=task_id,
+                via_outbox=via_outbox,
+            )
         except Exception as exc:  # noqa: BLE001
             error_code = str(getattr(exc, "code", ERROR_CONFIG))
+            log_event(
+                "warning",
+                "delivery.failed",
+                "IM 投递失败（异步推送）",
+                connection_id=connection_id,
+                task_id=task_id,
+                error_code=error_code,
+                via_outbox=via_outbox,
+            )
         with SessionLocal() as session:
             task = session.get(TaskRow, task_id)
             connection = session.get(ImConnection, connection_id)
@@ -332,9 +379,9 @@ class DeliveryService:
             normalized: dict[str, Any] = json.loads(task.normalized_request_json or "{}")
         except (ValueError, TypeError):
             normalized = {}
-        messages = normalized.get("messages")
-        if isinstance(messages, list) and messages:
-            for message in reversed(messages):
+        context = normalized.get("context")
+        if isinstance(context, list) and context:
+            for message in reversed(context):
                 if isinstance(message, dict) and message.get("role") == "user":
                     content = message.get("content")
                     if isinstance(content, str):
@@ -343,19 +390,12 @@ class DeliveryService:
                         parts = [
                             block.get("text", "")
                             for block in content
-                            if isinstance(block, dict) and block.get("type") == "text"
+                            if isinstance(block, dict)
+                            and block.get("type") in {"text", "input_text", "output_text"}
                         ]
                         prompt = "\n".join(part for part in parts if part)
                     break
-        if not prompt:
-            prompt = normalized.get("input") if isinstance(normalized.get("input"), str) else ""
-        tools = normalized.get("tools")
-        if isinstance(tools, list):
-            for tool in tools:
-                if isinstance(tool, dict):
-                    name = tool.get("name") or (tool.get("function", {}) or {}).get("name")
-                    if isinstance(name, str):
-                        tool_names.append(name)
+        tool_names = sorted(catalog_for_task(task).names)
         # Agent 工具（opencode 等）的提示词前面是海量系统上下文，真正的
         # 提问在末尾：超长时保留尾部，仅省略前缀。
         if len(prompt) > _PROMPT_SUMMARY_CAP:

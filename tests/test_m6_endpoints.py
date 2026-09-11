@@ -68,6 +68,23 @@ def _latest_task_id_for_key(api_key_id: int) -> int:
         return row.id
 
 
+async def _wait_for_task_id(api_key_id: int, timeout: float = 10.0) -> int:
+    """轮询等待任务落库后再操作。
+
+    原先固定 sleep(0.4) 在负载抖动下会晚于网关等待窗口，导致端点提前超时、
+    用例偶发失败；改为 50ms 轮询，快则早返回，慢则有 10 秒余量。
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            return _latest_task_id_for_key(api_key_id)
+        except AssertionError:
+            if loop.time() >= deadline:
+                raise
+            await asyncio.sleep(0.05)
+
+
 def _submit_reply(task_id: int, owner_user_id: int, *, text: str = "done") -> None:
     draft = ReplyDraft(final_text=text)
     payload = draft.model_dump_json(exclude_none=True)
@@ -284,8 +301,7 @@ def test_chat_active_task_limit_returns_429(client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_chat_timeout_returns_504(async_client, created_key) -> None:
     async def timeout_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _finalize_state(task_id, TaskState.TIMED_OUT)
 
     runner = asyncio.create_task(timeout_later())
@@ -304,8 +320,7 @@ async def test_chat_timeout_returns_504(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_anthropic_timeout_returns_504(async_client, created_key) -> None:
     async def timeout_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _finalize_state(task_id, TaskState.TIMED_OUT)
 
     runner = asyncio.create_task(timeout_later())
@@ -327,8 +342,7 @@ async def test_anthropic_timeout_returns_504(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_chat_happy_nonstream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="你好")
 
     runner = asyncio.create_task(reply_later())
@@ -349,8 +363,7 @@ async def test_chat_happy_nonstream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_responses_happy_nonstream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="hello")
 
     runner = asyncio.create_task(reply_later())
@@ -372,8 +385,7 @@ async def test_responses_happy_nonstream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_anthropic_happy_nonstream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="hi there")
 
     runner = asyncio.create_task(reply_later())
@@ -400,8 +412,7 @@ async def test_anthropic_happy_nonstream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_chat_happy_stream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="流式")
 
     runner = asyncio.create_task(reply_later())
@@ -422,8 +433,7 @@ async def test_chat_happy_stream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_responses_happy_stream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="r-stream")
 
     runner = asyncio.create_task(reply_later())
@@ -443,8 +453,7 @@ async def test_responses_happy_stream(async_client, created_key) -> None:
 @pytest.mark.asyncio
 async def test_anthropic_happy_stream(async_client, created_key) -> None:
     async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
+        task_id = await _wait_for_task_id(created_key.id)
         _submit_reply(task_id, created_key.owner_user_id, text="a-stream")
 
     runner = asyncio.create_task(reply_later())
@@ -462,181 +471,48 @@ async def test_anthropic_happy_stream(async_client, created_key) -> None:
 
 
 # ----------------------------------------------------------------------
-# 模型端点与能力门禁
+# Fake Model 原生端点仅作目录展示
 # ----------------------------------------------------------------------
 
 
-def _create_system_model(client, admin_headers, model_id: str, **extra: Any) -> None:
+@pytest.mark.asyncio
+async def test_anthropic_client_can_call_model_with_openai_native_endpoint(
+    async_client, client, created_key, admin_headers
+) -> None:
+    """Claude Code 可通过 /v1/messages 调用 Key 有效集合中的任意 Fake Model。"""
     created = client.post(
         "/api/fake-models",
         headers=admin_headers,
-        json={"model_id": model_id, **extra},
+        json={
+            "model_id": "openai-native-for-claude-code",
+            "endpoint_types": ["openai_chat"],
+            "capabilities": [],
+        },
     )
     assert created.status_code == 201, created.text
 
-
-@pytest.mark.asyncio
-async def test_endpoint_mismatch_returns_model_not_found(
-    async_client, client, created_key, admin_headers
-) -> None:
-    """调用方只能经模型声明的端点协议发起推理，否则 404 model_not_found。"""
-    _create_system_model(client, admin_headers, "chat-only-model", endpoint_types=["openai_chat"])
-
-    # 命中的协议允许调用：走完整 happy 路径（人工回复后 200）。
     async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id, text="ok")
-
-    runner = asyncio.create_task(reply_later())
-    allowed = await async_client.post(
-        "/v1/chat/completions",
-        headers=_bearer(created_key.plaintext),
-        json=_chat_payload(model="chat-only-model"),
-    )
-    await runner
-    assert allowed.status_code == 200
-
-    for path, payload, headers in (
-        (
-            "/v1/responses",
-            _responses_payload(model="chat-only-model"),
-            _bearer(created_key.plaintext),
-        ),
-        (
-            "/v1/messages",
-            _anthropic_payload(model="chat-only-model"),
-            _anthropic_headers(created_key.plaintext),
-        ),
-    ):
-        blocked = client.post(path, headers=headers, json=payload)
-        assert blocked.status_code == 404, (path, blocked.text)
-
-
-def test_capability_gate_rejects_unsupported_requests(client, created_key, admin_headers) -> None:
-    """模型未声明的能力（图片/音频/工具/思考/流式）一律协议兼容 400。"""
-    _create_system_model(client, admin_headers, "plain-model", capabilities=[])
-
-    cases = [
-        # Chat：图片
-        (
-            "/v1/chat/completions",
-            _chat_payload(
-                model="plain-model",
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "describe"},
-                            {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
-                        ],
-                    }
-                ],
-            ),
-            _bearer(created_key.plaintext),
-        ),
-        # Chat：工具
-        (
-            "/v1/chat/completions",
-            _chat_payload(
-                model="plain-model",
-                tools=[
-                    {
-                        "type": "function",
-                        "function": {"name": "f", "parameters": {"type": "object"}},
-                    }
-                ],
-            ),
-            _bearer(created_key.plaintext),
-        ),
-        # Chat：思考控制参数
-        (
-            "/v1/chat/completions",
-            _chat_payload(model="plain-model", reasoning_effort="high"),
-            _bearer(created_key.plaintext),
-        ),
-        # Responses：图片 + reasoning
-        (
-            "/v1/responses",
-            _responses_payload(
-                model="plain-model",
-                input=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "input_text", "text": "see"},
-                            {"type": "input_image", "image_url": "https://x/y.png"},
-                        ],
-                    }
-                ],
-            ),
-            _bearer(created_key.plaintext),
-        ),
-        (
-            "/v1/responses",
-            _responses_payload(model="plain-model", reasoning={"effort": "high"}),
-            _bearer(created_key.plaintext),
-        ),
-        # Anthropic：thinking
-        (
-            "/v1/messages",
-            _anthropic_payload(
-                model="plain-model", thinking={"type": "enabled", "budget_tokens": 1024}
-            ),
-            _anthropic_headers(created_key.plaintext),
-        ),
-        # 流式
-        (
-            "/v1/chat/completions",
-            _chat_payload(model="plain-model", stream=True),
-            _bearer(created_key.plaintext),
-        ),
-        (
-            "/v1/messages",
-            _anthropic_payload(model="plain-model", stream=True),
-            _anthropic_headers(created_key.plaintext),
-        ),
-    ]
-    for path, payload, headers in cases:
-        resp = client.post(path, headers=headers, json=payload)
-        assert resp.status_code == 400, (path, payload, resp.text)
-
-
-@pytest.mark.asyncio
-async def test_capability_gate_allows_declared_capabilities(
-    async_client, created_key, admin_headers, client
-) -> None:
-    """声明 vision 的模型允许图片输入并正常完成非流式调用。"""
-    _create_system_model(
-        client,
-        admin_headers,
-        "vision-model",
-        capabilities=["vision", "streaming"],
-        endpoint_types=["openai_chat", "openai_responses", "anthropic_messages"],
-    )
-
-    async def reply_later() -> None:
-        await asyncio.sleep(0.4)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id, text="看到了")
+        task_id = await _wait_for_task_id(created_key.id)
+        _submit_reply(task_id, created_key.owner_user_id, text="Claude Code 可用")
 
     runner = asyncio.create_task(reply_later())
     resp = await async_client.post(
-        "/v1/chat/completions",
-        headers=_bearer(created_key.plaintext),
-        json=_chat_payload(
-            model="vision-model",
-            messages=[
+        "/v1/messages",
+        headers=_anthropic_headers(created_key.plaintext),
+        json=_anthropic_payload(
+            model="openai-native-for-claude-code",
+            tools=[
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "这是什么"},
-                        {"type": "image_url", "image_url": {"url": "https://x/y.png"}},
-                    ],
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "input_schema": {"type": "object", "properties": {}},
                 }
             ],
         ),
     )
     await runner
-    assert resp.status_code == 200
-    assert resp.json()["model"] == "vision-model"
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["model"] == "openai-native-for-claude-code"
+    assert body["content"][0]["text"] == "Claude Code 可用"

@@ -44,7 +44,13 @@ ALLOWED_CAPABILITIES = {
 
 def _clean_capabilities(values: list[str] | None) -> list[str]:
     """去重并只保留白名单内的能力标签（历史 function_calling 归并为 tools）。"""
-    cleaned = _clean_tags(values)
+    if not values:
+        return []
+    cleaned: list[str] = []
+    for value in values:
+        normalized = str(value).strip()
+        if normalized and normalized not in cleaned:
+            cleaned.append(normalized)
     if "function_calling" in cleaned:
         cleaned = [item for item in cleaned if item != "function_calling"]
         if "tools" not in cleaned:
@@ -67,13 +73,13 @@ def _to_decimal(value: Any) -> Decimal | None:
 
 
 def _clean_endpoint_types(values: list[str] | None) -> list[str]:
-    """端点多选：None 表示全开三种协议；显式给定必须非空且值合法。"""
+    """校验原生端点列表；未指定时使用 OpenAI Chat 兼容端点。"""
     if values is None:
-        return [endpoint.value for endpoint in ModelEndpointType]
+        return [ModelEndpointType.OPENAI_CHAT.value]
     seen: set[str] = set()
     cleaned: list[str] = []
     for value in values:
-        normalized = str(value).strip()
+        normalized = value.strip()
         if not normalized or normalized in seen:
             continue
         try:
@@ -89,23 +95,10 @@ def _clean_endpoint_types(values: list[str] | None) -> list[str]:
     if not cleaned:
         raise DomainError(
             DomainErrorCode.VALIDATION_FAILED,
-            "至少选择一个对外端点协议",
+            "至少选择一个原生端点协议",
             status_code=400,
         )
     return cleaned
-
-
-def _clean_tags(values: list[str] | None) -> list[str]:
-    if not values:
-        return []
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        normalized = str(value).strip()
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            result.append(normalized)
-    return result[:20]
 
 
 def _validate_model_id(model_id: str) -> str:
@@ -171,7 +164,6 @@ class FakeModelService:
                 if term in row.model_id.lower()
                 or (row.display_name and term in row.display_name.lower())
                 or (row.description and term in row.description.lower())
-                or any(term in tag.lower() for tag in (row.tags or []))
             ]
         if filters:
             provider = filters.get("provider")
@@ -186,9 +178,6 @@ class FakeModelService:
             capability = filters.get("capability")
             if capability:
                 result = [row for row in result if capability in (row.capabilities or [])]
-            tag = filters.get("tag")
-            if tag:
-                result = [row for row in result if tag in (row.tags or [])]
             if filters.get("enabled_only"):
                 result = [row for row in result if row.is_enabled]
             model_ids = filters.get("model_ids")
@@ -228,10 +217,11 @@ class FakeModelService:
         billing_tier: str | None = None,
         endpoint_types: list[str] | None = None,
         logo_url: str | None = None,
-        tags: list[str] | None = None,
+        group_ids: list[int] | None = None,
     ) -> FakeModel:
         begin_immediate_if_sqlite(session)
         normalized = _validate_model_id(model_id)
+        normalized_group_ids = self._validate_assignable_groups(session, actor, group_ids or [])
         scope = FakeModelScope.SYSTEM if actor.role is UserRole.ADMIN else FakeModelScope.PRIVATE
         owner_user_id = None if scope is FakeModelScope.SYSTEM else actor.id
         if scope is FakeModelScope.SYSTEM:
@@ -263,13 +253,13 @@ class FakeModelService:
             billing_tier=BillingTier(billing_tier or BillingTier.PAY_AS_YOU_GO.value),
             endpoint_types=_clean_endpoint_types(endpoint_types),
             logo_url=(logo_url or "").strip() or None,
-            tags=_clean_tags(tags),
         )
         self.catalog.add(session, row)
         try:
             session.flush()
         except IntegrityError as exc:
             raise DomainError(DomainErrorCode.CONFLICT, "模型标识冲突", status_code=409) from exc
+        self.catalog.replace_model_groups(session, row.id, normalized_group_ids)
         self.audit.add(
             session,
             action=AuditAction.FAKE_MODEL_CREATED,
@@ -290,6 +280,13 @@ class FakeModelService:
         fields: dict[str, Any],
     ) -> FakeModel:
         self._ensure_manageable(row, actor)
+        groups_provided = "group_ids" in fields
+        group_ids = fields.pop("group_ids", None)
+        normalized_group_ids = (
+            self._validate_assignable_groups(session, actor, group_ids or [])
+            if groups_provided
+            else None
+        )
         allowed = {
             "display_name",
             "description",
@@ -301,7 +298,6 @@ class FakeModelService:
             "billing_tier",
             "endpoint_types",
             "logo_url",
-            "tags",
         }
         pricing_names = {
             "input_price_per_million",
@@ -318,8 +314,6 @@ class FakeModelService:
                 value = (value or "").strip() or None
             elif name == "capabilities":
                 value = _clean_capabilities(value)
-            elif name == "tags":
-                value = _clean_tags(value)
             elif name == "billing_tier" and value is not None:
                 value = BillingTier(value)
             elif name == "endpoint_types":
@@ -345,6 +339,17 @@ class FakeModelService:
                 owner_user_id=row.owner_user_id,
                 metadata={"fields": changed},
             )
+        if groups_provided:
+            self.catalog.replace_model_groups(session, row.id, normalized_group_ids or [])
+            self.audit.add(
+                session,
+                action=AuditAction.FAKE_MODEL_UPDATED,
+                resource_type="fake_model",
+                resource_id=str(row.id),
+                actor_user_id=actor.id,
+                owner_user_id=row.owner_user_id,
+                metadata={"fields": ["group_ids"]},
+            )
         return row
 
     def delete(self, session: Session, *, row: FakeModel, actor: User) -> None:
@@ -366,6 +371,25 @@ class FakeModelService:
         if row.scope is FakeModelScope.PRIVATE and row.owner_user_id == actor.id:
             return
         raise DomainError(DomainErrorCode.FORBIDDEN, "无权管理该模型", status_code=403)
+
+    def _validate_assignable_groups(
+        self, session: Session, actor: User, group_ids: list[int]
+    ) -> list[int]:
+        """校验模型侧分组多选，不允许通过写模型加入不可见私有分组。"""
+        result = list(dict.fromkeys(group_ids))
+        for group_id in result:
+            group = self.catalog.get_group(session, group_id)
+            if group is None:
+                raise DomainError(
+                    DomainErrorCode.VALIDATION_FAILED, "模型分组不存在", status_code=400
+                )
+            if actor.role is not UserRole.ADMIN and not (
+                group.is_public or group.owner_user_id == actor.id
+            ):
+                raise DomainError(
+                    DomainErrorCode.FORBIDDEN, "无权将模型加入该分组", status_code=403
+                )
+        return result
 
 
 class ModelGroupService:
@@ -422,6 +446,7 @@ class ModelGroupService:
             name=name,
             description=(description or "").strip() or None,
             is_enabled=is_enabled,
+            is_public=owner.role is UserRole.ADMIN,
         )
         self.catalog.add_group(session, row)
         try:
@@ -485,10 +510,18 @@ class ModelGroupService:
         self, session: Session, *, row: ModelGroup, actor: User, fake_model_ids: list[int]
     ) -> ModelGroup:
         """原子替换分组成员；成员必须属于组所有者的可见模型集合。"""
+        if actor.role is not UserRole.ADMIN:
+            raise DomainError(
+                DomainErrorCode.FORBIDDEN,
+                "普通用户不能整体覆盖模型分组成员，请在模型编辑中分配分组",
+                status_code=403,
+            )
         begin_immediate_if_sqlite(session)
-        visible_ids = {
-            model.id for model in self.catalog.visible_models(session, row.owner_user_id)
-        }
+        visible_ids = (
+            {model.id for model in self.catalog.list_all_governance(session)}
+            if actor.role is UserRole.ADMIN
+            else {model.id for model in self.catalog.visible_models(session, row.owner_user_id)}
+        )
         invalid = [mid for mid in fake_model_ids if mid not in visible_ids]
         if invalid:
             raise DomainError(

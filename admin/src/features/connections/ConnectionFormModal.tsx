@@ -7,12 +7,12 @@ import { Icon } from "../../icons";
 import type { ImConnection, PlatformSpec } from "../../types/gateway";
 import { ConnectionSetupSection } from "./ConnectionSetupModal";
 import { QrLoginSection } from "./QrLoginDrawer";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 interface ConnectionFormModalProps {
   platform: PlatformSpec;
   connection: ImConnection | null;
   loadingConnection?: boolean;
-  readOnly?: boolean;
   onClose: () => void;
   onSaved: (connection: ImConnection) => void;
 }
@@ -25,7 +25,6 @@ export function ConnectionFormModal({
   platform,
   connection,
   loadingConnection = false,
-  readOnly = false,
   onClose,
   onSaved,
 }: ConnectionFormModalProps) {
@@ -69,7 +68,6 @@ export function ConnectionFormModal({
   );
 
   const submit = async () => {
-    if (readOnly) return;
     setSaving(true);
     setError("");
     try {
@@ -81,11 +79,18 @@ export function ConnectionFormModal({
             config,
           });
       if (saved.generated_tokens) setGeneratedTokens(saved.generated_tokens);
-      if (current?.desired_running) saved = await applyConnection(current.id);
+      if (current?.desired_running && saved.desired_running) saved = await applyConnection(current.id);
       publishConnection(saved);
-      notify(current ? "配置已保存" : "连接已创建并保存", "success");
+      notify(
+        current
+          ? platform.requires_binding && !saved.bound && current.bound
+            ? "配置已保存，原绑定已失效，请重新完成绑定/扫码后再启用"
+            : "配置已保存"
+          : "连接已创建并保存",
+        "success",
+      );
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "保存失败");
+      setError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -107,15 +112,7 @@ export function ConnectionFormModal({
       width="max-w-4xl"
     >
       <div className="max-h-[78vh] space-y-5 overflow-y-auto p-5 sm:p-6">
-        {readOnly && (
-          <div
-            role="status"
-            className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700"
-          >
-            管理员只读视图 · 此弹窗仅展示配置与连接信息，不会调用保存接口。
-          </div>
-        )}
-        {!platform.supports_login && !readOnly && (
+        {platform.supports_login ? null : (
           <section className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -184,7 +181,6 @@ export function ConnectionFormModal({
             <QrLoginSection
               connection={current}
               onBound={() => connectionChanged({ ...current, bound: true, state: "stopped" })}
-              disabled={readOnly}
             />
           ) : (
             <ConnectionSetupSection
@@ -193,16 +189,13 @@ export function ConnectionFormModal({
               generatedTokens={generatedTokens}
               onConnectionChange={connectionChanged}
               onTokenGenerated={tokenGenerated}
-              disabled={readOnly}
             />
           )
         ) : (
-          !readOnly && (
-            <section className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center">
-              <Icon name="info-circle" className="mx-auto h-5 w-5 text-slate-300" />
-              <p className="mt-2 text-xs text-slate-500">保存后显示 URL、Token 和 curl 命令。</p>
-            </section>
-          )
+          <section className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center">
+            <Icon name="info-circle" className="mx-auto h-5 w-5 text-slate-300" />
+            <p className="mt-2 text-xs text-slate-500">保存后显示 URL、Token 和 curl 命令。</p>
+          </section>
         )}
 
         {error && (

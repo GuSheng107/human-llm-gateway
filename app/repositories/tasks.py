@@ -238,6 +238,7 @@ class TaskRepository:
                     RequestTask.public_id.ilike(f"%{term}%"),
                     RequestTask.requested_model.ilike(f"%{term}%"),
                     RequestTask.api_key_prefix_snapshot.ilike(f"%{term}%"),
+                    RequestTask.api_key_name_snapshot.ilike(f"%{term}%"),
                 )
             )
         total = session.scalar(select(func.count()).select_from(RequestTask).where(*filters)) or 0
@@ -312,6 +313,32 @@ class TaskRepository:
 
     def get_inbox_state(self, session: Session, *, task_id: int) -> TaskInboxState | None:
         return session.get(TaskInboxState, task_id)
+
+    def acknowledge_tool_call_warning(
+        self, session: Session, *, task_id: int, owner_user_id: int
+    ) -> TaskInboxState:
+        """记录首个 Caller Tool 风险告知确认时间（幂等：首次写入后不覆盖）。
+
+        task_id 是 TaskInboxState 主键，天然实现「每个 RequestTask 只提示一次」；
+        并发确认以数据库唯一任务行收敛。
+        """
+        row = session.get(TaskInboxState, task_id)
+        now = _now()
+        if row is None:
+            row = TaskInboxState(
+                task_id=task_id,
+                owner_user_id=owner_user_id,
+                seen_at=now,
+                tool_call_warning_acknowledged_at=now,
+            )
+            session.add(row)
+            session.flush()
+            return row
+        if row.tool_call_warning_acknowledged_at is None:
+            row.tool_call_warning_acknowledged_at = now
+            row.seen_at = now
+            session.flush()
+        return row
 
     def list_seen_map(self, session: Session, *, task_ids: list[int]) -> dict[int, TaskInboxState]:
         if not task_ids:

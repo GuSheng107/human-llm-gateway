@@ -55,6 +55,20 @@ def bypass_captcha(monkeypatch):
     monkeypatch.setattr("app.api.auth.verify_captcha", lambda token, code: True)
 
 
+@pytest.fixture(autouse=True)
+def stub_llm_save_gate(monkeypatch):
+    """「启用 LLM 配置前必须连通性测试通过」的默认存根：一律视为成功。
+
+    需要失败语义的用例（tests/test_m7_llm_configs.py）自行 patch 同名函数覆盖。
+    """
+    from app.services.llm_test_service import ConnTestOutcome
+
+    async def _ok(**kwargs):
+        return ConnTestOutcome(True, "ok", "ok", 200)
+
+    monkeypatch.setattr("app.api.llm_configs.run_connectivity_test", _ok)
+
+
 @pytest.fixture()
 def client():
     engine = create_engine(
@@ -88,9 +102,11 @@ def client():
                 session.execute(
                     _text(
                         "INSERT INTO app_logs (level, event, message, request_id, logger,"
-                        " user_id, task_id, api_key_id, connection_id, context_json, created_at)"
+                        " user_id, task_id, api_key_id, connection_id, context_json,"
+                        " detail_json, detail_size_bytes, detail_truncated, created_at)"
                         " VALUES (:level, :event, :message, :request_id, :logger, :user_id,"
-                        " :task_id, :api_key_id, :connection_id, :context, :created_at)"
+                        " :task_id, :api_key_id, :connection_id, :context, :detail_json,"
+                        " :detail_size_bytes, :detail_truncated, :created_at)"
                     ),
                     {
                         "level": entry["level"],
@@ -105,6 +121,9 @@ def client():
                         "context": _json.dumps(
                             entry.get("context") or {}, ensure_ascii=False, default=str
                         ),
+                        "detail_json": entry.get("detail_json"),
+                        "detail_size_bytes": int(entry.get("detail_size_bytes") or 0),
+                        "detail_truncated": bool(entry.get("detail_truncated")),
                         "created_at": datetime.now(tz=UTC),
                     },
                 )

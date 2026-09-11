@@ -21,6 +21,7 @@ import { notify } from "../../components/feedback/Toast";
 import { PageHeader } from "../../components/layout/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
+import { friendlyErrorMessage, notifyError } from "../../utils/notify";
 import type { LlmConfig } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
 
@@ -116,7 +117,7 @@ export function LlmConfigsPage() {
       setItems(result.items);
       setTotal(result.total);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "加载失败");
+      setError(friendlyErrorMessage(caught, "加载失败"));
     } finally {
       setLoading(false);
     }
@@ -200,7 +201,7 @@ export function LlmConfigsPage() {
       }
       extraBody = parsed as Record<string, unknown>;
     } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : "Extra Body 不是合法 JSON");
+      setFormError(friendlyErrorMessage(caught, "Extra Body 不是合法 JSON 对象"));
       return;
     }
     const advanced = {
@@ -220,14 +221,7 @@ export function LlmConfigsPage() {
     };
     const payload: LlmConfigPayload | LlmConfigUpdatePayload = form.id
       ? {
-          ...(form.name.trim() ? { name: form.name.trim() } : {}),
-          protocol: form.protocol,
-          base_url: form.base_url.trim(),
-          model: form.model.trim(),
-          timeout_seconds: form.timeout_seconds,
-          enabled: form.enabled,
           ...advanced,
-          ...(form.api_key.trim() ? { api_key: form.api_key } : {}),
         }
       : {
           name: form.name.trim(),
@@ -244,15 +238,15 @@ export function LlmConfigsPage() {
     try {
       if (form.id) {
         await updateLlmConfig(form.id, payload as LlmConfigUpdatePayload);
-        notify("LLM 配置已更新");
+        notify("LLM 配置已更新", "success");
       } else {
         await createLlmConfig(payload as LlmConfigPayload);
-        notify("LLM 配置已创建");
+        notify("LLM 配置已创建", "success");
       }
       setForm(null);
       await load();
     } catch (caught) {
-      setFormError(caught instanceof Error ? caught.message : "保存失败");
+      setFormError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSaving(false);
     }
@@ -274,10 +268,10 @@ export function LlmConfigsPage() {
     }
     try {
       await deleteLlmConfig(cfg.id);
-      notify("LLM 配置已删除");
+      notify("LLM 配置已删除", "success");
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "删除失败");
+      notifyError(caught, "删除失败");
     }
   };
 
@@ -293,10 +287,14 @@ export function LlmConfigsPage() {
         detail: outcome.detail,
         http_status: outcome.http_status,
       });
-      notify(outcome.success ? "连通性测试成功" : "连通性测试失败");
+      if (outcome.success) {
+        notify("连通性测试成功", "success");
+      } else {
+        notify("连通性测试失败，请查看下方测试结果详情", "error");
+      }
       await load();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "测试失败");
+      notifyError(caught, "测试失败");
     } finally {
       setTestingId(null);
     }
@@ -458,14 +456,20 @@ export function LlmConfigsPage() {
           width="max-w-3xl"
         >
           <div className="max-h-[82vh] space-y-4 overflow-y-auto p-6">
+            {form.id && (
+              <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                编辑模式下仅允许修改高级配置，名称、协议、Base URL、模型、密钥等基础信息不可修改。
+              </p>
+            )}
             <label className="block">
               <span className="mb-1.5 block text-xs font-medium text-slate-600">
                 名称<span className="ml-0.5 text-danger">*</span>
               </span>
               <input
                 value={form.name}
+                disabled={Boolean(form.id)}
                 onChange={(event) => setForm({ ...form, name: event.target.value })}
-                className="field-input"
+                className="field-input disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                 maxLength={100}
               />
             </label>
@@ -475,6 +479,7 @@ export function LlmConfigsPage() {
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">协议</span>
                 <select
                   value={form.protocol}
+                  disabled={Boolean(form.id)}
                   onChange={(event) => {
                     const protocol = event.target.value as LlmProtocol;
                     setForm({
@@ -483,7 +488,7 @@ export function LlmConfigsPage() {
                       thinking_level: protocol === "openai_responses" ? form.thinking_level : "",
                     });
                   }}
-                  className="field-input"
+                  className="field-input disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                 >
                   <option value="openai_chat">OpenAI Chat Completions 格式</option>
                   <option value="openai_responses">OpenAI Responses 格式</option>
@@ -493,7 +498,9 @@ export function LlmConfigsPage() {
                   <input
                     type="checkbox"
                     checked={form.full_url}
+                    disabled={Boolean(form.id)}
                     onChange={(event) => setForm({ ...form, full_url: event.target.checked })}
+                    className="disabled:cursor-not-allowed"
                   />
                   直接填写完整端点 URL
                 </label>
@@ -507,10 +514,11 @@ export function LlmConfigsPage() {
                   min={5}
                   max={600}
                   value={form.timeout_seconds}
+                  disabled={Boolean(form.id)}
                   onChange={(event) =>
                     setForm({ ...form, timeout_seconds: Number(event.target.value) })
                   }
-                  className="field-input"
+                  className="field-input disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                 />
               </label>
             </div>
@@ -522,8 +530,9 @@ export function LlmConfigsPage() {
                 </span>
               <input
                 value={form.base_url}
+                disabled={Boolean(form.id)}
                 onChange={(event) => setForm({ ...form, base_url: event.target.value })}
-                className="field-input font-mono"
+                className="field-input font-mono disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                 placeholder={
                   form.full_url
                     ? `${BASE_URL_PLACEHOLDER[form.protocol]}/${
@@ -545,25 +554,22 @@ export function LlmConfigsPage() {
                 </span>
                 <input
                   value={form.model}
+                  disabled={Boolean(form.id)}
                   onChange={(event) => setForm({ ...form, model: event.target.value })}
-                  className="field-input font-mono"
+                  className="field-input font-mono disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                   placeholder="gpt-4o-mini / claude-3-5-sonnet"
                 />
               </label>
               <label className="block">
                 <span className="mb-1.5 block text-xs font-medium text-slate-600">
                   API Key<span className="ml-0.5 text-danger">*</span>
-                  {form.id && (
-                    <span className="ml-2 text-slate-400">
-                      （留空表示保留旧值）
-                    </span>
-                  )}
                 </span>
                 <input
                   type="password"
                   value={form.api_key}
+                  disabled={Boolean(form.id)}
                   onChange={(event) => setForm({ ...form, api_key: event.target.value })}
-                  className="field-input font-mono"
+                  className="field-input font-mono disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400"
                   placeholder={form.id ? "保留旧值" : "sk-..."}
                   autoComplete="off"
                 />
@@ -745,9 +751,11 @@ export function LlmConfigsPage() {
               <input
                 type="checkbox"
                 checked={form.enabled}
+                disabled={Boolean(form.id)}
                 onChange={(event) => setForm({ ...form, enabled: event.target.checked })}
+                className="disabled:cursor-not-allowed"
               />
-              启用（停用后不能测试和转发）
+              启用（勾选启用时保存会先执行真实连通性测试；失败则不保存；停用后不能测试和转发）
             </label>
 
             {formError && (

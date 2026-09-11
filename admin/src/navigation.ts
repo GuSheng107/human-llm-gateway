@@ -8,7 +8,6 @@ export type AppRouteId =
   | "apiKeys"
   | "models"
   | "llmConfigs"
-  | "tools"
   | "logs"
   | "invitations"
   | "users"
@@ -96,13 +95,6 @@ export const NAVIGATION: NavigationGroup[] = [
         icon: "gateway",
         capability: "model.manage",
       },
-      {
-        id: "tools",
-        path: "/tools",
-        label: "工具沙箱",
-        description: "工具白名单和隔离执行",
-        icon: "code",
-      },
     ],
   },
   {
@@ -111,8 +103,8 @@ export const NAVIGATION: NavigationGroup[] = [
       {
         id: "logs",
         path: "/settings/logs",
-        label: "日志审计",
-        description: "审计与应用日志",
+        label: "日志查询",
+        description: "按 traceId 串联审计与应用日志",
         icon: "list",
       },
       {

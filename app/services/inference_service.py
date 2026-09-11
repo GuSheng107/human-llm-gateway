@@ -16,8 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..core.constants import MAX_CONTEXT_CHAIN_DEPTH
+from ..core.logging import get_request_id, log_event, new_trace_id
 from ..core.time import utc_now
-from ..domain import capabilities as _capabilities
 from ..domain.enums import (
     ActorType,
     DeliveryMode,
@@ -67,9 +67,7 @@ class InferenceService:
     ) -> RequestTask:
         """创建任务并投递；调用方负责提交事务（失败整体回滚，名额不留存）。"""
         model_row = self.models.resolve(session, key, parsed.model)
-        if model_row is None or protocol.value not in (model_row.endpoint_types or []):
-            # 模型不存在/不可用，或未向该协议开放端点：对外统一 model_not_found，
-            # 不泄露可推断模型可见范围的差异信息。
+        if model_row is None:
             raise DomainError(
                 DomainErrorCode.MODEL_NOT_FOUND,
                 "The requested model does not exist or is not available.",
@@ -81,12 +79,6 @@ class InferenceService:
             previous_task = self._resolve_previous(session, parsed.previous_response_id, key)
 
         normalized = self._build_normalized(session, parsed, previous_task, protocol)
-        _capabilities.enforce_model_capabilities(
-            model_row.capabilities,
-            normalized=normalized,
-            raw_payload=parsed.raw,
-            stream=parsed.stream,
-        )
         self.admission.acquire_slot(session, key, owner)
 
         task = RequestTask(
@@ -97,9 +89,11 @@ class InferenceService:
                 else None
             ),
             previous_task_id=previous_task.id if previous_task else None,
+            request_id=get_request_id() or new_trace_id(),
             owner_user_id=owner.id,
             api_key_id=key.id,
             api_key_prefix_snapshot=key.key_prefix,
+            api_key_name_snapshot=key.name,
             fake_model_id=model_row.id,
             requested_model=parsed.model,
             protocol=protocol,
@@ -123,6 +117,17 @@ class InferenceService:
             TaskEventType.CREATED,
             ActorType.SYSTEM,
             {"protocol": protocol.value, "stream": parsed.stream},
+        )
+        log_event(
+            "info",
+            "inference.task_created",
+            "任务已入库并进入人工等待",
+            task_id=task.id,
+            api_key_id=key.id,
+            owner_user_id=owner.id,
+            protocol=protocol.value,
+            requested_model=parsed.model,
+            stream=parsed.stream,
         )
         self._deliver(session, task)
         return task
@@ -174,7 +179,13 @@ class InferenceService:
         previous_task: RequestTask | None,
         protocol: InferenceProtocol,
     ) -> dict[str, Any]:
-        """构造规范化请求 + 等价展开的历史上下文（唯一语义，§12.5）。"""
+        """构造规范化请求 + 等价展开的历史上下文（唯一语义，§12.5）。
+
+        Caller Tool 定义名称必须在同一请求内唯一，歧义直接协议兼容 400。
+        """
+        from ..domain.caller_tools import assert_unique_tool_names, build_caller_tool_catalog
+
+        assert_unique_tool_names(list(build_caller_tool_catalog(protocol, parsed.raw).definitions))
         if not isinstance(parsed, responses_protocol.ResponsesRequest):
             normalized = parsed.normalized_request()
             enforce_context_budget(normalized["context"])
@@ -224,6 +235,7 @@ class InferenceService:
         state: TaskState,
         *,
         allowed_sources: frozenset[TaskState] | set[TaskState] | None = None,
+        public_error: DomainErrorCode | None = None,
     ) -> bool:
         """推进到终态并幂等释放名额（只有裁决成功方才扣减用户计数）。
 
@@ -242,7 +254,9 @@ class InferenceService:
                 TaskState.TIMED_OUT: TaskEventType.TIMED_OUT,
                 TaskState.CANCELLED: TaskEventType.CANCELLED,
             }[state]
-            public_code = _TERMINAL_PUBLIC_ERROR_CODE.get(state)
+            public_code = (
+                public_error.value if public_error else _TERMINAL_PUBLIC_ERROR_CODE.get(state)
+            )
             if public_code is not None:
                 # release_slot_to_terminal 走 Core UPDATE 不回填 ORM 对象，
                 # 需显式 set，使同一 session 后续视图/事件读取一致。

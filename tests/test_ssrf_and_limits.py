@@ -83,6 +83,79 @@ def test_public_address_allowed_by_default() -> None:
 
 
 # ----------------------------------------------------------------------
+# 自指拦截：GATEWAY_PUBLIC_HOSTS 声明的网关自身地址一律拒绝
+# ----------------------------------------------------------------------
+
+
+def test_gateway_self_host_rejected(monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "gateway_public_hosts", "gateway.example.com", raising=False
+    )
+    with pytest.raises(SsrfViolation, match="本网关"):
+        validate_base_url("https://gateway.example.com/v1")
+
+
+def test_gateway_self_host_with_port_and_path_rejected(monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "gateway_public_hosts", "gw.example.com:8443", raising=False
+    )
+    with pytest.raises(SsrfViolation, match="本网关"):
+        validate_base_url("https://gw.example.com:8443/v1")
+
+
+def test_gateway_self_host_case_insensitive(monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "gateway_public_hosts", "Gateway.Example.com", raising=False
+    )
+    with pytest.raises(SsrfViolation, match="本网关"):
+        validate_base_url("https://GATEWAY.EXAMPLE.COM/v1")
+
+
+def test_gateway_hosts_empty_keeps_public_allowed() -> None:
+    from app.core.config import get_settings
+
+    assert get_settings().gateway_public_hosts == ""
+    validate_base_url("https://some-other-public.example.com/v1")
+
+
+def test_gateway_self_host_bare_ipv6_rejected(monkeypatch) -> None:
+    """裸 IPv6 不能被按端口截断：2001:db8::5 必须整串作为主机匹配。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_public_hosts", "2001:db8::5", raising=False)
+    with pytest.raises(SsrfViolation, match="本网关"):
+        validate_base_url("http://[2001:db8::5]/v1")
+
+
+def test_gateway_self_host_bracketed_ipv6_with_port_rejected(monkeypatch) -> None:
+    """[v6]:port 形式只取括号内的地址。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "gateway_public_hosts", "[2001:db8::5]:8443", raising=False)
+    with pytest.raises(SsrfViolation, match="本网关"):
+        validate_base_url("http://[2001:db8::5]:8443/v1")
+
+
+def test_gateway_host_set_ipv6_parsing(monkeypatch) -> None:
+    """集合解析：裸 v6 整串保留，host:port 剥端口，[v6]:port 取括号内。"""
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(),
+        "gateway_public_hosts",
+        "2001:db8::5, gw.example.com:8443, [2001:db8::7]:9443",
+        raising=False,
+    )
+    assert get_settings().gateway_host_set() == {"2001:db8::5", "gw.example.com", "2001:db8::7"}
+
+
+# ----------------------------------------------------------------------
 # 域名解析路径（rebinding / fail-closed）
 # ----------------------------------------------------------------------
 
@@ -180,6 +253,21 @@ def test_update_config_to_private_url_rejected(client, created_user) -> None:
     assert resp.status_code == 400
 
 
+def test_create_config_pointing_to_gateway_self_rejected(client, created_user, monkeypatch) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setattr(
+        get_settings(), "gateway_public_hosts", "my-gateway.example.com", raising=False
+    )
+    resp = client.post(
+        "/api/llm-configs",
+        headers=created_user.headers,
+        json=_config_body("https://my-gateway.example.com/v1"),
+    )
+    assert resp.status_code == 400
+    assert "本网关" in resp.json()["error"]["message"]
+
+
 # ----------------------------------------------------------------------
 # 请求前 rebinding 防护（配置通过、请求时 DNS 指向内网）
 # ----------------------------------------------------------------------
@@ -236,7 +324,9 @@ def test_connectivity_test_returns_blocked_for_private() -> None:
 
     from app.services.llm_test_service import test_openai_chat
 
-    outcome = asyncio.run(test_openai_chat(base_url="http://10.0.0.5/v1", api_key="sk"))
+    outcome = asyncio.run(
+        test_openai_chat(base_url="http://10.0.0.5/v1", api_key="sk", real_model="m")
+    )
     assert outcome.success is False
     assert outcome.reason_code == "blocked"
 

@@ -20,6 +20,8 @@
 
 Drop it in, and what you type in your chat becomes a standard LLM API response.
 
+> **Project status: invitation-only beta.** Core features are implemented for a single-instance deployment. Verify real IM accounts, LLM upstreams and the public proxy using the [deployment checklist](docs/DEPLOYMENT.md) before inviting users. The roadmap records remaining acceptance work.
+
 </div>
 
 ---
@@ -68,6 +70,8 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 - IM reply commands: slash commands (/ans /res /commit /page /file) and `#<task-id>` targeting, shared structure with the web editor
 - First valid submission wins — irrevocable
 
+> ⚠️ When replying manually, tool calls may **only reference tools declared by the caller in the original request** (names must match; otherwise the reply is rejected with 400). The gateway never executes any tool and makes no guarantee about execution results — the caller declares and runs tools at their own risk.
+
 </td><td width="50%" valign="top">
 
 ### 🤖 Real-LLM Orchestration
@@ -82,11 +86,10 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 - Two-layer page-context redaction (closed schema + pattern scrubbing)
 - 8 MiB / 1 MiB request caps, stream byte/duration budgets
 
-### 🧰 Tool Sandbox
-- Admin-maintained whitelist with explicit user confirmation
-- Fail-closed OCI isolation: no network or mounts, read-only root, resource and output caps
-- Optional text input over container stdin for approved tools; never rendered into a shell command
-- Caller-declared tool calls are never auto-executed
+### 🧰 Tool-Call Passthrough
+- Human replies may reference caller-declared tools (name must be declared, otherwise 400)
+- The gateway only forges and forwards tool-call output; no execution, no whitelist, no sandbox
+- The caller declares and executes tools themselves and bears all consequences
 
 </td></tr>
 </table>
@@ -96,8 +99,8 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 ```
                     ┌────────────────────────────────────────────┐
                     │                admin/ (React 19)           │
-                    │   login · console · tasks · keys · models  │
-                    │      LLM configs · logs · tools · chat     │
+│   login · console · tasks · keys · models  │
+│      LLM configs · logs · chat             │
                     └────────────────────┬───────────────────────┘
                                          │ /api/*
 ┌──────────────┐  /v1/*  ┌───────────────▼────────────────┐  upstream ┌─────────────┐
@@ -119,9 +122,8 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
 ### Prerequisites
 
-- Python 3.12+ with [uv](https://docs.astral.sh/uv/)
-- Node.js 18+
-- Docker or Podman when approved tools need the sandbox
+- Python 3.12 with [uv](https://docs.astral.sh/uv/) (pinned by `.python-version`)
+- Node.js 24; minimum compatible range: `^20.19.0 || >=22.12.0`
 
 ### Three Steps
 
@@ -134,24 +136,27 @@ cd human-llm-gateway
 python -c "import secrets; print(f'APP_SECRET={secrets.token_urlsafe(32)}')" >> .env
 echo "ADMIN_USERNAME=admin" >> .env
 echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
+# Public deployments must declare the gateway's own public host(s) so a user's
+# LLM upstream can never point back at the gateway itself:
+echo "GATEWAY_PUBLIC_HOSTS=gateway.example.com" >> .env
 
 # 3. Build the frontend, then run the server (single port —
 #    the backend serves the built SPA itself)
 uv sync --locked
 (cd admin && npm ci && npm run build)
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+uv run --locked uvicorn app.api:app --host 127.0.0.1 --port 8000 --ws-max-size 1048576 --timeout-graceful-shutdown 30
 ```
 
 Open **http://127.0.0.1:8000** — the console and the API share one port. The first run auto-creates the database and seeds default system models. Log in with your admin account, change the password, and start issuing invitations.
 
 ### 🚀 Deployment status
 
-The current release has been deployed and is intended to run as a single FastAPI process serving the built React console. Keep `.env`, the database, logs, and the container runtime configuration outside version control. Before starting a new instance, build the frontend and verify `GET /healthz`:
+Run one FastAPI process serving the built React console; multiple workers or replicas are unsupported. Keep `.env`, the database and logs outside version control. See [Deployment and operations](docs/DEPLOYMENT.md) for TLS, long request timeouts, service management, online backup and restore. Verify both probes after startup:
 
 ```bash
 cd admin && npm ci && npm run build
 cd ..
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+uv run --locked uvicorn app.api:app --host 127.0.0.1 --port 8000 --ws-max-size 1048576 --timeout-graceful-shutdown 30
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8000/readyz
 ```
@@ -164,15 +169,15 @@ High-frequency records are retained for seven days. The service cleans records o
 ### Five-Minute Tour
 
 ```bash
-# ① Create an API key in the console, pick a Fake Model (e.g. deepseek-v4-pro)
+# ① Sign in as a regular user and create an API key (e.g. select deepseek-v4-pro)
 
 # ② Call it just like OpenAI
 export OPENAI_API_KEY="sk-xxxx"    # gateway-issued key
 export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 
-python -c "
+uv run --locked python -c "
 from openai import OpenAI
-client = OpenAI()
+client = OpenAI(timeout=3600, max_retries=0)
 stream = client.chat.completions.create(
     model='deepseek-v4-pro',          # a Fake Model
     messages=[{'role': 'user', 'content': 'Hello!'}],
@@ -198,17 +203,17 @@ for chunk in stream:
 | M7 | LLM configs · draft generation · auto-forwarding · cross-protocol matrix · streaming | ✅ |
 | M8 | Global web assistant (context redaction) | ✅ |
 | M9 | Dashboard stats · log auditing · UX polish | ✅ |
-| M10 | Deployment & ops baseline | ✅ |
-| M11 | Release acceptance | 🟡 |
-| M12 | Isolated tool sandbox | ✅ |
+| M10 | Deployment & ops baseline | Baseline delivered; online key rotation remains |
+| M11 | Release acceptance | Local quality gates; real integration checks required |
+| M12 | Tool-call passthrough (sandbox removed) | ✅ |
 | M13 | Trace-linked logs, IM ownership isolation, retention | ✅ |
 | M14 | Unified reply workbench | ✅ |
 
 Full plan in [ROADMAP](docs/ROADMAP.md) (Chinese). Current test totals are reported by the quality gates below.
 
-M12 uses a fail-closed Docker/Podman OCI sandbox on Windows, macOS and Linux. Build the
-default image and review the security boundary in [SANDBOX](docs/SANDBOX.md). Approved
-stdin tools pass text through the container pipe with a 64 KiB limit.
+M12 originally shipped an isolated tool sandbox; it has been removed. The gateway no longer
+executes tools — human replies may only reference tools declared by the caller (validated by
+name), and the caller executes them at their own risk.
 
 The deployed service exposes `/api/*` for the console, `/v1/*` for the three supported
 inference protocols, `/connectors/*` for connector entry points, and `/healthz` for

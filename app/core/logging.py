@@ -80,6 +80,7 @@ _STRUCTURED = logging.getLogger("human_llm_gateway")
 _SENSITIVE_EXACT_KEYS = frozenset(
     {
         "authorization",
+        "proxy_authorization",
         "cookie",
         "set_cookie",
         "password",
@@ -88,6 +89,7 @@ _SENSITIVE_EXACT_KEYS = frozenset(
         "credential",
         "api_key",
         "apikey",
+        "x_api_key",
         "access_token",
         "refresh_token",
         "session_token",
@@ -114,10 +116,11 @@ _SENSITIVE_SUFFIXES = (
     "_cookie",
     "_credential",
     "_credentials",
+    "_signature",
 )
 _REDACTED = "[REDACTED]"
-_MAX_MESSAGE_LENGTH = 1000
-_MAX_CONTEXT_LENGTH = 4000
+# 数据 URL（base64 内联二进制）在日志中的占位摘要前缀。
+_DATA_URL_PLACEHOLDER = "[DATA-URL-OMITTED"
 
 
 def _is_sensitive_key(key: object) -> bool:
@@ -125,6 +128,17 @@ def _is_sensitive_key(key: object) -> bool:
     if normalized in _SENSITIVE_EXACT_KEYS or normalized.endswith(_SENSITIVE_SUFFIXES):
         return True
     return "api_key" in normalized and not normalized.endswith(("_id", "_prefix"))
+
+
+def _sanitize_data_url(value: str) -> str:
+    """把 data URL 替换为「媒体类型 + 字节长度」摘要；正文绝不落日志。"""
+    if not value.startswith("data:") or "," not in value:
+        return value
+    header = value.split(",", 1)[0]
+    media_type = header[5:].split(";", 1)[0] or "application/octet-stream"
+    payload = value.split(",", 1)[1]
+    approx_bytes = max(0, len(payload) * 3 // 4)
+    return f"{_DATA_URL_PLACEHOLDER} media_type={media_type} approx_bytes={approx_bytes}]"
 
 
 def sanitize_log_value(value: Any) -> Any:
@@ -135,6 +149,8 @@ def sanitize_log_value(value: Any) -> Any:
         }
     if isinstance(value, (list, tuple)):
         return [sanitize_log_value(item) for item in value]
+    if isinstance(value, str):
+        return _sanitize_data_url(value) if value.startswith("data:") else value
     return value
 
 
@@ -149,22 +165,139 @@ def _configure_logging() -> None:
     handler.setFormatter(logging.Formatter("%(message)s"))
     _STRUCTURED.addHandler(handler)
     _STRUCTURED.setLevel(logging.INFO)
+    # log_event 自带异步落库路径；禁止向 root 传播，否则 _PersistHandler
+    # 会把同一条记录再落库一次（event="logging.record" 的重复行）。
+    _STRUCTURED.propagate = False
 
 
-def _clip(value: Any, limit: int) -> Any:
-    if isinstance(value, str) and len(value) > limit:
-        return value[:limit]
-    return value
+# ----------------------------------------------------------------------
+# 日志详情信封（LogDetailEnvelope）：完整的脱敏诊断正文，懒加载展示
+# ----------------------------------------------------------------------
+
+_DETAIL_SCHEMA_VERSION = 1
+_DETAIL_SECTION_FORMATS = frozenset({"json", "text", "jsonl"})
+_TRACEBACK_MARKERS = ("Traceback (most recent call last):", 'File "', ", line ")
+
+
+def build_log_detail_envelope(
+    category: str,
+    sections: list[dict[str, Any]] | None = None,
+    links: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """构造版本化 LogDetailEnvelope（§11.1）。
+
+    sections：[{key, title, format(json|text|jsonl), data}]；数据在落库前
+    递归脱敏（调用方也可提前脱敏，这里兜底）。完整存储不截断；仅在超过
+    APP_LOG_DETAIL_GUARD_BYTES 病态防御上限时整体丢弃正文并显式标记
+    detail_truncated（绝不静默）。
+    """
+    normalized_sections: list[dict[str, Any]] = []
+    for index, section in enumerate(sections or []):
+        if not isinstance(section, dict):
+            continue
+        fmt = str(section.get("format") or "json")
+        if fmt not in _DETAIL_SECTION_FORMATS:
+            fmt = "text"
+        data = sanitize_log_value(section.get("data"))
+        normalized_sections.append(
+            {
+                "key": str(section.get("key") or f"section_{index}"),
+                "title": str(section.get("title") or section.get("key") or f"section_{index}"),
+                "format": fmt,
+                "data": data,
+                "redacted_fields": int(_count_redacted(sanitize_log_value(section.get("data")))),
+            }
+        )
+    return {
+        "schema_version": _DETAIL_SCHEMA_VERSION,
+        "category": category,
+        "sections": normalized_sections,
+        "links": [
+            {
+                "kind": str(link.get("kind") or ""),
+                "id": str(link.get("id") or ""),
+                "label": str(link.get("label") or ""),
+            }
+            for link in (links or [])
+            if isinstance(link, dict)
+        ],
+    }
+
+
+def _count_redacted(value: Any) -> int:
+    if isinstance(value, dict):
+        count = sum(1 for key in value if _is_sensitive_key(key))
+        return count + sum(_count_redacted(item) for item in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_count_redacted(item) for item in value)
+    return 0
+
+
+def looks_like_traceback(message: str) -> bool:
+    return any(marker in message for marker in _TRACEBACK_MARKERS) or message.count("\n") > 6
+
+
+def split_traceback_message(message: str) -> tuple[str, dict[str, Any] | None]:
+    """异常堆栈进入详情，列表 message 只保留一行可读摘要（§11.2）。"""
+    if not looks_like_traceback(message):
+        return message, None
+    lines = [line for line in message.splitlines() if line.strip()]
+    first_error_line = next(
+        (line for line in lines if line.startswith("Error")),
+        lines[0] if lines else "异常堆栈已记录到详情",
+    )
+    detail = build_log_detail_envelope(
+        "exception",
+        sections=[{"key": "exception", "title": "异常堆栈", "format": "text", "data": message}],
+    )
+    summary = f"异常堆栈已记录到详情（{first_error_line[:200]}）"
+    return summary, detail
+
+
+def _guard_detail(envelope: dict[str, Any] | None) -> tuple[str | None, int, bool]:
+    """防御上限：正常不截断；超限整体丢弃正文并显式标记（不静默）。"""
+    if envelope is None:
+        return None, 0, False
+    from .constants import APP_LOG_DETAIL_GUARD_BYTES
+
+    encoded = json.dumps(envelope, ensure_ascii=False, default=str)
+    if len(encoded.encode("utf-8")) <= APP_LOG_DETAIL_GUARD_BYTES:
+        return encoded, len(encoded.encode("utf-8")), False
+    guarded = {
+        "schema_version": envelope.get("schema_version", _DETAIL_SCHEMA_VERSION),
+        "category": envelope.get("category", "unknown"),
+        "sections": [],
+        "links": envelope.get("links", []),
+        "guard": {
+            "dropped": True,
+            "original_bytes": len(encoded.encode("utf-8")),
+            "reason": "超过单条详情防御上限，正文已丢弃（未截断保留部分）",
+        },
+    }
+    encoded = json.dumps(guarded, ensure_ascii=False, default=str)
+    return encoded, len(encoded.encode("utf-8")), True
 
 
 def log_event(level: str, event: str, message: str, **fields: object) -> None:
-    """结构化日志：stderr JSON 一行 + 异步队列批量落库。
+    """结构化日志：stderr JSON 一行 + 异步队列批量落库（不截断，完整存储）。
 
-    resource ID 等关联字段以关键字传入（user_id / task_id / api_key_id /
-    connection_id / connector_id / trace_id 等），缺失省略。异步上下文中
-    调用安全：持久化仅入队，不等待 SQLite 写锁。
+    - ``detail``：可选的 LogDetailEnvelope（dict）。落库前递归脱敏并做
+      病态防御上限检查；stderr 一行只输出轻量 context，不重复打印详情。
+    - resource ID 等关联字段以关键字传入（user_id / task_id / api_key_id /
+      connection_id / connector_id 等），缺失省略。异步上下文中调用安全。
     """
     _configure_logging()
+    detail_raw = fields.pop("detail", None)
+    envelope: dict[str, Any] | None = None
+    if isinstance(detail_raw, dict):
+        envelope = build_log_detail_envelope(
+            str(detail_raw.get("category") or "app"),
+            sections=detail_raw.get("sections"),
+            links=detail_raw.get("links"),
+        )
+    message, traceback_envelope = split_traceback_message(message)
+    if traceback_envelope is not None and envelope is None:
+        envelope = traceback_envelope
     record: dict[str, object] = {
         "level": level,
         "event": event,
@@ -187,7 +320,7 @@ def log_event(level: str, event: str, message: str, **fields: object) -> None:
         "%s",
         json.dumps(record, ensure_ascii=False, default=str),
     )
-    _enqueue_log(level, event, message, request_id, record)
+    _enqueue_log(level, event, message, request_id, record, envelope)
 
 
 # ----------------------------------------------------------------------
@@ -270,6 +403,9 @@ class _LogQueue:
                     "context": json.dumps(
                         entry.get("context") or {}, ensure_ascii=False, default=str
                     ),
+                    "detail_json": entry.get("detail_json"),
+                    "detail_size_bytes": int(entry.get("detail_size_bytes") or 0),
+                    "detail_truncated": bool(entry.get("detail_truncated")),
                 }
                 for entry in batch
             ]
@@ -287,9 +423,11 @@ class _LogQueue:
                 session.execute(
                     _text(
                         "INSERT INTO app_logs (level, event, message, request_id, logger,"
-                        " user_id, task_id, api_key_id, connection_id, context_json, created_at)"
+                        " user_id, task_id, api_key_id, connection_id, context_json,"
+                        " detail_json, detail_size_bytes, detail_truncated, created_at)"
                         " VALUES (:level, :event, :message, :request_id, :logger, :user_id,"
-                        " :task_id, :api_key_id, :connection_id, :context, :created_at)"
+                        " :task_id, :api_key_id, :connection_id, :context, :detail_json,"
+                        " :detail_size_bytes, :detail_truncated, :created_at)"
                     ),
                     [{**row, "created_at": _created_at(entry)} for row, entry in zip(rows, batch)],
                 )
@@ -334,6 +472,20 @@ class _LogQueue:
 
 _queue = _LogQueue()
 
+# context 之外的保留键（进独立列，不进 context_json）。
+_RESERVED_KEYS = frozenset(
+    {
+        "level",
+        "event",
+        "message",
+        "request_id",
+        "user_id",
+        "task_id",
+        "api_key_id",
+        "connection_id",
+    }
+)
+
 
 def _enqueue_log(
     level: str,
@@ -341,33 +493,24 @@ def _enqueue_log(
     message: str,
     request_id: str | None,
     record: dict[str, object],
+    envelope: dict[str, Any] | None = None,
 ) -> None:
-    context = {
-        key: _clip(value, _MAX_CONTEXT_LENGTH)
-        for key, value in record.items()
-        if key
-        not in {
-            "level",
-            "event",
-            "message",
-            "request_id",
-            "user_id",
-            "task_id",
-            "api_key_id",
-            "connection_id",
-        }
-    }
+    context = {key: value for key, value in record.items() if key not in _RESERVED_KEYS}
+    detail_json, detail_size, detail_truncated = _guard_detail(envelope)
     _queue.enqueue(
         {
             "level": level,
             "event": event,
-            "message": _clip(message, _MAX_MESSAGE_LENGTH),
+            "message": message,
             "request_id": request_id,
             "user_id": record.get("user_id"),
             "task_id": record.get("task_id"),
             "api_key_id": record.get("api_key_id"),
             "connection_id": record.get("connection_id"),
             "context": context,
+            "detail_json": detail_json,
+            "detail_size_bytes": detail_size,
+            "detail_truncated": detail_truncated,
             "created_at": time.time(),
         }
     )
@@ -388,10 +531,10 @@ def get_log_queue() -> _LogQueue:
 
 
 class _PersistHandler(logging.Handler):
-    """把普通 logging 记录（含 logger.exception）转入异步落库队列。"""
+    """把普通 logging 记录（INFO+，含 logger.exception）转入异步落库队列。"""
 
     def __init__(self) -> None:
-        super().__init__(level=logging.WARNING)
+        super().__init__(level=logging.INFO)
         self._last_emit: dict[str, float] = {}
 
     def emit(self, record: logging.LogRecord) -> None:
@@ -407,29 +550,30 @@ class _PersistHandler(logging.Handler):
             self._last_emit[key] = now
             message = record.getMessage()
             fields: dict[str, Any] = {"logger": record.name}
+            envelope: dict[str, Any] | None = None
             if record.exc_info:
-                fields["exception"] = (
-                    _clip(self.format(record), _MAX_CONTEXT_LENGTH)
-                    if self.formatter
-                    else f"{record.exc_info[0].__name__ if record.exc_info[0] else 'Exception'}"
-                )
+                # 异常堆栈完整进入详情（不截断）；列表 message 只留摘要。
+                full_text = self.format(record) if self.formatter else message
+                message, envelope = split_traceback_message(full_text)
             request_id = get_request_id()
             level = record.levelname.lower()
-            context_fields = {
-                key: _clip(value, _MAX_CONTEXT_LENGTH) for key, value in fields.items()
-            }
+            context_fields = dict(fields)
             role = get_log_user_role()
             if role is not None:
                 context_fields["role"] = role
+            detail_json, detail_size, detail_truncated = _guard_detail(envelope)
             _queue.enqueue(
                 {
                     "level": level,
                     "event": "logging.record",
-                    "message": _clip(message, _MAX_MESSAGE_LENGTH),
+                    "message": message,
                     "request_id": request_id,
                     "user_id": get_log_user_id(),
                     "logger": record.name,
                     "context": context_fields,
+                    "detail_json": detail_json,
+                    "detail_size_bytes": detail_size,
+                    "detail_truncated": detail_truncated,
                     "created_at": time.time(),
                 }
             )
@@ -441,9 +585,12 @@ _persist_handler: _PersistHandler | None = None
 
 
 def install_persistence() -> None:
-    """启动日志落库线程并把普通 logging（WARNING+）接入 app_logs。
+    """启动日志落库线程并把普通 logging（INFO+）接入 app_logs。
 
     在应用 lifespan 启动时调用；测试环境（内存库）调用 ``set_direct_store``。
+    root logger 默认 level 为 WARNING：NOTSET 子 logger 的 INFO 记录会
+    在源头被 isEnabledFor 丢弃、根本到不了 handler，故此处同步放开
+    root level，handler level 才能实际生效。
     """
     _install_persist_handler()
     _queue.start()
@@ -455,7 +602,9 @@ def _install_persist_handler() -> None:
         _configure_logging()
         handler = _PersistHandler()
         handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
-        logging.getLogger().addHandler(handler)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        root.setLevel(logging.INFO)
         _persist_handler = handler
 
 

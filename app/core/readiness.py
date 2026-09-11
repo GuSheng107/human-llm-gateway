@@ -13,6 +13,7 @@ class ReadinessState:
 
     `/readyz` 不能在每次探测时访问数据库或连接器；数据库和加密校验
     在 startup 中完成，协调器状态则通过已创建的 asyncio Task 动态判断。
+    网关不执行调用方工具；就绪探针不检查工具执行状态。
     """
 
     startup: bool = False

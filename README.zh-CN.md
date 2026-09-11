@@ -20,6 +20,8 @@
 
 一次部署，把「你在 IM 里敲的字」变成「标准 LLM API 响应」。
 
+> **项目状态：受邀试用版本。** 核心功能已实现，适合按单实例方式部署给受邀用户使用；真实 IM、LLM 上游和公网环境须按[部署验收说明](docs/DEPLOYMENT.md)验证。完整进度以路线图为准。
+
 </div>
 
 ---
@@ -69,6 +71,8 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 - IM 回复指令：斜杠命令（/ans /res /commit /page /file）与 `#<任务ID>` 定位，与 Web 编辑器共享结构
 - 首个有效提交获胜，不可撤销
 
+> ⚠️ 人工回复时，tool call **只能引用调用方在原始请求中声明的工具**（名称必须命中声明，否则 400 拒绝）。网关不执行任何工具、不担保执行结果——工具由调用方声明并自行执行，后果自负。
+
 </td><td width="50%" valign="top">
 
 ### 🤖 真实 LLM 编排
@@ -83,11 +87,10 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 - 页面上下文双层脱敏（封闭 schema + 正则擦洗）
 - 请求体 8MiB / 1MiB 上限，流式字节/时长预算
 
-### 🧰 工具沙箱
-- 管理员白名单，用户显式确认执行
-- 默认拒绝的 OCI 隔离：无网络、无挂载、只读根文件系统，并限制资源与输出
-- 获批工具可通过容器 stdin 接收文本，不把输入拼进 shell 命令
-- 调用方 tool call 永不自动执行
+### 🧰 工具调用透传
+- 人工回复可引用调用方声明的工具（名称必须命中声明，否则 400）
+- 网关只伪造并转发 tool call 输出：不执行、无白名单、无沙箱
+- 工具由调用方自行声明并执行，后果由使用者自行承担
 
 </td></tr>
 </table>
@@ -97,8 +100,8 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 ```
                     ┌────────────────────────────────────────────┐
                     │                admin/ (React 19)           │
-                    │   登录 · 工作台 · 任务 · 连接 · Key · 模型   │
-                    │      LLM 配置 · 日志 · 工具 · 小助手         │
+│   登录 · 工作台 · 任务 · 连接 · Key · 模型   │
+│      LLM 配置 · 日志 · 小助手               │
                     └────────────────────┬───────────────────────┘
                                          │ /api/*
 ┌──────────────┐  /v1/*  ┌───────────────▼────────────────┐  上游   ┌─────────────┐
@@ -120,9 +123,8 @@ Human LLM Gateway 是一个可自托管的 **LLM 身份网关**：
 
 ### 环境要求
 
-- Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)
-- Node.js 18+
-- 获批工具需要沙箱执行时安装 Docker 或 Podman
+- Python 3.12 与 [uv](https://docs.astral.sh/uv/)（仓库已指定 Python 版本）
+- Node.js 24，最低兼容 `^20.19.0 || >=22.12.0`
 
 ### 三步启动
 
@@ -135,23 +137,25 @@ cd human-llm-gateway
 python -c "import secrets; print(f'APP_SECRET={secrets.token_urlsafe(32)}')" >> .env
 echo "ADMIN_USERNAME=admin" >> .env
 echo "ADMIN_PASSWORD=Your-Str0ng!Pass" >> .env
+# 公网部署必须声明本网关的对公域名/公网 IP，防止用户把 LLM 上游指回本平台自身：
+echo "GATEWAY_PUBLIC_HOSTS=gateway.example.com" >> .env
 
 # 3. 构建前端静态资源，然后启动后端（后端直接托管 SPA，单端口访问）
 uv sync --locked
 (cd admin && npm ci && npm run build)
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+uv run --locked uvicorn app.api:app --host 127.0.0.1 --port 8000 --ws-max-size 1048576 --timeout-graceful-shutdown 30
 ```
 
 打开 **http://127.0.0.1:8000** — 管理台与 API 同端口。首次启动自动建库并写入默认系统模型，用 `.env` 中的管理员登录，改密后即可签发邀请码、创建用户。
 
 ### 🚀 部署状态
 
-当前版本已经完成部署，按单个 FastAPI 进程托管构建后的 React 管理台运行。`.env`、数据库、日志和容器运行时配置必须放在版本库之外。启动新实例前构建前端并检查 `GET /healthz`：
+使用单个 FastAPI 进程托管构建后的 React 管理台，不能使用多 worker 或多副本。`.env`、数据库和日志不进入版本控制。公网 TLS、人工长请求超时、服务管理和备份恢复命令见[部署与运维](docs/DEPLOYMENT.md)。启动后检查存活与就绪：
 
 ```bash
 cd admin && npm ci && npm run build
 cd ..
-uv run uvicorn app.api:app --host 0.0.0.0 --port 8000 --ws-max-size 1048576
+uv run --locked uvicorn app.api:app --host 127.0.0.1 --port 8000 --ws-max-size 1048576 --timeout-graceful-shutdown 30
 curl http://127.0.0.1:8000/healthz
 curl http://127.0.0.1:8000/readyz
 ```
@@ -163,15 +167,15 @@ curl http://127.0.0.1:8000/readyz
 ### 五分钟体验
 
 ```bash
-# ① 管理台创建 API Key（选一个 Fake Model，比如 deepseek-v4-pro）
+# ① 注册/登录普通用户，在管理台创建 API Key（例如选择 deepseek-v4-pro）
 
 # ② 像调用 OpenAI 一样调用它
 export OPENAI_API_KEY="sk-xxxx"    # 网关签发的 Key
 export OPENAI_BASE_URL="http://127.0.0.1:8000/v1"
 
-python -c "
+uv run --locked python -c "
 from openai import OpenAI
-client = OpenAI()
+client = OpenAI(timeout=3600, max_retries=0)
 stream = client.chat.completions.create(
     model='deepseek-v4-pro',          # Fake Model
     messages=[{'role': 'user', 'content': '你好'}],
@@ -197,17 +201,16 @@ for chunk in stream:
 | M7 | LLM 配置 · 草稿生成 · 自动转发 · 跨协议矩阵 · 流式 | ✅ |
 | M8 | 全局 Web 小助手（上下文脱敏） | ✅ |
 | M9 | 控制台统计 · 日志审计 · 体验收口 | ✅ |
-| M10 | 部署运维基础能力 | ✅ |
-| M11 | 发布验收 | 🟡 |
-| M12 | 隔离工具沙箱 | ✅ |
+| M10 | 部署运维基础能力 | 基础交付，主密钥在线轮换待增强 |
+| M11 | 发布验收 | 本地质量门禁；目标部署须验证真实集成 |
+| M12 | 工具调用透传（沙箱已移除） | ✅ |
 | M13 | trace 关联日志、IM 归属隔离、数据保留 | ✅ |
 | M14 | 统一回复工作台 | ✅ |
 
 完整计划见 [ROADMAP](docs/ROADMAP.md)。当前测试数量以末尾质量门禁的实际输出为准。
 
-M12 在 Windows、macOS 与 Linux 上统一使用默认拒绝的 Docker/Podman OCI 沙箱。
-默认镜像构建方式与安全边界见 [SANDBOX](docs/SANDBOX.md)。获批 stdin 工具通过
-容器管道接收文本，限制为 64 KiB。
+M12 原为隔离工具沙箱，现已移除。网关不再执行任何工具：人工回复只能引用调用方
+声明的工具（按名称校验），由调用方自行执行并承担全部后果。
 
 已部署服务的接口边界为：管理台 `/api/*`、三种推理协议 `/v1/*`、连接器入口
 `/connectors/*`、存活检查 `/healthz`。接口和数据库按当前部署契约运行。

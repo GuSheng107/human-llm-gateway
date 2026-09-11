@@ -10,6 +10,7 @@ import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { useAuth } from "../auth/AuthContext";
 import { AvatarCropModal } from "./AvatarCropModal";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
@@ -64,7 +65,7 @@ export function AccountPage() {
       setCropImage(null);
       notify("头像已更新", "success");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "头像保存失败");
+      setError(friendlyErrorMessage(caught, "头像保存失败"));
       throw caught;
     } finally {
       setSavingAvatar(false);
@@ -79,7 +80,7 @@ export function AccountPage() {
       setAvatarPreview(null);
       notify("头像已移除", "success");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "移除失败");
+      setError(friendlyErrorMessage(caught, "移除失败"));
     } finally {
       setSavingAvatar(false);
     }
@@ -101,7 +102,7 @@ export function AccountPage() {
       setUser(updated);
       notify("资料已更新");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "保存失败");
+      setError(friendlyErrorMessage(caught, "保存失败"));
     } finally {
       setSavingProfile(false);
     }
@@ -127,7 +128,7 @@ export function AccountPage() {
       setConfirm("");
       notify("密码已修改");
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "修改密码失败");
+      setError(friendlyErrorMessage(caught, "修改密码失败"));
     } finally {
       setSavingPassword(false);
     }

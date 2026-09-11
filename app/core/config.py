@@ -39,15 +39,12 @@ class Settings(BaseSettings):
     # 私有/回环上游默认拒绝；自建网关连本机 Ollama/内网 vLLM 时显式开启
     # （云元数据段无论开关一律拒绝，见 app/core/ssrf.py）。
     llm_allow_private_upstream: bool = False
-    # 工具只在本机 Docker/Podman 的 Linux OCI 容器中执行；运行时缺失时失败关闭。
-    tool_sandbox_runtime: str = "auto"
-    tool_sandbox_image: str = "human-llm-gateway-tool-sandbox:latest"
-    tool_sandbox_memory_mb: int = Field(default=256, ge=64, le=4096)
-    tool_sandbox_cpus: float = Field(default=1.0, gt=0, le=8)
-    tool_sandbox_pids_limit: int = Field(default=64, ge=16, le=512)
-    tool_sandbox_tmpfs_mb: int = Field(default=64, ge=16, le=1024)
+    # 本网关对外的公网主机名/IP（逗号分隔，可带端口）。SSRF 按 IP 网档判断，
+    # 无法识别"这就是本服务"：公网域名部署时必须填写，防止用户把 LLM 上游
+    # 指回本网关 /v1 形成自指转发链，绕过人工回复流程。
+    gateway_public_hosts: str = ""
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("app_secret")
     @classmethod
@@ -67,28 +64,28 @@ class Settings(BaseSettings):
             raise ValueError("APP_SECRET 必须是无 padding 的规范 base64url（43 字符）")
         return value
 
-    @field_validator("tool_sandbox_runtime")
-    @classmethod
-    def _validate_tool_sandbox_runtime(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized not in {"auto", "docker", "podman"}:
-            raise ValueError("TOOL_SANDBOX_RUNTIME 只允许 auto、docker 或 podman")
-        return normalized
-
-    @field_validator("tool_sandbox_image")
-    @classmethod
-    def _validate_tool_sandbox_image(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or normalized.startswith("-") or any(c.isspace() for c in normalized):
-            raise ValueError("TOOL_SANDBOX_IMAGE 不是合法 OCI 镜像引用")
-        if len(normalized) > 255:
-            raise ValueError("TOOL_SANDBOX_IMAGE 最多 255 字符")
-        return normalized
-
     def ensure_data_dir(self) -> None:
         if self.database_url.startswith("sqlite:///"):
             path = Path(self.database_url.removeprefix("sqlite:///"))
             path.parent.mkdir(parents=True, exist_ok=True)
+
+    def gateway_host_set(self) -> frozenset[str]:
+        """解析 gateway_public_hosts 为小写主机名集合（剥离端口与空白）。"""
+        hosts: set[str] = set()
+        for item in self.gateway_public_hosts.split(","):
+            entry = item.strip().lower()
+            if not entry:
+                continue
+            if entry.startswith("["):
+                # [v6] 或 [v6]:port：只取括号内的地址
+                closing = entry.find("]")
+                entry = entry[1:closing] if closing > 0 else entry.strip("[]")
+            elif entry.count(":") == 1:
+                # host:port 形式剥离端口；裸 IPv6（多冒号）原样保留
+                entry = entry.split(":", 1)[0]
+            if entry:
+                hosts.add(entry)
+        return frozenset(hosts)
 
     @property
     def human_timeout_in_range(self) -> bool:

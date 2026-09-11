@@ -68,7 +68,7 @@ class ApiKeyView(BaseModel):
     created_at: str
     owner_user_id: str | None = None
     owner_username: str | None = None
-    # 仅当 viewer 与 owner 相同时返回完整明文（admin 监管他人 key 不返回）。
+    # 仅所有者本人可取回；管理员监管他人 Key 时固定为 None。
     key: str | None = None
 
 
@@ -102,7 +102,6 @@ def _view(
                 row.key_ciphertext, get_settings().app_secret, _API_KEY_PURPOSE
             )
         except SecretCryptoError:
-            # 老库或重加密失败时静默退化为不可见，前端仍可见 prefix。
             plaintext = None
     return ApiKeyView(
         id=str(row.id),

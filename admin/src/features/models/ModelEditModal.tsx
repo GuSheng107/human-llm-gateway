@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   CAPABILITY_LABELS,
   ENDPOINT_LABELS,
@@ -9,9 +9,10 @@ import {
 } from "../../api/models";
 import { Modal } from "../../components/feedback/Modal";
 import { notify } from "../../components/feedback/Toast";
+import { notifyError } from "../../utils/notify";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
-import type { FakeModel } from "../../types/gateway";
+import type { FakeModel, ModelGroup } from "../../types/gateway";
 
 const CAPABILITY_OPTIONS = Object.keys(CAPABILITY_LABELS);
 const ENDPOINT_OPTIONS = Object.keys(ENDPOINT_LABELS);
@@ -19,6 +20,8 @@ const CONTEXT_PRESETS = [128_000, 256_000, 512_000, 1_000_000];
 
 interface ModelEditModalProps {
   model: FakeModel | null;
+  groups: ModelGroup[];
+  isAdmin: boolean;
   onClose: () => void;
   onSaved: () => void;
 }
@@ -31,6 +34,7 @@ interface FormState {
   max_output_tokens: string;
   capabilities: string[];
   endpoint_types: string[];
+  groupIds: string[];
 }
 
 const EMPTY_FORM: FormState = {
@@ -40,7 +44,8 @@ const EMPTY_FORM: FormState = {
   context_window: "",
   max_output_tokens: "",
   capabilities: [],
-  endpoint_types: [...ENDPOINT_OPTIONS],
+  endpoint_types: ["openai_chat"],
+  groupIds: [],
 };
 
 function fromModel(model: FakeModel): FormState {
@@ -52,6 +57,7 @@ function fromModel(model: FakeModel): FormState {
     max_output_tokens: model.max_output_tokens ? String(model.max_output_tokens) : "",
     capabilities: [...model.capabilities],
     endpoint_types: [...model.endpoint_types],
+    groupIds: [],
   };
 }
 
@@ -69,23 +75,51 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: "capabilities", label: "能力" },
 ];
 
-export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps) {
+export function ModelEditModal({
+  model,
+  groups,
+  isAdmin,
+  onClose,
+  onSaved,
+}: ModelEditModalProps) {
   const [tab, setTab] = useState<TabKey>("basic");
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
 
+  // 模型侧可分配组由后端按 owner/public/admin 计算，不能只依赖前端 owner_id。
+  const manageableGroups = useMemo(
+    () => groups.filter((group) => isAdmin || group.can_assign_model),
+    [groups, isAdmin],
+  );
+
   useEffect(() => {
     setTab("basic");
-    setForm(model ? fromModel(model) : EMPTY_FORM);
-  }, [model]);
+    if (model) {
+      // 初始选中 = 所有包含该模型的分组（model_ids 为 model_id 字符串数组）。
+      const groupIds = manageableGroups
+        .filter((group) => group.model_ids.includes(model.model_id))
+        .map((group) => group.id);
+      setForm({ ...fromModel(model), groupIds });
+    } else {
+      setForm(EMPTY_FORM);
+    }
+  }, [manageableGroups, model]);
 
   const patch = (changes: Partial<FormState>) =>
     setForm((previous) => ({ ...previous, ...changes }));
 
+  const toggleGroup = (groupId: string, checked: boolean) => {
+    patch({
+      groupIds: checked
+        ? [...new Set([...form.groupIds, groupId])]
+        : form.groupIds.filter((id) => id !== groupId),
+    });
+  };
+
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!form.model_id.trim()) {
-      notify("model_id 不能为空");
+      notify("model_id 不能为空", "error");
       return;
     }
     setSaving(true);
@@ -98,9 +132,10 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
           max_output_tokens: intOrNull(form.max_output_tokens),
           capabilities: form.capabilities,
           endpoint_types: form.endpoint_types,
+          group_ids: form.groupIds.map(Number),
         };
         await updateFakeModel(model.id, payload);
-        notify("模型已更新");
+        notify("模型已更新", "success");
       } else {
         const payload: FakeModelPayload = {
           model_id: form.model_id.trim(),
@@ -110,14 +145,15 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
           max_output_tokens: intOrNull(form.max_output_tokens),
           capabilities: form.capabilities,
           endpoint_types: form.endpoint_types,
+          group_ids: form.groupIds.map(Number),
         };
         await createFakeModel(payload);
-        notify("模型已创建");
+        notify("模型已创建", "success");
       }
       onSaved();
       onClose();
     } catch (caught) {
-      notify(caught instanceof Error ? caught.message : "保存失败");
+      notifyError(caught, "保存失败");
     } finally {
       setSaving(false);
     }
@@ -179,6 +215,43 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
                   placeholder="可留空"
                 />
               </label>
+              <div>
+                <span className="mb-1.5 block text-xs font-medium text-slate-600">所属分组（可多选）</span>
+                {manageableGroups.length > 0 ? (
+                  <div className="space-y-2 rounded-md border border-slate-200 p-3">
+                    {manageableGroups.map((group) => {
+                      const checked = form.groupIds.includes(group.id);
+                      return (
+                        <label
+                          key={group.id}
+                          className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-2 text-xs transition ${
+                            checked
+                              ? "border-primary bg-primary/5 text-primary"
+                              : "border-slate-200 text-slate-600 hover:border-slate-300"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={(event) => toggleGroup(group.id, event.target.checked)}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{group.name}</span>
+                          {!group.is_enabled && (
+                            <span className="text-[10px] text-slate-400">已停用</span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="rounded-md bg-slate-50 px-3 py-2.5 text-xs text-slate-400">
+                    暂无可选分组，可先在「管理分组」中创建。
+                  </p>
+                )}
+                <p className="mt-1.5 text-[10px] text-slate-400">
+                  可留空；未选择分组的模型在列表中归入 default 分组展示。
+                </p>
+              </div>
             </>
           )}
 
@@ -246,7 +319,7 @@ export function ModelEditModal({ model, onClose, onSaved }: ModelEditModalProps)
                   })}
                 </div>
                 <p className="mt-1.5 text-[10px] text-slate-400">
-                  至少保留一个；调用方只能通过勾选的协议端点调用该模型。
+                  至少保留一个；这里只描述模型原生支持的端点，不限制网关协议调用。
                 </p>
               </div>
               <label className="block">

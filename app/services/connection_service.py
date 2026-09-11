@@ -26,7 +26,7 @@ from ..connectors.registry import ConnectorRegistry, default_registry
 from ..core.config import get_settings
 from ..core.constants import BINDING_CODE_TTL_FALLBACK_SECONDS, IM_FILE_FORMATS
 from ..core.db import begin_immediate_if_sqlite
-from ..core.logging import get_request_id
+from ..core.logging import bind_trace_id, get_request_id, log_event, new_trace_id, reset_request_id
 from ..core.security import (
     decrypt_secret,
     encrypt_secret,
@@ -37,7 +37,7 @@ from ..core.security import (
 )
 from ..core.time import utc_now
 from ..domain.connections import ConnectorError
-from ..domain.dsl import Command, is_empty_draft, parse_command, parse_reply
+from ..domain.dsl import Command, parse_command
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -269,6 +269,16 @@ class ConnectionService:
                 )
             row.config_ciphertext = self._encrypt_config(merged)
             changed_fields = sorted(set(changed_fields))
+            # 需要绑定的平台（如企微 Bot）：配置已变化，旧绑定建立在旧凭据上，
+            # 必须清除绑定强迫重新完成绑定/扫码，避免把任务投递给旧 Bot。
+            # 运行中的旧连接器由 watchdog 按 desired_running=False 收敛停止。
+            if changed_fields and spec.requires_binding and row.bound_external_user_id:
+                row.bound_external_user_id = None
+                row.binding_code_hash = None
+                row.binding_code_expires_at = None
+                row.desired_running = False
+                row.state = ConnectionState.STOPPED
+                changed_fields.append("binding")
         if name is not None:
             new_name = name.strip()
             if not new_name or len(new_name) > 100:
@@ -407,6 +417,9 @@ class ConnectionService:
         self._drop_login_connector(row.id)
         row.desired_running = False
         await run_in_threadpool(session.flush)
+        # 清理投递与入站回执子行：二者以 NOT NULL FK 指向本连接且无级联，
+        # 不先清理会在 commit/flush 时抛 IntegrityError（表现为偶发删除失败）。
+        await run_in_threadpool(self.repo.delete_related_rows, session, row.id)
         await run_in_threadpool(self.repo.delete, session, row.id)
         self.audit.add(
             session,
@@ -847,6 +860,12 @@ class ConnectionService:
             owner_user_id=row.owner_user_id,
             metadata={"fields": ["login"]},
         )
+        log_event(
+            "info",
+            "connection.login_started",
+            "IM 连接扫码登录已发起",
+            connection_id=row.id,
+        )
         return result
 
     async def poll_login(
@@ -888,7 +907,21 @@ class ConnectionService:
         self.repo.bind_external_user(session, row.id, external_user_id)
         await run_in_threadpool(session.flush)
         await run_in_threadpool(session.refresh, row)
+        # 线程安全移除登录态连接器；运行中的连接仍持有旧 Token，
+        # 重扫码成功后重启，让新凭据立即生效。
         self._drop_login_connector(row.id)
+        if row.desired_running:
+            from ..connectors import connection_manager as manager
+
+            await manager.stop(row.id)
+            try:
+                await manager.start(row, config, self.inbound_handler())
+            except Exception as exc:
+                logger.warning(
+                    "connection restart after re-login failed",
+                    extra={"connection_id": row.id},
+                    exc_info=exc,
+                )
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_UPDATED,
@@ -897,6 +930,12 @@ class ConnectionService:
             actor_user_id=actor_user_id,
             owner_user_id=row.owner_user_id,
             metadata={"fields": ["login", "binding"]},
+        )
+        log_event(
+            "info",
+            "connection.login_completed",
+            "IM 连接扫码登录完成",
+            connection_id=row.id,
         )
         # Token 由服务端原子保存，不再返回浏览器。
         return {"status": "confirmed", "bound": True}
@@ -953,28 +992,48 @@ class ConnectionService:
         service = self
 
         async def handle(connection_id: int, message: InboundMessage) -> str:
-            with SessionLocal() as session:
-                try:
-                    row = service.repo.get(session, connection_id)
-                    if row is None:
-                        return InboundResult.UNHANDLED.value
-                    result = service.handle_inbound(session, row=row, message=message)
-                    session.commit()
-                    if result is InboundResult.BOUND and not row.desired_running:
-                        from ..connectors import connection_manager as manager
-
-                        await manager.stop(connection_id)
-                        row.state = ConnectionState.STOPPED
-                        row.next_retry_at = None
+            trace_token = None
+            if get_request_id() is None:
+                trace_token = bind_trace_id(new_trace_id())
+            try:
+                with SessionLocal() as session:
+                    try:
+                        row = service.repo.get(session, connection_id)
+                        if row is None:
+                            return InboundResult.UNHANDLED.value
+                        result = service.handle_inbound(session, row=row, message=message)
                         session.commit()
-                    return result.value
-                except Exception:
-                    session.rollback()
-                    raise
+                        if result is InboundResult.BOUND and not row.desired_running:
+                            from ..connectors import connection_manager as manager
+
+                            await manager.stop(connection_id)
+                            row.state = ConnectionState.STOPPED
+                            row.next_retry_at = None
+                            session.commit()
+                        return result.value
+                    except Exception:
+                        session.rollback()
+                        raise
+            finally:
+                if trace_token is not None:
+                    reset_request_id(trace_token)
 
         return handle
 
     def handle_inbound(
+        self, session: Session, *, row: ImConnection, message: InboundMessage
+    ) -> InboundResult:
+        """Process one inbound message under a request trace context."""
+        trace_token = None
+        if get_request_id() is None:
+            trace_token = bind_trace_id(new_trace_id())
+        try:
+            return self._handle_inbound(session, row=row, message=message)
+        finally:
+            if trace_token is not None:
+                reset_request_id(trace_token)
+
+    def _handle_inbound(
         self, session: Session, *, row: ImConnection, message: InboundMessage
     ) -> InboundResult:
         """统一进站处理：幂等 -> 绑定校验 -> 回复定位 -> 首个回复条件提交。"""
@@ -1061,9 +1120,8 @@ class ConnectionService:
     ) -> InboundResult:
         """把进站文本提交为任务回复（首个有效提交获胜）。
 
-        正文经 IM DSL 解析为 ReplyDraft（思考 / 假 tool call / 最终文本），与 Web
-        编辑器共享同一结构且往返不丢字段；无围栏块时整段作为 final_text，向后兼容
-        M4 纯文本回复（docs/API_CONTRACT.md §9、docs/PRODUCT.md §6.4）。
+        IM 回复当前为纯文本语义：整段正文即 final_text（后续迭代将重构
+        富文本回复，不再使用 DSL 围栏）。与 Web 编辑器共享 ReplyDraft 结构。
         定位语义：回复上下文 > `#<task_public_id> <正文>` > 唯一等待任务默认。
         """
         text = (message.text or "").strip()
@@ -1095,9 +1153,9 @@ class ConnectionService:
         if task is None or not text:
             return InboundResult.UNHANDLED
 
-        draft = parse_reply(text)
-        if is_empty_draft(draft):
-            return InboundResult.UNHANDLED
+        # IM 回复当前为纯文本语义（后续迭代将重构富文本回复）：整段正文即
+        # final_text，不解析工具/思考围栏。Web 回复工作台才是 Tool Call 入口。
+        draft = ReplyDraft(reasoning=None, tool_calls=[], final_text=text)
         accepted = self.tasks.first_reply_wins(
             session,
             task_id=task.id,
@@ -1115,6 +1173,14 @@ class ConnectionService:
                 payload={"source": "im", "connection_id": row.id},
             )
             receipt.task_id = task.id
+            log_event(
+                "info",
+                "im.reply_submitted",
+                "IM 回复已提交",
+                task_id=task.id,
+                connection_id=row.id,
+                source="im",
+            )
             return InboundResult.ACCEPTED
         # 晚到回复：只记录事件与审计，不覆盖已接受响应。
         self._add_task_event(
@@ -1126,6 +1192,15 @@ class ConnectionService:
             payload={"source": "im", "connection_id": row.id, "payload_hash": receipt.payload_hash},
         )
         receipt.task_id = task.id
+        log_event(
+            "warning",
+            "im.reply_rejected",
+            "IM 回复因任务已处理被拒绝",
+            task_id=task.id,
+            connection_id=row.id,
+            source="im",
+            reason="late",
+        )
         return InboundResult.LATE
 
     def _handle_command(

@@ -8,6 +8,7 @@ import { PasswordStrength, passwordValid } from "../../components/form/PasswordS
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
 import { Button } from "../../components/ui/Button";
 import { useAuth } from "./AuthContext";
+import { friendlyErrorMessage } from "../../utils/notify";
 
 export function ForcePasswordPage() {
   const { setUser, logout } = useAuth();
@@ -37,7 +38,7 @@ export function ForcePasswordPage() {
       setUser(user);
       navigate("/console", { replace: true });
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "修改密码失败");
+      setError(friendlyErrorMessage(caught, "修改密码失败"));
     } finally {
       setSubmitting(false);
     }

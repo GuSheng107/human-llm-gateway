@@ -20,7 +20,7 @@ interface AssistantUiState {
   activeSessionId: string | null;
   setActiveSessionId: (id: string | null) => void;
   refreshSessions: () => Promise<void>;
-  ensureSession: (llmConfigId: number | null) => Promise<string | null>;
+  ensureSession: (llmConfigId: number) => Promise<string | null>;
 }
 
 const AssistantContext = createContext<AssistantUiState | null>(null);
@@ -47,7 +47,7 @@ export function AssistantProvider({ children }: { children: ReactNode }) {
   }, [refreshSessions]);
 
   const ensureSession = useCallback(
-    async (llmConfigId: number | null) => {
+    async (llmConfigId: number) => {
       const existing = sessions.find((s) => s.llm_config_id === String(llmConfigId));
       if (existing) {
         setActiveSessionId(existing.id);

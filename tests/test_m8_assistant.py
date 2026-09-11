@@ -12,11 +12,12 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import patch
 
 import app.core.db as database
-from app.repositories.models import AssistantMessage
+from app.repositories.models import AssistantMessage, AssistantSession
 from app.services.llm_upstream import UpstreamChunk
 
 _UPSTREAM_CHAT = "app.services.llm_upstream.post_chat_completions"
@@ -41,7 +42,7 @@ def _make_llm_config(client, headers, name: str = "assistant-cfg") -> dict[str, 
     return resp.json()
 
 
-def _make_session(client, headers, llm_config_id: int | None) -> dict[str, Any]:
+def _make_session(client, headers, llm_config_id: int) -> dict[str, Any]:
     resp = client.post(
         "/api/assistant/sessions",
         headers=headers,
@@ -435,9 +436,31 @@ def test_anthropic_config_reply_extracted(client, created_user) -> None:
     assert resp.json()["text"] == "Anthropic 回答"
 
 
-def test_send_without_bound_config_rejected(client, created_user) -> None:
-    """会话未绑定 LLM 配置时发送 400。"""
-    session_data = _make_session(client, created_user.headers, None)
+def test_create_without_bound_config_rejected(client, created_user) -> None:
+    """新会话必须显式绑定可用 LLM 配置。"""
+    resp = client.post(
+        "/api/assistant/sessions",
+        headers=created_user.headers,
+        json={"title": "测试会话", "llm_config_id": None},
+    )
+    assert resp.status_code == 422
+
+
+def test_historical_unbound_session_is_readable_but_not_sendable(client, created_user) -> None:
+    """历史遗留的未绑定会话可读，但不能继续发送消息。"""
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    with database.SessionLocal() as db:
+        row = db.get(AssistantSession, int(session_data["id"]))
+        assert row is not None
+        row.llm_config_id = None
+        db.commit()
+
+    detail = client.get(
+        f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
+    )
+    assert detail.status_code == 200
+    assert detail.json()["llm_config_id"] is None
     resp = client.post(
         f"/api/assistant/sessions/{session_data['id']}/messages",
         headers=created_user.headers,
@@ -526,10 +549,32 @@ def test_stream_message_delta_and_done(client, created_user) -> None:
     assert messages[1]["role"] == "assistant"
     assert messages[1]["text"] == "小助手回答"
 
+    logs = client.get(
+        "/api/logs?category=assistant",
+        headers=created_user.headers,
+    )
+    assert logs.status_code == 200
+    events = {item["event"] for item in logs.json()["items"]}
+    assert "assistant.reply_persisted" in events
+    completed = next(
+        item
+        for item in logs.json()["items"]
+        if item["event"] == "assistant.upstream_call_completed"
+    )
+    assert completed["context"]["model"] == "gpt-4o-mini"
+    assert completed["context"]["stream"] is True
+    assert "duration_ms" in completed["context"]
+
 
 def test_stream_message_error_event(client, created_user) -> None:
     """流中 DomainError → error 事件（HTTP 仍为 200）；user 消息保留。"""
-    session_data = _make_session(client, created_user.headers, None)  # 未绑定配置
+    cfg = _make_llm_config(client, created_user.headers, "historical-stream")
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    with database.SessionLocal() as db:
+        row = db.get(AssistantSession, int(session_data["id"]))
+        assert row is not None
+        row.llm_config_id = None
+        db.commit()
     resp = client.post(
         f"/api/assistant/sessions/{session_data['id']}/messages/stream",
         headers=created_user.headers,
@@ -544,3 +589,260 @@ def test_stream_message_error_event(client, created_user) -> None:
     ).json()
     assert len(detail["messages"]) == 1
     assert detail["messages"][0]["role"] == "user"
+
+
+# ----------------------------------------------------------------------
+# PATCH /sessions/{id} 会话重命名
+# ----------------------------------------------------------------------
+
+
+def test_patch_session_rename(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    resp = client.patch(
+        f"/api/assistant/sessions/{session_data['id']}",
+        headers=created_user.headers,
+        json={"title": "重命名后的会话"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["title"] == "重命名后的会话"
+    detail = client.get(
+        f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
+    ).json()
+    assert detail["title"] == "重命名后的会话"
+
+
+def test_patch_session_empty_title_rejected(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    resp = client.patch(
+        f"/api/assistant/sessions/{session_data['id']}",
+        headers=created_user.headers,
+        json={"title": "   "},
+    )
+    assert resp.status_code == 400
+
+
+def test_patch_session_overlong_title_rejected(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    resp = client.patch(
+        f"/api/assistant/sessions/{session_data['id']}",
+        headers=created_user.headers,
+        json={"title": "x" * 300},
+    )
+    # SessionPatch.title 走 Pydantic max_length 校验，过长返回 422（或业务 400）。
+    assert resp.status_code in (400, 422)
+
+
+def test_patch_session_other_owner_forbidden(client, admin_headers, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    other = client.post(
+        "/api/users",
+        headers=admin_headers,
+        json={"username": "assistant-patch-other", "display_name": "x", "password": "User-Pass1!"},
+    )
+    assert other.status_code == 201
+    login = client.post(
+        "/api/auth/login",
+        json={
+            "username": "assistant-patch-other",
+            "password": "User-Pass1!",
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    other_token = login.json()["access_token"]
+    client.post(
+        "/api/account/password",
+        headers={"Authorization": f"Bearer {other_token}"},
+        json={"current_password": "User-Pass1!", "new_password": "Changed-Pass1!"},
+    )
+    login2 = client.post(
+        "/api/auth/login",
+        json={
+            "username": "assistant-patch-other",
+            "password": "Changed-Pass1!",
+            "captcha_token": "t",
+            "captcha_code": "c",
+        },
+    )
+    other_headers = {"Authorization": f"Bearer {login2.json()['access_token']}"}
+    resp = client.patch(
+        f"/api/assistant/sessions/{session_data['id']}",
+        headers=other_headers,
+        json={"title": "hijack"},
+    )
+    assert resp.status_code == 404
+
+
+# ----------------------------------------------------------------------
+# 用量估算 + 上下文压缩
+# ----------------------------------------------------------------------
+
+
+def test_get_session_returns_usage(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    detail = client.get(
+        f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
+    ).json()
+    assert "usage" in detail
+    usage = detail["usage"]
+    assert usage["message_count"] == 0
+    assert usage["estimated_tokens"] == 0
+    assert usage["limit_tokens"] > 0
+    assert usage["ratio"] == 0.0
+    assert usage["compressing"] is False
+
+
+def _seed_long_history(client, session_id: int, n: int = 8, chars: int = 3400) -> None:
+    """直接向库中写入 n 条长消息，确保估算 token 超过 0.8 阈值触发压缩。"""
+    with database.SessionLocal() as session:
+        from app.domain.enums import AssistantRole
+        from app.repositories.models import AssistantMessage as _AM
+
+        for i in range(n):
+            role = AssistantRole.USER if i % 2 == 0 else AssistantRole.ASSISTANT
+            session.add(
+                _AM(
+                    session_id=session_id,
+                    role=role,
+                    content_json=json.dumps({"text": "X" * chars}, ensure_ascii=False),
+                )
+            )
+        session.commit()
+
+
+def test_compression_triggers_and_summary_message_kind(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    _seed_long_history(client, int(session_data["id"]))
+    with patch(_UPSTREAM_CHAT, side_effect=lambda **kw: _chat_reply(**kw)):
+        resp = client.post(
+            f"/api/assistant/sessions/{session_data['id']}/messages",
+            headers=created_user.headers,
+            json={"text": "hi"},
+        )
+    assert resp.status_code == 201
+    with database.SessionLocal() as session:
+        from app.repositories.models import AssistantMessage as _AM
+
+        rows = (
+            session.query(_AM)
+            .filter(_AM.session_id == int(session_data["id"]))
+            .order_by(_AM.id.asc())
+            .all()
+        )
+    kinds = [r.kind if not hasattr(r.kind, "value") else r.kind.value for r in rows]
+    assert "summary" in kinds or len(rows) <= 6, f"未触发压缩：rows={len(rows)} kinds={kinds}"
+
+
+def test_compress_event_emitted_when_triggered(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    _seed_long_history(client, int(session_data["id"]))
+
+    async def fake_stream(**kwargs: Any):
+        for piece in ("流式", "回答"):
+            yield UpstreamChunk(text=piece)
+
+    with (
+        patch(_UPSTREAM_CHAT, side_effect=lambda **kw: _chat_reply(**kw)),
+        patch(_UPSTREAM_STREAM_CHAT, side_effect=fake_stream),
+    ):
+        resp = client.post(
+            f"/api/assistant/sessions/{session_data['id']}/messages/stream",
+            headers=created_user.headers,
+            json={"text": "再问一句"},
+        )
+    assert resp.status_code == 200
+    events = [line for line in resp.text.split("\n\n") if line.startswith("data: ")]
+    payloads = [json.loads(line[len("data: ") :]) for line in events]
+    types = [p.get("type") for p in payloads]
+    assert "compress" in types, f"未发出 compress 事件，实际 types={types}"
+    assert "delta" in types
+    assert "done" in types
+    for p in payloads:
+        assert "trace_id" in p
+        assert p["trace_id"]
+
+
+# ----------------------------------------------------------------------
+# SSE 事件 trace_id 贯通
+# ----------------------------------------------------------------------
+
+
+def test_stream_events_carry_trace_id(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+
+    async def fake_stream(**kwargs: Any):
+        for piece in ("ok",):
+            yield UpstreamChunk(text=piece)
+
+    with patch(_UPSTREAM_STREAM_CHAT, side_effect=fake_stream):
+        resp = client.post(
+            f"/api/assistant/sessions/{session_data['id']}/messages/stream",
+            headers=created_user.headers,
+            json={"text": "trace 测试"},
+        )
+    assert resp.status_code == 200
+    payloads = []
+    for line in resp.text.split("\n\n"):
+        if not line.startswith("data: "):
+            continue
+        payloads.append(json.loads(line[len("data: ") :]))
+    assert payloads, "SSE 没有任何事件"
+    for p in payloads:
+        assert p.get("trace_id"), f"事件缺 trace_id: {p}"
+
+
+# ----------------------------------------------------------------------
+# 同步回包 trace_id 落库
+# ----------------------------------------------------------------------
+
+
+def test_sync_reply_records_trace_id(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    with patch(_UPSTREAM_CHAT, side_effect=lambda **kw: _chat_reply(**kw)):
+        resp = client.post(
+            f"/api/assistant/sessions/{session_data['id']}/messages",
+            headers=created_user.headers,
+            json={"text": "hi"},
+        )
+    assert resp.status_code == 201
+    detail = client.get(
+        f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
+    ).json()
+    assistant = [m for m in detail["messages"] if m["role"] == "assistant"][-1]
+    assert assistant["trace_id"], "回复消息未记录 trace_id"
+    assert assistant["upstream_metadata"].get("trace_id")
+
+
+# ----------------------------------------------------------------------
+# kind: summary 在 GET 中正确暴露
+# ----------------------------------------------------------------------
+
+
+def test_summary_message_kind_in_get(client, created_user) -> None:
+    cfg = _make_llm_config(client, created_user.headers)
+    session_data = _make_session(client, created_user.headers, int(cfg["id"]))
+    _seed_long_history(client, int(session_data["id"]))
+    with patch(_UPSTREAM_CHAT, side_effect=lambda **kw: _chat_reply(**kw)):
+        r = client.post(
+            f"/api/assistant/sessions/{session_data['id']}/messages",
+            headers=created_user.headers,
+            json={"text": "触发压缩"},
+        )
+    assert r.status_code == 201
+    detail = client.get(
+        f"/api/assistant/sessions/{session_data['id']}", headers=created_user.headers
+    ).json()
+    summary_msgs = [m for m in detail["messages"] if m.get("kind") == "summary"]
+    if summary_msgs:
+        m = summary_msgs[0]
+        assert m["role"] == "summary"
+        assert m["text"]

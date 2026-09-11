@@ -77,6 +77,7 @@ async def test_responses_non_stream_sdk_parseable(
     response = await responses_openai_client.responses.create(
         model=_MODEL,
         input="北京天气如何",
+        store=False,
     )
     runner.cancel()
     # SDK 解析成功即证明结构兼容；再校验关键字段。
@@ -107,6 +108,7 @@ async def test_responses_stream_sdk_parseable(
     stream = await responses_openai_client.responses.create(
         model=_MODEL,
         input="上海天气如何",
+        store=False,
         stream=True,
     )
     created = None

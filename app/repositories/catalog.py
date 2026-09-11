@@ -23,7 +23,7 @@ from .models import ApiKeyFakeModel, FakeModel, ModelGroup, ModelGroupItem
 # 按母公司划分：分组是第一层候选集，模型选择只能在分组内收窄。
 # 模型一律为 system scope（owner_user_id 为空），因此对所有用户可见可用；
 # 分组挂在管理员名下仅因为 model_groups.owner_user_id 非空约束，不影响模型可见性。
-# meta：模型广场展示属性（价格单位：元 / 1M tokens；capabilities/tags 为标签）。
+# meta：模型广场展示属性（价格单位：元 / 1M tokens；capabilities 为能力标签）。
 DEFAULT_MODEL_GROUPS: list[dict] = [
     {
         "name": "DeepSeek",
@@ -36,7 +36,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 32_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["代码", "推理"],
             },
             "deepseek-v4-flash": {
                 "input": 0.5,
@@ -45,7 +44,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 16_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
         },
     },
@@ -53,6 +51,16 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "OpenAI",
         "owned_by": "openai",
         "models": {
+            "gpt-6-astra": {
+                # 与 gpt-5.6-sol 相同的能力标签与上下文（仅名称不同）
+                "input": 4,
+                "output": 20,
+                "cached": 0.4,
+                "context": 1_050_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoints": ["openai_chat", "openai_responses"],
+            },
             "gpt-5.6-sol": {
                 "input": 4,
                 "output": 20,
@@ -61,7 +69,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["旗舰", "多模态"],
             },
             "gpt-5.6-terra": {
                 "input": 2,
@@ -71,7 +78,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["均衡"],
             },
             "gpt-5.6-luna": {
                 "input": 0.2,
@@ -81,7 +87,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["轻量"],
             },
             "gpt-5.5": {
                 "input": 5,
@@ -91,7 +96,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": [],
             },
             "gpt-5.4": {
                 "input": 2.5,
@@ -101,7 +105,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["openai_chat", "openai_responses"],
-                "tags": ["入门"],
             },
         },
     },
@@ -109,6 +112,28 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "Claude",
         "owned_by": "claude",
         "models": {
+            # Fable 5.1 与 Mythos 5.1 为同一底层模型：1M 上下文，128K 输出，
+            # Mythos 5.1 官方定价 $10/$50 每百万 tokens（受限发布）。
+            "claude-mythos-5.1": {
+                "input": 10,
+                "output": 50,
+                "cached": 1,
+                "cached_write": 12.5,
+                "context": 1_000_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoints": ["anthropic_messages"],
+            },
+            "claude-fable-5.1": {
+                "input": 10,
+                "output": 50,
+                "cached": 1,
+                "cached_write": 12.5,
+                "context": 1_000_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+                "endpoints": ["anthropic_messages"],
+            },
             "claude-fable-5": {
                 "input": 30,
                 "output": 120,
@@ -118,7 +143,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["旗舰", "长文本"],
             },
             "claude-opus-5": {
                 "input": 21,
@@ -129,7 +153,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["推理"],
             },
             "claude-sonnet-5": {
                 "input": 10.5,
@@ -140,7 +163,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["均衡"],
             },
             "claude-haiku-4-5": {
                 "input": 5,
@@ -151,7 +173,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 32_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
                 "endpoints": ["anthropic_messages"],
-                "tags": ["轻量"],
             },
         },
     },
@@ -165,7 +186,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["长文本"],
             },
             "kimi-k2.7-code": {
                 "input": 4,
@@ -173,7 +193,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 256_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["代码"],
             },
             "kimi-k2.7-code-highspeed": {
                 "input": 8,
@@ -181,7 +200,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 256_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["代码", "高速"],
             },
             "kimi-k2.6": {
                 "input": 2,
@@ -189,7 +207,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 256_000,
                 "max_output": 32_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
         },
     },
@@ -203,7 +220,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["推理"],
             },
             "MiniMax-M2.7": {
                 "input": 1.5,
@@ -211,7 +227,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 204_800,
                 "max_output": 32_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "MiniMax-M2.7-highspeed": {
                 "input": 3,
@@ -219,7 +234,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 204_800,
                 "max_output": 32_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["高速"],
             },
         },
     },
@@ -227,13 +241,20 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "Grok",
         "owned_by": "grok",
         "models": {
+            "grok-4.7": {
+                # 参数与 grok-4.6 一致（尚未发布，先占位）
+                "input": 18,
+                "output": 72,
+                "context": 500_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+            },
             "grok-4.6": {
                 "input": 18,
                 "output": 72,
                 "context": 500_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["旗舰"],
             },
             "grok-4.5": {
                 "input": 9,
@@ -241,7 +262,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 500_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["均衡"],
             },
             "grok-4.3": {
                 "input": 4.5,
@@ -249,7 +269,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 32_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["轻量"],
             },
         },
     },
@@ -263,7 +282,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 131_072,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["旗舰"],
             },
             "qwen3.8-flash": {
                 "input": 1,
@@ -271,7 +289,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 131_072,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "qwen3.7-max": {
                 "input": 4.8,
@@ -279,7 +296,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "streaming"],
-                "tags": [],
             },
             "qwen3.7-plus": {
                 "input": 1.6,
@@ -287,7 +303,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "streaming"],
-                "tags": [],
             },
             "qwen3.7-flash": {
                 "input": 0.4,
@@ -295,7 +310,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "streaming"],
-                "tags": ["入门"],
             },
         },
     },
@@ -309,7 +323,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["代码", "推理"],
             },
             "glm-5.3-flash": {
                 "input": 0.7,
@@ -317,7 +330,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 128_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["免费试用"],
             },
             "glm-5.2": {
                 "input": 2,
@@ -325,7 +337,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 128_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": [],
             },
             "glm-4.7": {
                 "input": 1,
@@ -333,7 +344,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 200_000,
                 "max_output": 16_000,
                 "capabilities": ["tools", "thinking", "streaming"],
-                "tags": ["入门"],
             },
         },
     },
@@ -341,6 +351,14 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "Gemini",
         "owned_by": "gemini",
         "models": {
+            "gemini-3.8-flash": {
+                "input": 5.25,
+                "output": 26.25,
+                "cached": 0.26,
+                "context": 1_000_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+            },
             "gemini-3.7-flash": {
                 "input": 2.1,
                 "output": 8.4,
@@ -348,7 +366,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["长文本"],
             },
             "gemini-3.6-flash": {
                 "input": 1.75,
@@ -357,7 +374,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "gemini-3.5-flash": {
                 "input": 1,
@@ -366,7 +382,6 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["性价比"],
             },
             "gemini-3.5-flash-lite": {
                 "input": 0.35,
@@ -375,11 +390,17 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "context": 1_000_000,
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
-                "tags": ["入门"],
             },
         },
     },
 ]
+
+
+def _default_endpoint_types(meta: dict) -> list[str]:
+    values = meta.get("endpoints")
+    if isinstance(values, list) and values:
+        return list(values)
+    return [ModelEndpointType.OPENAI_CHAT.value]
 
 
 def _now() -> datetime:
@@ -555,6 +576,21 @@ class FakeModelRepository:
             session.add(ModelGroupItem(model_group_id=group_pk, fake_model_id=model_pk))
         session.flush()
 
+    def model_group_ids(self, session: Session, model_pk: int) -> list[int]:
+        return list(
+            session.scalars(
+                select(ModelGroupItem.model_group_id)
+                .where(ModelGroupItem.fake_model_id == model_pk)
+                .order_by(ModelGroupItem.model_group_id)
+            )
+        )
+
+    def replace_model_groups(self, session: Session, model_pk: int, group_ids: list[int]) -> None:
+        session.query(ModelGroupItem).filter(ModelGroupItem.fake_model_id == model_pk).delete()
+        for group_pk in dict.fromkeys(group_ids):
+            session.add(ModelGroupItem(model_group_id=group_pk, fake_model_id=model_pk))
+        session.flush()
+
     def delete_group(self, session: Session, group_pk: int) -> None:
         row = session.get(ModelGroup, group_pk)
         if row is not None:
@@ -619,7 +655,6 @@ class FakeModelRepository:
         capabilities: list[str] | None = None,
         billing_tier: BillingTier = BillingTier.PAY_AS_YOU_GO,
         endpoint_types: list[str] | None = None,
-        tags: list[str] | None = None,
     ) -> FakeModel:
         row = FakeModel(
             scope=FakeModelScope.SYSTEM,
@@ -638,11 +673,8 @@ class FakeModelRepository:
             capabilities=capabilities or [],
             billing_tier=billing_tier,
             endpoint_types=(
-                list(endpoint_types)
-                if endpoint_types
-                else [endpoint.value for endpoint in ModelEndpointType]
+                list(endpoint_types) if endpoint_types else [ModelEndpointType.OPENAI_CHAT.value]
             ),
-            tags=tags or [],
         )
         session.add(row)
         return row
@@ -689,10 +721,13 @@ class FakeModelRepository:
                         max_output_tokens=meta.get("max_output"),
                         capabilities=meta.get("capabilities", []),
                         billing_tier=BillingTier(meta.get("billing", "pay_as_you_go")),
-                        endpoint_types=meta.get("endpoints"),
-                        tags=meta.get("tags", []),
+                        endpoint_types=_default_endpoint_types(meta),
                     )
                     session.flush()
                 model_pks.append(model.id)
-            if not self.group_items(session, group.id):
-                self.replace_group_items(session, group.id, model_pks)
+            # 只需保证种子模型在分组内（新增模型可落入既有分组）；不移除管理员
+            # 手工增删的其他成员。
+            existing_pks = {item.id for item in self.group_items(session, group.id)}
+            missing = [pk for pk in model_pks if pk not in existing_pks]
+            if missing:
+                self.replace_group_items(session, group.id, list(existing_pks) + missing)

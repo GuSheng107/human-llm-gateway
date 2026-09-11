@@ -17,11 +17,21 @@ export function listAssistantSessions(): Promise<AssistantSession[]> {
 
 export function createAssistantSession(
   title: string,
-  llmConfigId: number | null,
+  llmConfigId: number,
 ): Promise<AssistantSession> {
   return api<AssistantSession>("/api/assistant/sessions", {
     method: "POST",
     body: JSON.stringify({ title, llm_config_id: llmConfigId }),
+  });
+}
+
+export function patchAssistantSession(
+  id: string,
+  patch: { title?: string },
+): Promise<AssistantSession> {
+  return api<AssistantSession>(`/api/assistant/sessions/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
   });
 }
 
@@ -49,16 +59,18 @@ export function sendAssistantMessage(
 
 export interface AssistantStreamCallbacks {
   onDelta?: (text: string) => void;
-  onDone?: (message: AssistantMessage) => void;
-  onError?: (code: string, message: string) => void;
+  onCompress?: (text: string) => void;
+  onDone?: (message: AssistantMessage, traceId: string | null) => void;
+  onError?: (code: string, message: string, traceId: string | null) => void;
 }
 
 interface AssistantStreamEvent {
-  type: "delta" | "done" | "error";
+  type: "delta" | "done" | "error" | "compress";
   text?: string;
   message?: AssistantMessage;
   code?: string;
   message_text?: string;
+  trace_id?: string | null;
 }
 
 /** 消费一个 SSE data 帧（提取 data: 行并解析 JSON）。 */
@@ -70,18 +82,32 @@ function parseSseFrame(frame: string): AssistantStreamEvent | null {
   try {
     const parsed = JSON.parse(jsonText) as Record<string, unknown>;
     const type = typeof parsed.type === "string" ? parsed.type : "";
+    const traceId =
+      typeof parsed.trace_id === "string" && parsed.trace_id ? parsed.trace_id : null;
     if (type === "error") {
       return {
         type: "error",
         code: typeof parsed.code === "string" ? parsed.code : "unknown",
         message_text: typeof parsed.message === "string" ? parsed.message : "回复失败",
+        trace_id: traceId,
       };
     }
     if (type === "delta" && typeof parsed.text === "string") {
-      return { type: "delta", text: parsed.text };
+      return { type: "delta", text: parsed.text, trace_id: traceId };
+    }
+    if (type === "compress") {
+      return {
+        type: "compress",
+        text: typeof parsed.text === "string" ? parsed.text : "历史已压缩",
+        trace_id: traceId,
+      };
     }
     if (type === "done" && parsed.message && typeof parsed.message === "object") {
-      return { type: "done", message: parsed.message as AssistantMessage };
+      return {
+        type: "done",
+        message: parsed.message as AssistantMessage,
+        trace_id: traceId,
+      };
     }
     return null;
   } catch {
@@ -151,10 +177,16 @@ export async function streamAssistantMessage(
       if (!event) continue;
       if (event.type === "delta" && event.text) {
         callbacks.onDelta?.(event.text);
+      } else if (event.type === "compress") {
+        callbacks.onCompress?.(event.text ?? "历史已压缩");
       } else if (event.type === "done" && event.message) {
-        callbacks.onDone?.(event.message);
+        callbacks.onDone?.(event.message, event.trace_id ?? null);
       } else if (event.type === "error") {
-        callbacks.onError?.(event.code ?? "unknown", event.message_text ?? "回复失败");
+        callbacks.onError?.(
+          event.code ?? "unknown",
+          event.message_text ?? "回复失败",
+          event.trace_id ?? null,
+        );
       }
     }
   }

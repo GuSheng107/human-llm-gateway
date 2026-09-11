@@ -112,7 +112,6 @@ export interface FakeModel {
   billing_tier: string;
   endpoint_types: string[];
   logo_url: string | null;
-  tags: string[];
   created_at: string;
 }
 
@@ -123,6 +122,9 @@ export interface ModelGroup {
   description: string | null;
   is_enabled: boolean;
   model_ids: string[];
+  is_public: boolean;
+  can_manage: boolean;
+  can_assign_model: boolean;
   created_at: string;
 }
 
@@ -150,7 +152,7 @@ export interface ApiKey {
   created_at: string;
   owner_user_id: string | null;
   owner_username: string | null;
-  /** 完整明文，仅 owner 本人视角返回；admin 监管他人 Key 时为 null。 */
+  /** 完整明文，仅所有者本人视角返回；管理员监管他人 Key 时为 null。 */
   key?: string | null;
 }
 
@@ -182,6 +184,16 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description: string | null;
+  /** JSON Schema；null 表示未声明。 */
+  input_schema: Record<string, unknown> | null;
+  source_type: string;
+  /** 是否允许小助手生成参数（无法抽取输入 Schema 的工具不允许）。 */
+  is_generatable: boolean;
 }
 
 export interface ReplyDraft {
@@ -219,6 +231,8 @@ export interface TaskItem {
   reply_strategy: string;
   delivery_mode: string;
   api_key_prefix: string;
+  api_key_name: string;
+  display_name: string;
   stream_requested: boolean;
   has_tools: boolean;
   /** 提示词尾部预览（Agent 提示词的提问在末尾）。 */
@@ -232,10 +246,11 @@ export interface TaskItem {
 }
 
 export interface TaskDetail extends TaskItem {
+  origin_trace_id: string | null;
   is_owner: boolean;
   can_edit: boolean;
   prompt_text: string;
-  tool_names: string[];
+  tool_definitions: ToolDefinition[];
   raw_request: Record<string, unknown> | null;
   previous_task_id: string | null;
   drafts: TaskDraft[];
@@ -298,7 +313,7 @@ export interface LlmConfigTestResult {
 // Web 小助手（docs/API_CONTRACT.md §10）
 // ---------------------------------------------------------------------------
 
-export type AssistantRole = "system" | "user" | "assistant";
+export type AssistantRole = "system" | "user" | "assistant" | "summary";
 
 export interface AssistantToolCall {
   id: string;
@@ -320,12 +335,17 @@ export interface AssistantPageContext {
   context_version: number;
 }
 
+export type AssistantMessageKind = "normal" | "summary";
+
 export interface AssistantMessage {
   id: string;
   role: AssistantRole;
+  kind: AssistantMessageKind;
   text: string;
   page_context: AssistantPageContext | null;
   upstream_metadata: Record<string, unknown> | null;
+  trace_id?: string | null;
+  error_code?: string | null;
   created_at: string;
 }
 
@@ -337,6 +357,15 @@ export interface AssistantSession {
   created_at: string;
 }
 
+export interface AssistantSessionUsage {
+  estimated_tokens: number;
+  limit_tokens: number;
+  ratio: number;
+  message_count: number;
+  compressing: boolean;
+}
+
 export interface AssistantSessionDetail extends AssistantSession {
   messages: AssistantMessage[];
+  usage: AssistantSessionUsage;
 }
