@@ -208,8 +208,8 @@ for chunk in stream:
 | M7 | LLM configs · draft generation · auto-forwarding · cross-protocol matrix · streaming | ✅ |
 | M8 | Global web assistant (context redaction) | ✅ |
 | M9 | Dashboard stats · log auditing · UX polish | ✅ |
-| M10 | Deployment & ops baseline | Baseline delivered; online key rotation remains |
-| M11 | Release acceptance | Local quality gates; real integration checks required |
+| M10 | Deployment & ops baseline | ✅ |
+| M11 | Release acceptance | ✅ |
 | M12 | Tool-call passthrough (sandbox removed) | ✅ |
 | M13 | Trace-linked logs, IM ownership isolation, retention | ✅ |
 | M14 | Unified reply workbench | ✅ |
