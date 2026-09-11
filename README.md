@@ -11,14 +11,14 @@
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=white)](admin/package.json)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688?logo=fastapi&logoColor=white)](pyproject.toml)
 [![Tailwind](https://img.shields.io/badge/Tailwind%20CSS-4-06B6D4?logo=tailwindcss&logoColor=white)](admin/package.json)
-[![Tests](https://img.shields.io/badge/tests-quality%20gates-brightgreen)]()
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg)]()
+[![Quality gates](https://github.com/GuSheng107/human-llm-gateway/actions/workflows/quality.yml/badge.svg)](https://github.com/GuSheng107/human-llm-gateway/actions/workflows/quality.yml)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-ff69b4.svg)](CONTRIBUTING.md)
 
 **English** | [简体中文](README.zh-CN.md)
 
 ---
 
-Drop it in, and what you type in your chat becomes a standard LLM API response.
+Any OpenAI- or Anthropic-compatible client can call it. The reply is written by you, or by your own LLM upstream.
 
 > **Project status: invitation-only beta.** Core features are implemented for a single-instance deployment. Verify real IM accounts, LLM upstreams and the public proxy using the [deployment checklist](docs/DEPLOYMENT.md) before inviting users. The roadmap records remaining acceptance work.
 
@@ -28,9 +28,14 @@ Drop it in, and what you type in your chat becomes a standard LLM API response.
 
 ## ✨ What is this
 
-Ever wanted a tool to call "GPT-5" — but the answer is actually written by **you**? Or wished your real LLM's output carried **your custom identity**?
+Human LLM Gateway is a self-hostable **LLM identity gateway**. A caller uses a normal
+OpenAI or Anthropic SDK; the answer behind the response comes from a person in the web
+console, from your own LLM upstream, or from whichever one replies first.
 
-Human LLM Gateway is a self-hostable **LLM identity gateway**:
+It fits two situations:
+
+- a client should call a model name like `gpt-5`, while the reply is written by you;
+- you already run a real LLM and want its output to carry an identity you control.
 
 ```
    Caller (SDK / app)                 Your gateway                   Who answers
@@ -98,9 +103,9 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 
 ```
                     ┌────────────────────────────────────────────┐
-                    │                admin/ (React 19)           │
-│   login · console · tasks · keys · models  │
-│      LLM configs · logs · chat             │
+                    │              admin/ (React 19)             │
+                    │  login · console · tasks · keys · models   │
+                    │  LLM configs · logs · chat                 │
                     └────────────────────┬───────────────────────┘
                                          │ /api/*
 ┌──────────────┐  /v1/*  ┌───────────────▼────────────────┐  upstream ┌─────────────┐
@@ -111,7 +116,7 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 ┌──────────────┐  /conn. │  app/repositories/  persistence│  delivery ┌─────────────┐
 │ your IM      │ ──────► │  app/connectors/    IM         │ ────────► │ your IM     │
 │ client       │ ◄────── │  app/protocols/     3 protocols│ ◄──────── │ WeChat/…    │
-└──────────────┘  DSL    │  app/domain/        pure rules │   reply   └─────────────┘
+└──────────────┘  reply  │  app/domain/        pure rules │   reply   └─────────────┘
                           │  app/core/          security  │
                           └────────────────────────────────┘
 ```
@@ -208,6 +213,7 @@ for chunk in stream:
 | M12 | Tool-call passthrough (sandbox removed) | ✅ |
 | M13 | Trace-linked logs, IM ownership isolation, retention | ✅ |
 | M14 | Unified reply workbench | ✅ |
+| M15 | Caller-tool validation with one-time warning · request view · LLM generation guidance · log detail envelope | ✅ |
 
 Full plan in [ROADMAP](docs/ROADMAP.md) (Chinese). Current test totals are reported by the quality gates below.
 
@@ -222,16 +228,24 @@ schema.
 
 ## 🤝 Contributing
 
+`master` is protected. Every change lands through a branch and a pull request.
+
 ```bash
-# Quality gates — must pass before every commit
+# Quality gates — must pass before opening a pull request
 uv lock --check
 uv run --locked ruff format --check app tests
 uv run --locked ruff check app tests
 uv run --locked python -m pytest -q
-cd admin && npm ci && npm run build && npm test
+git diff --check
+(cd admin && npm ci && npm test && npm run build)
+
+# Branch, push, open the pull request
+git switch -c feat/your-change
+git push -u origin feat/your-change
+gh pr create --base master --fill
 ```
 
-See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for conventions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [AGENTS.md](AGENTS.md) for the binding repository rules.
 
 ## 📄 License
 
@@ -247,11 +261,8 @@ See [AGENTS.md](AGENTS.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for convention
 
 <div align="center">
 
-**If this project helps you, please consider giving it a star ⭐**
+[Report an issue](https://github.com/GuSheng107/human-llm-gateway/issues) · [Join the discussion](https://github.com/GuSheng107/human-llm-gateway/discussions)
 
-[Report Issues](https://github.com/GuSheng107/human-llm-gateway/issues) · [Discussions](https://github.com/GuSheng107/human-llm-gateway/discussions)
-
-Special thanks to the [Linux.do community](https://linux.do/) for the discussion,
-feedback, and encouragement that helped this project reach deployment.
+Thanks to the [Linux.do community](https://linux.do/) for the early feedback and discussion.
 
 </div>
