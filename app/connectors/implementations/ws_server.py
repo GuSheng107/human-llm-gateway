@@ -63,19 +63,23 @@ class WebSocketServerConnector(Connector):
             self._sessions.pop(session_id, None)
 
     async def deliver(self, envelope: DeliveryEnvelope) -> None:
-        async with self._lock:
-            sessions = list(self._sessions.items())
-        if not sessions:
-            raise ConnectorError(ERROR_DELIVERY, "没有在线的 WebSocket 会话")
         payload = envelope.to_json()
+        # 在锁内仅做会话快照，随后释放锁再逐个 send_json（网络 I/O），
+        # 避免持锁期间阻塞 register_session/remove_session 等并发操作。
+        async with self._lock:
+            if not self._sessions:
+                raise ConnectorError(ERROR_DELIVERY, "没有在线的 WebSocket 会话")
+            sessions = list(self._sessions.items())
         dead: list[int] = []
         for session_id, session in sessions:
             try:
                 await session.send_json(payload)
             except Exception:  # noqa: BLE001  # 会话已断开时记录并清理
                 dead.append(session_id)
-        for session_id in dead:
-            await self.remove_session(session_id)
+        if dead:
+            async with self._lock:
+                for session_id in dead:
+                    self._sessions.pop(session_id, None)
         if len(dead) == len(sessions):
             raise ConnectorError(ERROR_DELIVERY, "WebSocket 会话全部推送失败")
 
@@ -91,17 +95,19 @@ class WebSocketServerConnector(Connector):
 
     async def _broadcast(self, payload: dict[str, Any]) -> None:
         async with self._lock:
+            if not self._sessions:
+                raise ConnectorError(ERROR_DELIVERY, "没有在线的 WebSocket 会话")
             sessions = list(self._sessions.items())
-        if not sessions:
-            raise ConnectorError(ERROR_DELIVERY, "没有在线的 WebSocket 会话")
         dead: list[int] = []
         for session_id, session in sessions:
             try:
                 await session.send_json(payload)
             except Exception:  # noqa: BLE001
                 dead.append(session_id)
-        for session_id in dead:
-            await self.remove_session(session_id)
+        if dead:
+            async with self._lock:
+                for session_id in dead:
+                    self._sessions.pop(session_id, None)
         if len(dead) == len(sessions):
             raise ConnectorError(ERROR_DELIVERY, "WebSocket 会话全部推送失败")
 

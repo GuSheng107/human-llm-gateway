@@ -6,6 +6,7 @@ IM 投递失败不影响 Web 任务可见性（docs/ROADMAP.md M4）；本服务
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any
@@ -116,9 +117,7 @@ class DeliveryService:
             from .llm_summary_service import summarize_task_prompt
 
             # 同步上下文（脚本/测试）：阻塞生成总结；失败静默降级为 None。
-            summary = asyncio.run(
-                summarize_task_prompt(session, connection=connection, task=task)
-            )
+            summary = asyncio.run(summarize_task_prompt(session, connection=connection, task=task))
         envelope = self.build_envelope(task, summary=summary)
         payload = envelope.to_json()
         via_outbox = connection.platform in OUTBOX_PLATFORMS
@@ -258,11 +257,9 @@ class DeliveryService:
         与 _async_push 的差异只在推送前先跑总结（失败静默降级为尾部摘要），
         全程只推送一次；outbox 载荷在入会话时落最终版本。
         """
-        import asyncio as _asyncio
-
         from sqlalchemy import event
 
-        loop = _asyncio.get_running_loop()
+        loop = asyncio.get_running_loop()
         pushed = False
 
         def _push_after_commit(_session: Session) -> None:
@@ -275,6 +272,7 @@ class DeliveryService:
                     connection_id=connection.id, task_id=task.id, connector=connector
                 )
             )
+
         event.listen(session, "after_commit", _push_after_commit, once=True)
         return DeliveryOutcome(
             connection_id=connection.id,

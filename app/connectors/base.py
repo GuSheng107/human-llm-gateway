@@ -23,6 +23,8 @@ class ConnectorContext:
     name: str
     platform: str
     config: dict[str, Any] = field(default_factory=dict)
+    # 数据库中已保存的绑定用户；进程重启后由实例预填投递目标（仅 push 参考）。
+    bound_external_user_id: str | None = None
 
 
 @dataclass

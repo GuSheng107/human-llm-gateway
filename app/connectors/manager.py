@@ -97,6 +97,7 @@ class ConnectionManager:
             name=row.name,
             platform=row.platform,
             config=config,
+            bound_external_user_id=getattr(row, "bound_external_user_id", None),
         )
         # 先登记监督任务再执行任何 await，避免并发 start 在幂等检查与
         # 任务登记之间交错而产生孤儿任务（重复启动）。
@@ -226,6 +227,18 @@ class ConnectionManager:
             if connection_id in self._stopping:
                 # 手动停止：状态由服务层负责（stopped / desired_running=false）。
                 return
+
+            # 连接已断开（线程退出）。主动停止旧 connector 以释放其占用的资源
+            # （如 lark 的模块级 loop 独占权 _active_instance），否则残留的独占权
+            # 会让后续重试创建的新实例因 "同一进程内仅支持一个飞书长连接实例"
+            # 而无法启动。
+            try:
+                await connector.stop()
+            except ConnectorError:
+                logger.warning(
+                    "connector stop failed after closed",
+                    extra={"connection_id": connection_id},
+                )
 
             # 稳定成功 60 秒后重置退避级别；期间再次断线则继承上一轮退避。
             if (utc_now() - online_since).total_seconds() >= CONNECTION_HEALTHY_RESET_SECONDS:

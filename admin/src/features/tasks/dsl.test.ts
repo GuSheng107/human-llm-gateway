@@ -55,9 +55,12 @@ describe("isEmptyDraft", () => {
 
   it("有内容不为空", () => {
     expect(isEmptyDraft({ reasoning: null, tool_calls: [], final_text: "x" })).toBe(false);
+  });
+
+  it("仅 reasoning/tool_calls 而无最终文本视为空（与后端同构）", () => {
     expect(
       isEmptyDraft({ reasoning: null, tool_calls: [{ id: "a", name: "b", arguments: {} }], final_text: null }),
-    ).toBe(false);
-    expect(isEmptyDraft({ reasoning: "r", tool_calls: [], final_text: null })).toBe(false);
+    ).toBe(true);
+    expect(isEmptyDraft({ reasoning: "r", tool_calls: [], final_text: null })).toBe(true);
   });
 });

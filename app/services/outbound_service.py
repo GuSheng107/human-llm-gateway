@@ -17,6 +17,7 @@ outbox 复用 connector_outbox 表：task_id 指向命令定位的任务（NOT N
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -250,6 +251,7 @@ def _dispatch_outbound(
         if connector is not None:
             _push_best_effort(
                 connector,
+                session=session,
                 target=target,
                 text=text if kind == PAGE_KIND else None,
                 filename=filename,
@@ -265,6 +267,7 @@ def _dispatch_outbound(
         return
     _push_best_effort(
         connector,
+        session=session,
         target=target,
         text=text if filename is None else None,
         filename=filename,
@@ -275,6 +278,7 @@ def _dispatch_outbound(
 def _push_best_effort(
     connector: Connector,
     *,
+    session: Session,
     target: str,
     text: str | None,
     filename: str | None,
@@ -294,9 +298,36 @@ def _push_best_effort(
     try:
         asyncio.get_running_loop()
     except RuntimeError:
+        # 同步上下文：直接阻塞推送（此时调用方事务尚未提交，但外发为尽力而为，
+        # 失败不影响命令事务）。
         asyncio.run(_run())
     else:
-        asyncio.get_running_loop().create_task(_run())
+        # 事件循环上下文：外发为尽力而为，但必须等调用方事务提交后再推送，
+        # 否则推送成功而事务回滚时会出现"消息已发但 outbox 无记录"的漂移。
+        loop = asyncio.get_running_loop()
+        from sqlalchemy import event
+
+        pushed = False
+
+        def _push_after_commit(_session: Session) -> None:
+            nonlocal pushed
+            if pushed:
+                return
+            pushed = True
+            task = loop.create_task(_run())
+            task.add_done_callback(_log_push_exception)
+
+        event.listen(session, "after_commit", _push_after_commit, once=True)
+
+
+def _log_push_exception(task: asyncio.Task[Any]) -> None:
+    """外发后台任务的完成回调：记录未消费的异常，避免被 asyncio 静默吞掉。"""
+    try:
+        exc = task.exception()
+    except asyncio.CancelledError:
+        return
+    if exc is not None:
+        logger.warning("outbound push task failed", exc_info=exc)
 
 
 def _get_connector(connection_id: int) -> Connector | None:

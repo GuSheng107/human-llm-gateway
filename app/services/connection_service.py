@@ -13,6 +13,7 @@ import inspect
 import io
 import json
 import logging
+import threading
 from datetime import timedelta
 from typing import Any
 
@@ -63,7 +64,10 @@ class ConnectionService:
         self.audit = AuditRepository()
         self.tasks = TaskRepository()
         # 扫码登录会话：connection_id -> 登录连接器实例（跨 start/poll 请求共享）。
+        # 该字典会被事件循环线程（poll_login/_login_connector）与线程池线程
+        # （update/delete/cancel_binding_listener）并发访问，用锁保护。
         self._login_connectors: dict[int, Connector] = {}
+        self._login_connectors_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # 配置加密
@@ -296,14 +300,12 @@ class ConnectionService:
 
                 llm = session.get(LlmConfig, int(llm_config_id))
                 if llm is None or llm.owner_user_id != row.owner_user_id:
-                    raise DomainError(
-                        DomainErrorCode.NOT_FOUND, "LLM 配置不存在", status_code=404
-                    )
+                    raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存在", status_code=404)
                 row.llm_config_id = llm.id
                 changed_fields.append("llm_config_id")
         # 配置变化后旧的登录会话（持有旧 token 的 SDK client）不再可信。
         if changed_fields:
-            self._login_connectors.pop(row.id, None)
+            self._drop_login_connector(row.id)
         try:
             session.flush()
         except IntegrityError as exc:
@@ -341,7 +343,7 @@ class ConnectionService:
         token = generate_im_connection_token()
         config[field_name] = token
         row.config_ciphertext = self._encrypt_config(config)
-        self._login_connectors.pop(row.id, None)
+        self._drop_login_connector(row.id)
         await run_in_threadpool(session.flush)
         if row.desired_running:
             from ..connectors import connection_manager as manager
@@ -402,7 +404,7 @@ class ConnectionService:
         from ..connectors import connection_manager as manager
 
         await manager.stop(row.id)
-        self._login_connectors.pop(row.id, None)
+        self._drop_login_connector(row.id)
         row.desired_running = False
         await run_in_threadpool(session.flush)
         await run_in_threadpool(self.repo.delete, session, row.id)
@@ -787,7 +789,7 @@ class ConnectionService:
             await run_in_threadpool(session.flush)
             return row
         await manager.stop(row.id)
-        self._login_connectors.pop(row.id, None)
+        self._drop_login_connector(row.id)
         row.state = ConnectionState.STOPPED
         row.next_retry_at = None
         self.repo.set_binding_code(session, row.id, None, None)
@@ -850,7 +852,7 @@ class ConnectionService:
     async def poll_login(
         self, session: Session, *, row: ImConnection, actor_user_id: int
     ) -> dict[str, Any]:
-        connector = self._login_connectors.get(row.id)
+        connector = self._get_login_connector(row.id)
         if connector is None:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
@@ -886,7 +888,7 @@ class ConnectionService:
         self.repo.bind_external_user(session, row.id, external_user_id)
         await run_in_threadpool(session.flush)
         await run_in_threadpool(session.refresh, row)
-        self._login_connectors.pop(row.id, None)
+        self._drop_login_connector(row.id)
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_UPDATED,
@@ -906,13 +908,22 @@ class ConnectionService:
         否则二维码状态（_pending_qrcode / SDK client）会丢失。
         连接被删除或重新配置时应清除缓存（见 delete/update 路径）。
         """
-        connector = self._login_connectors.get(row.id)
-        if connector is None:
-            connector = self.registry.create(
-                row.platform, _connector_context(row, self.decrypt_config(row))
-            )
-            self._login_connectors[row.id] = connector
-        return connector
+        with self._login_connectors_lock:
+            connector = self._login_connectors.get(row.id)
+            if connector is None:
+                connector = self.registry.create(
+                    row.platform, _connector_context(row, self.decrypt_config(row))
+                )
+                self._login_connectors[row.id] = connector
+            return connector
+
+    def _get_login_connector(self, connection_id: int) -> Connector | None:
+        with self._login_connectors_lock:
+            return self._login_connectors.get(connection_id)
+
+    def _drop_login_connector(self, connection_id: int) -> None:
+        with self._login_connectors_lock:
+            self._login_connectors.pop(connection_id, None)
 
     # ------------------------------------------------------------------
     # 进站处理（连接器回调与 /connectors/* 入口共用）
@@ -1263,9 +1274,7 @@ class ConnectionService:
         receipt.task_id = task.id
         return InboundResult.LATE
 
-    def _send_feedback(
-        self, session: Session, *, row: ImConnection, text: str
-    ) -> None:
+    def _send_feedback(self, session: Session, *, row: ImConnection, text: str) -> None:
         """尽力发送一条命令反馈给绑定用户；失败只记日志，不影响命令事务。
 
         反馈是即时提示，不走任务 outbox（避免依赖真实 task_id FK），直接经
@@ -1287,12 +1296,20 @@ class ConnectionService:
             except Exception:  # 反馈失败不影响命令事务
                 logger.exception("feedback send failed (connection %s)", row.id)
 
+        def _log_task_exception(task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("feedback task raised (connection %s)", row.id, exc_info=exc)
+
         try:
-            asyncio.get_running_loop()
+            loop = asyncio.get_running_loop()
         except RuntimeError:
             asyncio.run(_run())
         else:
-            asyncio.get_running_loop().create_task(_run())
+            task = loop.create_task(_run())
+            task.add_done_callback(_log_task_exception)
 
     def _handle_page_command(
         self,
@@ -1435,11 +1452,19 @@ def _qr_image_base64(content: Any) -> str:
 
 
 def _run_coroutine(coro):
-    """在同步 API 上下文中执行连接器协程。"""
+    """在同步 API 上下文中执行连接器协程。
+
+    仅在无运行中事件循环的线程（如 FastAPI 同步端点的线程池）内调用；
+    若在事件循环线程内同步调用会死锁，此时抛明确错误而非隐晦的 RuntimeError。
+    """
     import asyncio
 
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    return loop.run_until_complete(coro)
+    raise DomainError(
+        DomainErrorCode.CONFLICT,
+        "连接健康检查不能在事件循环线程内同步执行",
+        status_code=500,
+    )

@@ -8,6 +8,7 @@ run_coroutine_threadsafe 桥接到异步进站回调。会话过期（扫码失�
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import logging
 import threading
 from typing import Any
@@ -41,6 +42,9 @@ class WeComIlinkConnector(Connector):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._inbound = None  # InboundCallback
         self._pending_qrcode: str | None = None
+        # _client 在 start（连接管理器线程）与 start_login/poll_login（请求线程）
+        # 之间共享，用锁保护创建/替换，避免并发创建两个 client 导致连接错乱。
+        self._client_lock = threading.Lock()
 
     @classmethod
     def validate_config(cls, config: dict[str, Any]) -> list[str]:
@@ -65,7 +69,11 @@ class WeComIlinkConnector(Connector):
         kwargs: dict[str, Any] = {"token": token}
         if config.get("base_url"):
             kwargs["base_url"] = str(config["base_url"])
-        self._client = Client(**kwargs)
+        with self._client_lock:
+            # 若 start_login 已创建 client（扫码登录中），复用同一实例，避免
+            # 并发创建两个 client 导致连接错乱。
+            if self._client is None:
+                self._client = Client(**kwargs)
 
         def _on_session_expired() -> None:
             self._thread_error = ConnectorError(ERROR_AUTH, "iLink 会话已过期，请重新扫码登录")
@@ -102,6 +110,8 @@ class WeComIlinkConnector(Connector):
         sender = str(getattr(message, "from_user_id", "") or "")
         text = extract_text(message)
         context_token = getattr(message, "context_token", None)
+        # 通过 run_coroutine_threadsafe 桥接并在回调中处理结果，避免阻塞 SDK
+        # 线程（future.result 会阻塞至多 10s，期间 SDK 无法处理后续消息）。
         future = asyncio.run_coroutine_threadsafe(
             self._inbound(
                 self.ctx.connection_id,
@@ -114,9 +124,13 @@ class WeComIlinkConnector(Connector):
             ),
             self._loop,
         )
+        future.add_done_callback(self._handle_inbound_result)
+
+    def _handle_inbound_result(self, future: concurrent.futures.Future[Any]) -> None:
+        """进站回调完成后的处理（在事件循环线程执行）。"""
         try:
-            future.result(timeout=10)
-        except Exception:  # 不让进站异常终止监听线程
+            future.result()
+        except Exception:  # 不让进站异常影响 SDK 线程
             logger.exception("ilink inbound handling failed")
 
     async def wait_closed(self) -> None:
@@ -128,15 +142,20 @@ class WeComIlinkConnector(Connector):
         return self._thread_error
 
     async def stop(self) -> None:
-        if self._client is not None:
-            try:
-                self._client.stop()
-            except Exception:  # 关闭失败不阻塞停止流程
-                logger.info("ilink stop failed", exc_info=True)
+        # 在锁内取出 client 并完成 stop，避免与 start_login 并发创建新 client
+        # 时出现"旧 client 停止与新 client fetch_qr_code 交错"的连接错乱。
+        with self._client_lock:
+            client = self._client
+            self._client = None
+            if client is not None:
+                try:
+                    client.stop()
+                except Exception:  # 关闭失败不阻塞停止流程
+                    logger.info("ilink stop failed", exc_info=True)
+            self._pending_qrcode = None
         if self._thread is not None:
             await asyncio.to_thread(self._thread.join, timeout=10)
             self._thread = None
-        self._client = None
         self._closed.set()
 
     async def deliver(self, envelope: DeliveryEnvelope) -> None:
@@ -170,29 +189,34 @@ class WeComIlinkConnector(Connector):
     async def start_login(self) -> dict[str, Any]:
         from openilink import Client
 
-        client = self._client
-        if client is None:
-            kwargs: dict[str, Any] = {"token": str(self.ctx.config.get("token") or "")}
-            if self.ctx.config.get("base_url"):
-                kwargs["base_url"] = str(self.ctx.config["base_url"])
-            client = Client(**kwargs)
-            self._client = client
+        with self._client_lock:
+            client = self._client
+            if client is None:
+                kwargs: dict[str, Any] = {"token": str(self.ctx.config.get("token") or "")}
+                if self.ctx.config.get("base_url"):
+                    kwargs["base_url"] = str(self.ctx.config["base_url"])
+                client = Client(**kwargs)
+                self._client = client
         try:
             response = await asyncio.to_thread(client.fetch_qr_code)
         except Exception as exc:
             raise _classify(exc) from exc
-        self._pending_qrcode = getattr(response, "qrcode", None)
+        # 每次发起新登录都重置 pending，避免旧二维码残留导致 poll 到过期状态。
+        with self._client_lock:
+            self._pending_qrcode = getattr(response, "qrcode", None)
         return {
             "qrcode": getattr(response, "qrcode", ""),
             "qrcode_img_content": getattr(response, "qrcode_img_content", b""),
         }
 
     async def poll_login(self) -> dict[str, Any]:
-        client = self._client
-        if client is None or not self._pending_qrcode:
+        with self._client_lock:
+            client = self._client
+            pending_qrcode = self._pending_qrcode
+        if client is None or not pending_qrcode:
             raise ConnectorError(ERROR_DELIVERY, "尚未发起扫码登录")
         try:
-            response = await asyncio.to_thread(client.poll_qr_status, self._pending_qrcode)
+            response = await asyncio.to_thread(client.poll_qr_status, pending_qrcode)
         except Exception as exc:
             raise _classify(exc) from exc
         status = getattr(response, "status", "")
@@ -202,5 +226,6 @@ class WeComIlinkConnector(Connector):
             result["baseurl"] = getattr(response, "baseurl", "")
             result["ilink_user_id"] = getattr(response, "ilink_user_id", "")
             result["ilink_bot_id"] = getattr(response, "ilink_bot_id", "")
-            self._pending_qrcode = None
+            with self._client_lock:
+                self._pending_qrcode = None
         return result

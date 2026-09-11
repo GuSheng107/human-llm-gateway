@@ -124,6 +124,28 @@ class ConnectionRepository:
             .values(desired_running=desired, updated_at=_now())
         )
 
+    def disable_if_desired(
+        self, session: Session, connection_id: int, *, expected_updated_at: datetime
+    ) -> bool:
+        """仅当连接自快照以来未被改动时原子地停用（乐观锁）。
+
+        用于看门狗：在异步健康检查之后写回停用状态时做二次校验，避免用
+        陈旧快照覆盖用户并发的 start 操作。条件用 ``updated_at == 快照``
+        而非 ``desired_running is True``——因为用户并发 start 后 desired_running
+        同样为 True，无法据此区分"看门狗要停用的 True"与"用户刚 start 的 True"；
+        而 start 会更新 updated_at，故用 updated_at 快照可精确检测并发修改。
+        返回是否实际执行了停用（即快照以来无并发修改）。
+        """
+        result = session.execute(
+            update(ImConnection)
+            .where(
+                ImConnection.id == connection_id,
+                ImConnection.updated_at == expected_updated_at,
+            )
+            .values(desired_running=False, updated_at=_now())
+        )
+        return result.rowcount == 1
+
     def apply_runtime_patch(
         self, session: Session, connection_id: int, patch: dict[str, Any]
     ) -> None:
@@ -224,7 +246,21 @@ class ConnectionRepository:
             delivery_state=OutboxDeliveryState.PENDING,
             available_at=_now(),
         )
-        session.add(row)
+        try:
+            # 先 flush 触发唯一约束，尽早暴露并发重复，避免在调用方事务提交时
+            # 才抛出导致整笔事务失败。SAVEPOINT 保证仅回滚本次插入。
+            with session.begin_nested():
+                session.add(row)
+                session.flush()
+        except IntegrityError:
+            # 并发下另一事务已插入同 (connection_id, task_id) 记录：返回已存在行。
+            session.expunge(row)
+            return session.execute(
+                select(ConnectorOutbox).where(
+                    ConnectorOutbox.connection_id == connection_id,
+                    ConnectorOutbox.task_id == task_id,
+                )
+            ).scalar_one()
         return row
 
     def mark_outbox_delivered(self, session: Session, connection_id: int, task_id: int) -> bool:
@@ -241,12 +277,18 @@ class ConnectionRepository:
 
     def mark_outbox_failed(
         self, session: Session, connection_id: int, task_id: int, error_code: str
-    ) -> None:
-        session.execute(
+    ) -> bool:
+        """标记投递失败并重试。
+
+        仅允许 PENDING 状态重试；已 ACKED/DELIVERED 的终态记录不会被回退为
+        PENDING（避免已确认消息被重复投递）。返回是否实际更新。
+        """
+        result = session.execute(
             update(ConnectorOutbox)
             .where(
                 ConnectorOutbox.connection_id == connection_id,
                 ConnectorOutbox.task_id == task_id,
+                ConnectorOutbox.delivery_state == OutboxDeliveryState.PENDING,
             )
             .values(
                 delivery_state=OutboxDeliveryState.PENDING,
@@ -255,6 +297,7 @@ class ConnectionRepository:
                 updated_at=_now(),
             )
         )
+        return result.rowcount == 1
 
     def claim_outbox_batch(
         self,

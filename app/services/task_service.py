@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..core.db import begin_immediate_if_sqlite
@@ -107,25 +108,27 @@ class TaskService:
         owner: User,
         draft: ReplyDraft,
     ) -> TaskDraft:
-        """新建或更新活动草稿（upsert 语义：已有 EDITING 则覆盖字段）。"""
+        """新建或更新活动草稿（upsert 语义：已有 EDITING 则覆盖字段）。
+
+        先尝试原子更新活动草稿（条件 UPDATE），命中 0 行才创建，避免
+        get_active_draft + create_draft 的 TOCTOU 在并发保存时产生重复草稿。
+        """
         self._assert_writable(task, owner)
         begin_immediate_if_sqlite(session)
-        row = self.repo.get_active_draft(session, task_id=task.id)
         payload = self._draft_payload(draft)
-        if row is None:
-            row = self.repo.create_draft(
-                session,
-                task_id=task.id,
-                owner_user_id=owner.id,
-                source=DraftSource.MANUAL,
-                reasoning_text=payload["reasoning"],
-                tool_calls_json=payload["tool_calls_json"],
-                final_text=payload["final_text"],
-            )
+        updated = self.repo.update_active_draft_fields(
+            session,
+            task_id=task.id,
+            reasoning_text=payload["reasoning"],
+            tool_calls_json=payload["tool_calls_json"],
+            final_text=payload["final_text"],
+        )
+        if updated:
+            row = self.repo.get_active_draft(session, task_id=task.id)
+            if row is None:  # 条件更新命中但读取失败，兜底创建
+                row = self._create_manual_draft(session, task=task, owner=owner, payload=payload)
         else:
-            row.reasoning_text = payload["reasoning"]
-            row.tool_calls_json = payload["tool_calls_json"]
-            row.final_text = payload["final_text"]
+            row = self._create_manual_draft(session, task=task, owner=owner, payload=payload)
         session.flush()
         self.audit.add(
             session,
@@ -136,6 +139,46 @@ class TaskService:
             owner_user_id=task.owner_user_id,
             metadata={"fields": ["reasoning", "tool_calls", "final_text"], "action": "draft_saved"},
         )
+        return row
+
+    def _create_manual_draft(
+        self,
+        session: Session,
+        *,
+        task: RequestTask,
+        owner: User,
+        payload: dict[str, Any],
+    ) -> TaskDraft:
+        """创建一条手动编辑草稿；并发重复创建时回退为更新已有活动草稿。
+
+        使用 SAVEPOINT（begin_nested）包裹插入，唯一约束冲突时仅回滚本次
+        插入，不破坏外层事务（含 begin_immediate_if_sqlite 的写锁）。
+        """
+        row = self.repo.create_draft(
+            session,
+            task_id=task.id,
+            owner_user_id=owner.id,
+            source=DraftSource.MANUAL,
+            reasoning_text=payload["reasoning"],
+            tool_calls_json=payload["tool_calls_json"],
+            final_text=payload["final_text"],
+        )
+        try:
+            with session.begin_nested():
+                session.flush()
+        except IntegrityError:
+            # 并发请求已创建活动草稿：回滚本次插入，改为更新已有草稿。
+            session.expunge(row)
+            self.repo.update_active_draft_fields(
+                session,
+                task_id=task.id,
+                reasoning_text=payload["reasoning"],
+                tool_calls_json=payload["tool_calls_json"],
+                final_text=payload["final_text"],
+            )
+            row = self.repo.get_active_draft(session, task_id=task.id)
+            if row is None:
+                raise
         return row
 
     def update_draft(

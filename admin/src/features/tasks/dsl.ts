@@ -1,11 +1,9 @@
 import type { ReplyDraft } from "../../types/gateway";
 
 export function isEmptyDraft(draft: ReplyDraft): boolean {
-  return !(
-    draft.reasoning ||
-    draft.tool_calls.length > 0 ||
-    (draft.final_text && draft.final_text.trim())
-  );
+  // 与后端 app/domain/dsl.py 的 is_empty_draft 同构：仅以最终文本判定是否为空。
+  // reasoning / tool_calls 不再参与判定（DSL 围栏已移除）。
+  return !(draft.final_text && draft.final_text.trim());
 }
 
 export function serializeReply(draft: ReplyDraft): string {

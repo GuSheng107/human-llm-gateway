@@ -4,7 +4,7 @@
 """
 
 # 数据库 Schema 版本：与代码不一致时启动失败，不执行迁移。
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # IM 两消息投递与命令层（docs/PRODUCT.md §6.4）
 # 提示条（含任务定位头）字符上限

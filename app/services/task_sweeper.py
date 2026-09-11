@@ -43,7 +43,11 @@ class TaskSweeper:
         self.service = InferenceService()
 
     def sweep_once(self, session: Session) -> dict[str, int]:
-        """执行一轮收敛并提交；返回各路径处理计数（用于日志与测试）。"""
+        """执行一轮收敛并提交；返回各路径处理计数（用于日志与测试）。
+
+        每个任务独立提交并隔离异常：单任务失败仅记录并继续，不使整批
+        回滚，避免一个坏任务拖垮整轮收敛（长事务与异常处理防御）。
+        """
         now = utc_now()
         timed_out = 0
         cancelled = 0
@@ -62,12 +66,23 @@ class TaskSweeper:
             )
         )
         for task in overdue:
-            # allowed_sources 用读取到的源状态：人工/转发恰在扫描间隙先到时，
-            # 条件 UPDATE 不命中，晚到的超时不覆盖。
-            if self.service.finalize(
-                session, task, TaskState.TIMED_OUT, allowed_sources={task.state}
-            ):
-                timed_out += 1
+            try:
+                # allowed_sources 用读取到的源状态：人工/转发恰在扫描间隙先到时，
+                # 条件 UPDATE 不命中，晚到的超时不覆盖。
+                if self.service.finalize(
+                    session, task, TaskState.TIMED_OUT, allowed_sources={task.state}
+                ):
+                    timed_out += 1
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("task sweeper finalize failed", extra={"task_id": task.id})
+                log_event(
+                    "error",
+                    "task_sweeper.finalize_failed",
+                    "任务超时终态化失败",
+                    task_id=task.id,
+                )
 
         stale_cutoff = now - timedelta(seconds=STALE_OUTPUT_GRACE_SECONDS)
         stale = list(
@@ -84,12 +99,22 @@ class TaskSweeper:
             )
         )
         for task in stale:
-            if self.service.cancel_caller_disconnected(
-                session, task.id, reason="stale_output_swept"
-            ):
-                cancelled += 1
+            try:
+                if self.service.cancel_caller_disconnected(
+                    session, task.id, reason="stale_output_swept"
+                ):
+                    cancelled += 1
+                session.commit()
+            except Exception:
+                session.rollback()
+                logger.exception("task sweeper cancel failed", extra={"task_id": task.id})
+                log_event(
+                    "error",
+                    "task_sweeper.cancel_failed",
+                    "陈旧输出态任务取消失败",
+                    task_id=task.id,
+                )
 
-        session.commit()
         return {"timed_out": timed_out, "cancelled": cancelled}
 
     def _sweep(self) -> dict[str, int]:

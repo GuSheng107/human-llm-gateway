@@ -69,9 +69,7 @@ class WebhookConnector(Connector):
         self, external_user_id: str, text: str, *, context_token: str | None = None
     ) -> None:
         """推送命令外发内容（/page）：复用任务包推送端点，kind=page。"""
-        await self._push_json(
-            {"kind": "page", "task_id": context_token or "", "text": text}
-        )
+        await self._push_json({"kind": "page", "task_id": context_token or "", "text": text})
 
     async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
         """推送命令外发文件（/file）：复用任务包推送端点，kind=file。"""

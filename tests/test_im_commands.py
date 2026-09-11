@@ -166,9 +166,7 @@ def _seed_task(
 
 
 def _bind(client, connection_id: int, token: str, headers, sender: str = "u-1") -> None:
-    binding = client.post(
-        f"/api/im-connections/{connection_id}/binding", headers=headers
-    ).json()
+    binding = client.post(f"/api/im-connections/{connection_id}/binding", headers=headers).json()
     client.post(
         f"/connectors/webhook/{connection_id}/inbound",
         json={
@@ -243,17 +241,11 @@ def test_ans_res_commands_submit_replies(client, webhook_scene) -> None:
         task = session.get(RequestTask, scene["task_id"])
         assert task.state is TaskState.RESPONSE_READY
         assert "命令回复" in task.response_payload_json
-        draft = (
-            session.query(TaskDraft)
-            .filter(TaskDraft.task_id == scene["task_id"])
-            .one()
-        )
+        draft = session.query(TaskDraft).filter(TaskDraft.task_id == scene["task_id"]).one()
         assert draft.state is DraftState.SUBMITTED
 
     # /res 强制纯文本：fence 语法不当普通文本处理，暂存 reasoning
-    scene2_task = _seed_task(
-        _owner_id(client, scene), scene["connection_id"], "task_public_cmd2"
-    )
+    scene2_task = _seed_task(_owner_id(client, scene), scene["connection_id"], "task_public_cmd2")
     assert _inbound(client, scene, "cmd-res-1", "/res :::\nplain").json()["result"] == (
         InboundResult.ACCEPTED.value
     )
@@ -322,9 +314,7 @@ def test_page_file_unknown_commands(client, webhook_scene) -> None:
         )
         assert rows, "outbox 应有 /page 载荷"
         payloads = [json.loads(row.payload_json) for row in rows]
-        page_payload = next(
-            (p for p in payloads if p.get("kind") == "page"), None
-        )
+        page_payload = next((p for p in payloads if p.get("kind") == "page"), None)
         assert page_payload is not None
         assert "task_public_cmd" in page_payload.get("text", "")
         assert "共 " in page_payload["text"] and " 页，当前第 1 页" in page_payload["text"]
@@ -341,8 +331,7 @@ def test_page_file_unknown_commands(client, webhook_scene) -> None:
         )
         payloads = [json.loads(row.payload_json) for row in rows]
         assert any(
-            p.get("kind") == "file" and p.get("filename") == "task_public_cmd.txt"
-            for p in payloads
+            p.get("kind") == "file" and p.get("filename") == "task_public_cmd.txt" for p in payloads
         )
         file_payload = next((p for p in payloads if p.get("kind") == "file"), None)
         assert file_payload is not None
@@ -365,13 +354,13 @@ def test_ans_to_late_task_returns_late(client, webhook_scene) -> None:
         task.state = TaskState.RESPONSE_READY
         session.commit()
     # 显式引用任务 /ans 暂存草稿（任务已完成，暂存仍被接受）
-    assert _inbound(client, scene, "cmd-ans-late", "#task_public_cmd /ans 太晚了").json()["result"] == (
-        InboundResult.ACCEPTED.value
-    )
+    assert _inbound(client, scene, "cmd-ans-late", "#task_public_cmd /ans 太晚了").json()[
+        "result"
+    ] == (InboundResult.ACCEPTED.value)
     # /commit 提交到已完成任务：first_reply_wins 返回 False -> LATE
-    assert _inbound(client, scene, "cmd-commit-late", "#task_public_cmd /commit").json()["result"] == (
-        InboundResult.LATE.value
-    )
+    assert _inbound(client, scene, "cmd-commit-late", "#task_public_cmd /commit").json()[
+        "result"
+    ] == (InboundResult.LATE.value)
 
 
 # ---------------------------------------------------------------------------

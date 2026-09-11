@@ -4,8 +4,25 @@ import asyncio
 import threading
 from typing import Any
 
+import pytest
+
 from app.connectors.base import ConnectorContext, DeliveryEnvelope
 from app.connectors.implementations.lark import LarkConnector
+from app.domain.connections import ERROR_CONFIG, ConnectorError
+
+
+@pytest.fixture(autouse=True)
+def _restore_lark_active_instance() -> None:
+    """每个测试前后保存/恢复类级 _active_instance，避免全局状态污染。
+
+    ``LarkConnector._active_instance`` 是类级共享状态，若某个测试（如
+    ``test_start_rejects_second_instance``）修改后未复位，会泄漏到其他用例。
+    这里用 autouse fixture 在每个测试结束后恢复其测试前的原始值，即使测试
+    中途异常也能正确复位。
+    """
+    original = LarkConnector._active_instance
+    yield
+    LarkConnector._active_instance = original
 
 
 class _FakeMessage:
@@ -118,6 +135,18 @@ class _LoopThread:
         self._thread.join(timeout=5)
 
 
+def _wait_until(predicate, timeout: float = 5.0) -> None:
+    """轮询等待异步回调完成（run_coroutine_threadsafe 的结果在事件循环线程处理）。"""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("timed out waiting for async callback")
+
+
 def test_validate_config_requires_app_credentials() -> None:
     assert LarkConnector.validate_config({"app_id": "app", "app_secret": "secret"}) == []
     assert "App ID" in " ".join(LarkConnector.validate_config({"app_secret": "secret"}))
@@ -141,6 +170,9 @@ def test_p2p_text_message_sets_binding_code() -> None:
             _FakeMessage("msg-1", "oc_chat-1", "p2p", '{"text":"connect lark"}'),
         )
         connector._handle_event(event)
+        # _handle_event 通过 run_coroutine_threadsafe 桥接，结果在事件循环线程
+        # 的回调中处理；等待 captured 被填充。
+        _wait_until(lambda: captured)
     finally:
         loop_thread.stop()
 
@@ -170,6 +202,7 @@ def test_group_chat_has_no_binding_code() -> None:
             _FakeMessage("msg-1", "oc_group-1", "group", '{"text":"connect lark"}'),
         )
         connector._handle_event(event)
+        _wait_until(lambda: captured)
     finally:
         loop_thread.stop()
 
@@ -236,3 +269,37 @@ def test_send_reply_text_uses_open_id() -> None:
     assert receive_id_type == "open_id"
     assert body.receive_id == "ou_open-1"
     assert body.msg_type == "text"
+
+
+def test_deliver_falls_back_to_bound_open_id_when_chat_missing() -> None:
+    """chat_id 缺失时 _bound_chat_id 回退为发送者 open_id，投递应使用 open_id 类型。"""
+    connector = _connector()
+    client = _FakeClient()
+    connector._client = client
+    connector._thread = type("T", (), {"is_alive": lambda self: True})()
+    # 模拟绑定成功但 chat_id 缺失：_bound_chat_id 存的是 open_id。
+    connector._bound_user_id = "ou_open-1"
+    connector._bound_chat_id = "ou_open-1"
+    connector._bound_chat_type = "open_id"
+
+    envelope = DeliveryEnvelope(
+        task_public_id="task-1",
+        requested_model="fake-model",
+        prompt_text="请处理任务",
+        owner_user_id=9,
+    )
+    asyncio.run(connector.deliver(envelope))
+
+    receive_id_type, body = client.im.v1.message.sent[0]
+    assert receive_id_type == "open_id"
+    assert body.receive_id == "ou_open-1"
+
+
+def test_start_rejects_second_instance() -> None:
+    """同一进程内仅允许一个飞书长连接实例，第二个实例启动应抛 config_invalid。"""
+    first = _connector()
+    second = _connector()
+    LarkConnector._active_instance = first
+    with pytest.raises(ConnectorError) as exc_info:
+        asyncio.run(second.start())
+    assert exc_info.value.code == ERROR_CONFIG
