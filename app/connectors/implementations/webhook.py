@@ -64,3 +64,30 @@ class WebhookConnector(Connector):
             raise ConnectorError(ERROR_AUTH, "Webhook 推送被拒绝")
         if response.status_code >= 400:
             raise ConnectorError(ERROR_DELIVERY, f"Webhook 推送返回 {response.status_code}")
+
+    async def send_reply_text(
+        self, external_user_id: str, text: str, *, context_token: str | None = None
+    ) -> None:
+        """推送命令外发内容（/page）：复用任务包推送端点，kind=page。"""
+        await self._push_json({"kind": "page", "task_id": context_token or "", "text": text})
+
+    async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
+        """推送命令外发文件（/file）：复用任务包推送端点，kind=file。"""
+        await self._push_json({"kind": "file", "filename": filename, "content": content})
+
+    async def _push_json(self, body: dict[str, Any]) -> None:
+        client = self._client
+        if client is None:
+            raise ConnectorError(ERROR_DELIVERY, "连接未启动，无法推送")
+        token = self.ctx.config.get("outbound_token") or ""
+        headers = {"X-Gateway-Token": token} if token else {}
+        try:
+            response = await client.post(
+                self.ctx.config["outbound_url"], json=body, headers=headers
+            )
+        except httpx.HTTPError as exc:
+            raise ConnectorError(ERROR_NETWORK, f"Webhook 推送失败: {type(exc).__name__}") from exc
+        if response.status_code in (401, 403):
+            raise ConnectorError(ERROR_AUTH, "Webhook 推送被拒绝")
+        if response.status_code >= 400:
+            raise ConnectorError(ERROR_DELIVERY, f"Webhook 推送返回 {response.status_code}")

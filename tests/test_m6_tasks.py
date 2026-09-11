@@ -383,7 +383,8 @@ def test_submit_reply_late_returns_409(client, created_user, created_key) -> Non
         json=_draft_body(final_text="晚到"),
     )
     assert late.status_code == 409
-    assert late.json()["error"]["code"] == "conflict"
+    # _assert_editable 携带 public_code，信封透出具体码而非泛化 conflict。
+    assert late.json()["error"]["code"] == "task_already_resolved"
 
     detail = client.get(f"/api/tasks/{task_id}", headers=created_user.headers).json()
     assert detail["result_draft"]["final_text"] == "第一个"
@@ -506,7 +507,8 @@ def test_write_after_terminal_state_returns_409(client, created_user, created_ke
         json=_draft_body(final_text="再来"),
     )
     assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "conflict"
+    # _assert_editable 携带 public_code，信封透出具体码而非泛化 conflict。
+    assert resp.json()["error"]["code"] == "task_already_resolved"
 
 
 def test_disabled_user_cannot_save_draft(client, admin_headers, created_user, created_key) -> None:

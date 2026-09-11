@@ -1264,7 +1264,7 @@ def test_save_draft_with_undeclared_tool_call_rejected(client, created_user, cre
     )
     assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["error"]["code"] == "validation_failed"
+    assert body["error"]["code"] == "caller_tool_not_declared"
     assert "不在当前请求声明的 Caller Tool 中" in body["error"]["message"]
 
 

@@ -246,10 +246,10 @@ export function ConnectionsPage() {
   return (
     <div className="flex h-[calc(100dvh-6rem)] min-h-0 flex-col gap-4 overflow-hidden sm:h-[calc(100dvh-7rem)] lg:h-[calc(100dvh-7.5rem)]">
       <PageHeader
-        title="连接 IM"
+        title="消息网关"
         description={
           isAdmin
-            ? "当前仅显示本账号连接；全部连接请到「IM 连接监管」。"
+            ? "当前仅显示本账号连接；全部连接请到「消息网关监管」。"
             : undefined
         }
         actions={
@@ -321,7 +321,7 @@ export function ConnectionsPage() {
               <div className="grid min-h-56 place-items-center rounded-xl border border-dashed border-slate-200 bg-white text-center">
                 <div>
                   <Icon name="link" className="mx-auto h-7 w-7 text-slate-300" />
-                  <p className="mt-2 text-xs text-slate-400">暂无可用 IM 平台</p>
+                  <p className="mt-2 text-xs text-slate-400">暂无可用消息平台</p>
                </div>
              </div>
             )}
@@ -344,7 +344,7 @@ export function ConnectionsPage() {
 
       {healthReport && (
         <Modal
-          title="IM 连接检查结果"
+          title="消息网关检查结果"
           description={`检查 ${healthReport.length} 个连接；异常连接已关闭。`}
           onClose={() => setHealthReport(null)}
           width="max-w-4xl"

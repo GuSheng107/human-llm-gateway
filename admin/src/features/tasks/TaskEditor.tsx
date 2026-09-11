@@ -11,6 +11,7 @@ import {
   type RequestView,
 } from "../../api/tasks";
 import { listLlmConfigs } from "../../api/llmConfigs";
+import { ApiError } from "../../api/client";
 import { Card } from "../../components/data-display/Card";
 import { StatusBadge } from "../../components/data-display/StatusBadge";
 import { ErrorBanner } from "../../components/feedback/ErrorBanner";
@@ -54,11 +55,27 @@ type BuildResult =
   | { ok: true; draft: ReplyDraft }
   | { ok: false; error: string };
 
+// 与后端 ReplyDraftInput / ToolCallInput 的校验上限保持一致，避免提交后
+// 才被服务端拒绝（客户端先给出友好提示）。
+const REASONING_MAX = 20000;
+const FINAL_TEXT_MAX = 40000;
+const TOOL_CALLS_MAX = 20;
+const TOOL_NAME_MAX = 128;
+
 function buildDraft(
   reasoning: string,
   toolCalls: ToolCallEditor[],
   finalText: string,
 ): BuildResult {
+  if (reasoning.length > REASONING_MAX) {
+    return { ok: false, error: `思考链不能超过 ${REASONING_MAX} 字` };
+  }
+  if (finalText.length > FINAL_TEXT_MAX) {
+    return { ok: false, error: `正式回复不能超过 ${FINAL_TEXT_MAX} 字` };
+  }
+  if (toolCalls.length > TOOL_CALLS_MAX) {
+    return { ok: false, error: `工具调用不能超过 ${TOOL_CALLS_MAX} 条` };
+  }
   const parsed: ToolCall[] = [];
   for (const editor of toolCalls) {
     // 整行留空视为未添加调用（允许 0 条工具调用直接提交）。
@@ -67,6 +84,9 @@ function buildDraft(
     if (!hasName && !hasArguments) continue;
     if (!hasName) {
       return { ok: false, error: "每个工具调用都必须选择已声明的工具" };
+    }
+    if (editor.name.trim().length > TOOL_NAME_MAX) {
+      return { ok: false, error: `工具调用 name 不能超过 ${TOOL_NAME_MAX} 字` };
     }
     let args: Record<string, unknown> = {};
     const text = editor.argumentsText.trim();
@@ -266,7 +286,9 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     } catch (caught) {
       const message = friendlyErrorMessage(caught, "保存失败");
       notify(message, "error");
-      if (message.includes("草稿已被其他端修改")) {
+      // 草稿乐观锁冲突：基于后端 public_code 判断（字符串匹配不可靠），
+      // 触发刷新任务详情，让用户基于最新草稿版本重试。
+      if (caught instanceof ApiError && caught.code === "draft_version_conflict") {
         void load();
       }
     } finally {
@@ -298,8 +320,9 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     } catch (caught) {
       const message = friendlyErrorMessage(caught, "提交失败");
       notify(message, "error");
-      // 任务被其他来源（IM/超时/fallback）抢先：清空预览并刷新任务详情
-      if (message.includes("该任务已被其他提交接管") || message.includes("任务已结束")) {
+      // 任务被其他来源（IM/超时/fallback）抢先：清空预览并刷新任务详情。
+      // 基于后端 public_code 判断（字符串匹配不可靠）。
+      if (caught instanceof ApiError && caught.code === "task_already_resolved") {
         setPreview(null);
         void load();
       }

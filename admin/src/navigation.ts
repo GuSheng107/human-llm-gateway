@@ -66,8 +66,8 @@ export const NAVIGATION: NavigationGroup[] = [
       {
         id: "connections",
         path: "/connections",
-        label: "连接 IM",
-        description: "IM 接收与投递",
+        label: "消息网关",
+        description: "消息接收与投递",
         icon: "link",
         capability: "connection.manage",
       },
@@ -126,7 +126,7 @@ export const NAVIGATION: NavigationGroup[] = [
       {
         id: "adminConnections",
         path: "/settings/im-connections",
-        label: "IM 连接监管",
+        label: "消息网关监管",
         description: "停用或删除用户连接",
         icon: "link",
         capability: "connection.admin",

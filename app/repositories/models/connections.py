@@ -40,6 +40,9 @@ class ImConnection(TimestampMixin, Base):
     platform: Mapped[str] = mapped_column(String(50), nullable=False)
     config_ciphertext: Mapped[str] = mapped_column(Text, nullable=False)
     config_key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # LLM 总结开关：开启后投递提示条用 LLM 生成的提问摘要替代尾部截断。
+    llm_summary_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    llm_config_id: Mapped[int | None] = mapped_column(ForeignKey("llm_configs.id"), nullable=True)
     desired_running: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     state: Mapped[ConnectionState] = mapped_column(
         sa_enum(ConnectionState), default=ConnectionState.STOPPED, nullable=False

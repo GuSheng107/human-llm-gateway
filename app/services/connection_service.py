@@ -13,6 +13,7 @@ import inspect
 import io
 import json
 import logging
+import threading
 from datetime import timedelta
 from typing import Any
 
@@ -23,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 from ..connectors.base import Connector, InboundMessage
 from ..connectors.registry import ConnectorRegistry, default_registry
 from ..core.config import get_settings
-from ..core.constants import BINDING_CODE_TTL_FALLBACK_SECONDS
+from ..core.constants import BINDING_CODE_TTL_FALLBACK_SECONDS, IM_FILE_FORMATS
 from ..core.db import begin_immediate_if_sqlite
 from ..core.logging import bind_trace_id, get_request_id, log_event, new_trace_id, reset_request_id
 from ..core.security import (
@@ -36,6 +37,7 @@ from ..core.security import (
 )
 from ..core.time import utc_now
 from ..domain.connections import ConnectorError
+from ..domain.dsl import Command, parse_command
 from ..domain.enums import (
     ActorType,
     AuditAction,
@@ -62,7 +64,10 @@ class ConnectionService:
         self.audit = AuditRepository()
         self.tasks = TaskRepository()
         # 扫码登录会话：connection_id -> 登录连接器实例（跨 start/poll 请求共享）。
+        # 该字典会被事件循环线程（poll_login/_login_connector）与线程池线程
+        # （update/delete/cancel_binding_listener）并发访问，用锁保护。
         self._login_connectors: dict[int, Connector] = {}
+        self._login_connectors_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # 配置加密
@@ -225,13 +230,16 @@ class ConnectionService:
         actor_user_id: int,
         name: str | None = None,
         config_changes: dict[str, Any] | None = None,
+        llm_summary_enabled: bool | None = None,
+        llm_config_id: str | None = None,
     ) -> ImConnection:
-        """修改名称或配置。
+        """修改名称、配置或 LLM 总结设置。
 
         Secret 字段语义：省略或空值保留原值，显式提交新值才替换
         （docs/ROADMAP.md M4：修改 Secret 时空值保留原值）。
         网关自签 Token（gateway_token）额外约束：不允许手填新值，
         只能留空保留原值或通过 rotate 换新。
+        llm_config_id：数字串切换总结模型；空串清除（并关闭开关）。
         """
         spec = self.registry.require_spec(row.platform)
         merged = self.decrypt_config(row)
@@ -282,9 +290,32 @@ class ConnectionService:
             if new_name != row.name:
                 row.name = new_name
                 changed_fields.append("name")
+        if llm_summary_enabled is not None:
+            row.llm_summary_enabled = llm_summary_enabled
+            changed_fields.append("llm_summary_enabled")
+        if llm_config_id is not None:
+            if llm_config_id == "":
+                # 空串：清除总结模型并关闭开关。
+                row.llm_config_id = None
+                row.llm_summary_enabled = False
+                changed_fields.extend(["llm_config_id", "llm_summary_enabled"])
+            else:
+                if not llm_config_id.isdigit():
+                    raise DomainError(
+                        DomainErrorCode.VALIDATION_FAILED,
+                        "llm_config_id 必须是 LLM 配置 ID",
+                        status_code=400,
+                    )
+                from ..repositories.models import LlmConfig
+
+                llm = session.get(LlmConfig, int(llm_config_id))
+                if llm is None or llm.owner_user_id != row.owner_user_id:
+                    raise DomainError(DomainErrorCode.NOT_FOUND, "LLM 配置不存在", status_code=404)
+                row.llm_config_id = llm.id
+                changed_fields.append("llm_config_id")
         # 配置变化后旧的登录会话（持有旧 token 的 SDK client）不再可信。
         if changed_fields:
-            self._login_connectors.pop(row.id, None)
+            self._drop_login_connector(row.id)
         try:
             session.flush()
         except IntegrityError as exc:
@@ -322,7 +353,7 @@ class ConnectionService:
         token = generate_im_connection_token()
         config[field_name] = token
         row.config_ciphertext = self._encrypt_config(config)
-        self._login_connectors.pop(row.id, None)
+        self._drop_login_connector(row.id)
         await run_in_threadpool(session.flush)
         if row.desired_running:
             from ..connectors import connection_manager as manager
@@ -383,7 +414,7 @@ class ConnectionService:
         from ..connectors import connection_manager as manager
 
         await manager.stop(row.id)
-        self._login_connectors.pop(row.id, None)
+        self._drop_login_connector(row.id)
         row.desired_running = False
         await run_in_threadpool(session.flush)
         # 清理投递与入站回执子行：二者以 NOT NULL FK 指向本连接且无级联，
@@ -771,7 +802,7 @@ class ConnectionService:
             await run_in_threadpool(session.flush)
             return row
         await manager.stop(row.id)
-        self._login_connectors.pop(row.id, None)
+        self._drop_login_connector(row.id)
         row.state = ConnectionState.STOPPED
         row.next_retry_at = None
         self.repo.set_binding_code(session, row.id, None, None)
@@ -840,7 +871,7 @@ class ConnectionService:
     async def poll_login(
         self, session: Session, *, row: ImConnection, actor_user_id: int
     ) -> dict[str, Any]:
-        connector = self._login_connectors.get(row.id)
+        connector = self._get_login_connector(row.id)
         if connector is None:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
@@ -876,8 +907,9 @@ class ConnectionService:
         self.repo.bind_external_user(session, row.id, external_user_id)
         await run_in_threadpool(session.flush)
         await run_in_threadpool(session.refresh, row)
-        self._login_connectors.pop(row.id, None)
-        # 运行中的连接仍持有旧 Token：重扫码成功后重启，让新凭据立即生效。
+        # 线程安全移除登录态连接器；运行中的连接仍持有旧 Token，
+        # 重扫码成功后重启，让新凭据立即生效。
+        self._drop_login_connector(row.id)
         if row.desired_running:
             from ..connectors import connection_manager as manager
 
@@ -915,13 +947,22 @@ class ConnectionService:
         否则二维码状态（_pending_qrcode / SDK client）会丢失。
         连接被删除或重新配置时应清除缓存（见 delete/update 路径）。
         """
-        connector = self._login_connectors.get(row.id)
-        if connector is None:
-            connector = self.registry.create(
-                row.platform, _connector_context(row, self.decrypt_config(row))
-            )
-            self._login_connectors[row.id] = connector
-        return connector
+        with self._login_connectors_lock:
+            connector = self._login_connectors.get(row.id)
+            if connector is None:
+                connector = self.registry.create(
+                    row.platform, _connector_context(row, self.decrypt_config(row))
+                )
+                self._login_connectors[row.id] = connector
+            return connector
+
+    def _get_login_connector(self, connection_id: int) -> Connector | None:
+        with self._login_connectors_lock:
+            return self._login_connectors.get(connection_id)
+
+    def _drop_login_connector(self, connection_id: int) -> None:
+        with self._login_connectors_lock:
+            self._login_connectors.pop(connection_id, None)
 
     # ------------------------------------------------------------------
     # 进站处理（连接器回调与 /connectors/* 入口共用）
@@ -1100,6 +1141,15 @@ class ConnectionService:
             waiting = self._sole_waiting_task(session, row)
             if waiting is not None:
                 task = waiting
+
+        # 斜杠命令分流：/ans /res 是回复命令，/page /file 是内容外发命令；
+        # 未知 `/xxx` 拒绝（UNHANDLED），避免命令被误当回复正文提交。
+        command = parse_command(text)
+        if command is not None:
+            return self._handle_command(
+                session, row=row, task=task, command=command, receipt=receipt
+            )
+
         if task is None or not text:
             return InboundResult.UNHANDLED
 
@@ -1152,6 +1202,228 @@ class ConnectionService:
             reason="late",
         )
         return InboundResult.LATE
+
+    def _handle_command(
+        self,
+        session: Session,
+        *,
+        row: ImConnection,
+        task: RequestTask | None,
+        command: Command,
+        receipt,
+    ) -> InboundResult:
+        """处理斜杠命令；返回值作为该条进站消息的 InboundResult。
+
+        /res /ans 暂存草稿（多次调用保留最后一次），/commit 确认提交草稿，
+        /page /file 外发聊天记录。命令失败一律回 UNHANDLED，不产生任务事件；
+        每次命令后尽力发送一条反馈。
+        """
+        if command.unknown:
+            return InboundResult.UNHANDLED
+        if command.name == "res":
+            # /res <正文>：暂存思考链（reasoning），多次调用保留最后一次。
+            return self._stage_draft(
+                session, row=row, task=task, command=command, kind="reasoning", receipt=receipt
+            )
+        if command.name == "ans":
+            # /ans <正文>：暂存回答（final_text），多次调用保留最后一次。
+            return self._stage_draft(
+                session, row=row, task=task, command=command, kind="final", receipt=receipt
+            )
+        if command.name == "commit":
+            # /commit：确认之前暂存内容，提交为任务回复。
+            return self._commit_draft(session, row=row, task=task, receipt=receipt)
+        if command.name == "page":
+            return self._handle_page_command(session, row=row, task=task, command=command)
+        if command.name == "file":
+            return self._handle_file_command(session, row=row, task=task, command=command)
+        return InboundResult.UNHANDLED
+
+    def _stage_draft(
+        self,
+        session: Session,
+        *,
+        row: ImConnection,
+        task: RequestTask | None,
+        command: Command,
+        kind: str,
+        receipt,
+    ) -> InboundResult:
+        """把 /res（reasoning）或 /ans（final_text）暂存到任务草稿。
+
+        复用 task_drafts 表的 EDITING 草稿：多次调用覆盖同一草稿行的对应字段，
+        实现"多次 /res 只保留最后一次"。任务未定位或正文为空返回 UNHANDLED。
+        """
+        if task is None or not command.body:
+            return InboundResult.UNHANDLED
+        from ..domain.enums import DraftSource
+        from ..repositories.tasks import TaskRepository
+
+        repo = TaskRepository()
+        draft = repo.get_active_draft(session, task_id=task.id)
+        if draft is None:
+            draft = repo.create_draft(
+                session,
+                task_id=task.id,
+                owner_user_id=task.owner_user_id,
+                source=DraftSource.MANUAL,
+                reasoning_text=None,
+                tool_calls_json="[]",
+                final_text=None,
+            )
+            session.flush()
+        if kind == "reasoning":
+            draft.reasoning_text = command.body
+        else:
+            draft.final_text = command.body
+        draft.version += 1
+        self._send_feedback(
+            session,
+            row=row,
+            text=(
+                f"已记录思考（{len(command.body)} 字），回复 /commit 确认提交"
+                if kind == "reasoning"
+                else f"已记录回答（{len(command.body)} 字），回复 /commit 确认提交"
+            ),
+        )
+        receipt.task_id = task.id
+        return InboundResult.ACCEPTED
+
+    def _commit_draft(
+        self,
+        session: Session,
+        *,
+        row: ImConnection,
+        task: RequestTask | None,
+        receipt,
+    ) -> InboundResult:
+        """/commit：把暂存草稿组装为 ReplyDraft 并提交（首个回复获胜）。
+
+        无暂存草稿或草稿为空时返回 UNHANDLED；提交成功标记草稿为 SUBMITTED。
+        """
+        if task is None:
+            return InboundResult.UNHANDLED
+        from ..domain.enums import DraftState
+        from ..repositories.tasks import TaskRepository
+
+        repo = TaskRepository()
+        draft = repo.get_active_draft(session, task_id=task.id)
+        if draft is None:
+            return InboundResult.UNHANDLED
+        payload = TaskRepository.draft_payload(draft)
+        draft_obj = ReplyDraft(
+            reasoning=payload.get("reasoning"),
+            tool_calls=payload.get("tool_calls") or [],
+            final_text=payload.get("final_text"),
+        )
+        if not (draft_obj.reasoning or draft_obj.final_text or draft_obj.tool_calls):
+            return InboundResult.UNHANDLED
+        accepted = self.tasks.first_reply_wins(
+            session,
+            task_id=task.id,
+            owner_user_id=task.owner_user_id,
+            expected_version=task.version,
+            response_payload_json=draft_obj.model_dump_json(exclude_none=True),
+        )
+        if accepted:
+            repo.mark_draft_state(session, draft_id=draft.id, state=DraftState.SUBMITTED)
+            self._add_task_event(
+                session,
+                task_id=task.id,
+                event_type=TaskEventType.REPLY_SUBMITTED,
+                actor_type=ActorType.IM,
+                actor_user_id=row.owner_user_id,
+                payload={"source": "im", "connection_id": row.id, "committed": True},
+            )
+            self._send_feedback(session, row=row, text="已提交回复。")
+            receipt.task_id = task.id
+            return InboundResult.ACCEPTED
+        self._add_task_event(
+            session,
+            task_id=task.id,
+            event_type=TaskEventType.REPLY_REJECTED_LATE,
+            actor_type=ActorType.IM,
+            actor_user_id=row.owner_user_id,
+            payload={"source": "im", "connection_id": row.id, "payload_hash": receipt.payload_hash},
+        )
+        receipt.task_id = task.id
+        return InboundResult.LATE
+
+    def _send_feedback(self, session: Session, *, row: ImConnection, text: str) -> None:
+        """尽力发送一条命令反馈给绑定用户；失败只记日志，不影响命令事务。
+
+        反馈是即时提示，不走任务 outbox（避免依赖真实 task_id FK），直接经
+        connector.send_reply_text 推送；连接离线或无绑定用户时静默跳过。
+        """
+        target = row.bound_external_user_id or ""
+        if not target:
+            return
+        from ..connectors import connection_manager as manager
+
+        connector = manager.get_instance(row.id)
+        if connector is None:
+            return
+        import asyncio
+
+        async def _run() -> None:
+            try:
+                await connector.send_reply_text(target, text)
+            except Exception:  # 反馈失败不影响命令事务
+                logger.exception("feedback send failed (connection %s)", row.id)
+
+        def _log_task_exception(task) -> None:
+            if task.cancelled():
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.warning("feedback task raised (connection %s)", row.id, exc_info=exc)
+
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(_run())
+        else:
+            task = loop.create_task(_run())
+            task.add_done_callback(_log_task_exception)
+
+    def _handle_page_command(
+        self,
+        session: Session,
+        *,
+        row: ImConnection,
+        task: RequestTask | None,
+        command: Command,
+    ) -> InboundResult:
+        """/page [页码]：把任务 prompt 全文按页发回 IM。"""
+        from .outbound_service import send_page
+
+        if task is None:
+            return InboundResult.UNHANDLED
+        try:
+            page = int(command.args) if command.args else 1
+        except ValueError:
+            return InboundResult.UNHANDLED
+        send_page(self, session, row=row, task=task, page=page)
+        return InboundResult.ACCEPTED
+
+    def _handle_file_command(
+        self,
+        session: Session,
+        *,
+        row: ImConnection,
+        task: RequestTask | None,
+        command: Command,
+    ) -> InboundResult:
+        """/file [md|txt]：把任务内容打包成文件发回 IM（默认 txt）。"""
+        from .outbound_service import send_file
+
+        if task is None:
+            return InboundResult.UNHANDLED
+        fmt = (command.args or "txt").lower()
+        if fmt not in IM_FILE_FORMATS:
+            return InboundResult.UNHANDLED
+        send_file(self, session, row=row, task=task, fmt=fmt)
+        return InboundResult.ACCEPTED
 
     def _find_task_by_public_id(
         self, session: Session, row: ImConnection, public_id: str
@@ -1255,11 +1527,19 @@ def _qr_image_base64(content: Any) -> str:
 
 
 def _run_coroutine(coro):
-    """在同步 API 上下文中执行连接器协程。"""
+    """在同步 API 上下文中执行连接器协程。
+
+    仅在无运行中事件循环的线程（如 FastAPI 同步端点的线程池）内调用；
+    若在事件循环线程内同步调用会死锁，此时抛明确错误而非隐晦的 RuntimeError。
+    """
     import asyncio
 
     try:
-        loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(coro)
-    return loop.run_until_complete(coro)
+    raise DomainError(
+        DomainErrorCode.CONFLICT,
+        "连接健康检查不能在事件循环线程内同步执行",
+        status_code=500,
+    )

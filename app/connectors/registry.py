@@ -144,14 +144,31 @@ class ConnectorRegistry:
 
 
 def build_default_registry() -> ConnectorRegistry:
-    """装配五个目标平台的注册表（docs/ROADMAP.md M4）。"""
+    """装配目标平台的注册表（docs/ROADMAP.md M4）。"""
     from .implementations.http_poll import HttpPollConnector
+    from .implementations.lark import LarkConnector
     from .implementations.webhook import WebhookConnector
     from .implementations.wecom_aibot import WeComAibotConnector
     from .implementations.wecom_ilink import WeComIlinkConnector
     from .implementations.ws_server import WebSocketServerConnector
 
     registry = ConnectorRegistry()
+    registry.register(
+        PlatformSpec(
+            code="lark",
+            label="飞书",
+            description="飞书机器人：长连接监听、App ID/Secret 接入、收发消息。",
+            kind="client",
+            supports_delivery=True,
+            requires_binding=True,
+            binding_command="connect lark",
+            config_fields=(
+                ConfigField(name="app_id", label="App ID", required=True),
+                ConfigField(name="app_secret", label="App Secret", required=True, secret=True),
+            ),
+        ),
+        LarkConnector,
+    )
     registry.register(
         PlatformSpec(
             code="wecom_ilink",

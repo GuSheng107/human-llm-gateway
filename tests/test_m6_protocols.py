@@ -61,9 +61,17 @@ def _parse_error(payload: dict[str, Any], parser: Any) -> DomainError:
 
 
 def test_chat_parse_rejects_store() -> None:
-    error = _parse_error(_chat_payload(store=True), chat_protocol.parse_request)
-    assert error.code is DomainErrorCode.UNSUPPORTED_PARAMETER
-    assert error.status_code == 400
+    for value in (True, False):
+        error = _parse_error(_chat_payload(store=value), chat_protocol.parse_request)
+        assert error.code is DomainErrorCode.UNSUPPORTED_PARAMETER
+        assert error.status_code == 400
+
+
+def test_chat_parse_accepts_null_store() -> None:
+    """store:null 视同未提交（12.6 显式提交定义），且不进入透传 options。"""
+    parsed = chat_protocol.parse_request(json.dumps(_chat_payload(store=None)).encode())
+    assert "store" not in parsed.options
+    assert parsed.raw["store"] is None
 
 
 def test_chat_parse_rejects_bad_messages_or_model() -> None:
@@ -106,6 +114,15 @@ def test_responses_parse_rejects_server_control_fields() -> None:
         error = _parse_error(_responses_payload(**{field: True}), responses_protocol.parse_request)
         assert error.code is DomainErrorCode.UNSUPPORTED_PARAMETER
         assert error.status_code == 400
+
+
+def test_responses_parse_accepts_null_server_control_fields() -> None:
+    """background/conversation/store 为 JSON null 时视同未提交（12.6 显式提交定义）。"""
+    parsed = responses_protocol.parse_request(
+        json.dumps(_responses_payload(store=None, background=None, conversation=None)).encode()
+    )
+    assert parsed.options == {}
+    assert parsed.raw["store"] is None
 
 
 def test_responses_parse_accepts_stateless_store_false() -> None:

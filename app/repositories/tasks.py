@@ -424,6 +424,33 @@ class TaskRepository:
             .limit(1)
         ).scalar_one_or_none()
 
+    def update_active_draft_fields(
+        self,
+        session: Session,
+        *,
+        task_id: int,
+        reasoning_text: str | None,
+        tool_calls_json: str,
+        final_text: str | None,
+    ) -> bool:
+        """原子更新任务的活动草稿（state=EDITING），命中 0 行表示尚无草稿。
+
+        与 save_draft 的 upsert 语义配合：先尝试原子更新，避免
+        get_active_draft + create_draft 的 TOCTOU 产生重复 EDITING 草稿。
+        """
+        result = session.execute(
+            update(TaskDraft)
+            .where(TaskDraft.task_id == task_id, TaskDraft.state == DraftState.EDITING)
+            .values(
+                reasoning_text=reasoning_text,
+                tool_calls_json=tool_calls_json,
+                final_text=final_text,
+                version=TaskDraft.version + 1,
+                updated_at=_now(),
+            )
+        )
+        return result.rowcount == 1
+
     def list_drafts(self, session: Session, *, task_id: int) -> list[TaskDraft]:
         return list(
             session.scalars(

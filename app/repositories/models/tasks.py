@@ -13,6 +13,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -130,6 +131,15 @@ class TaskDraft(TimestampMixin, VersionMixin, Base):
     __table_args__ = (
         Index("ix_task_drafts_task_state_updated", "task_id", "state", "updated_at"),
         Index("ix_task_drafts_owner_updated", "owner_user_id", "updated_at"),
+        # 部分唯一索引：每任务至多一条 EDITING 草稿，数据库层面杜绝并发
+        # save_draft 产生重复活动草稿（配合服务层原子 upsert）。
+        Index(
+            "uq_task_drafts_active_per_task",
+            "task_id",
+            unique=True,
+            sqlite_where=text("state = 'editing'"),
+            postgresql_where=text("state = 'editing'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

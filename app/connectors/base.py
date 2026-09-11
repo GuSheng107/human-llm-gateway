@@ -23,6 +23,8 @@ class ConnectorContext:
     name: str
     platform: str
     config: dict[str, Any] = field(default_factory=dict)
+    # 数据库中已保存的绑定用户；进程重启后由实例预填投递目标（仅 push 参考）。
+    bound_external_user_id: str | None = None
 
 
 @dataclass
@@ -39,7 +41,11 @@ class InboundMessage:
 
 @dataclass
 class DeliveryEnvelope:
-    """统一任务投递包（已脱敏，不含原始完整请求）。"""
+    """统一任务投递包（已脱敏，不含原始完整请求）。
+
+    messages 为两消息投递（docs/PRODUCT.md §6.4）的展示分条：
+    [提示条, 内容条?]；机器通道只读 prompt 字段，保持兼容。
+    """
 
     task_public_id: str
     requested_model: str
@@ -50,12 +56,18 @@ class DeliveryEnvelope:
     context_token: str | None = None
     has_tools: bool = False
     tool_names: list[str] = field(default_factory=list)
+    messages: list[str] = field(default_factory=list)
+
+    def effective_messages(self) -> list[str]:
+        """IM 平台逐条发送的消息列表；空时回退单条 prompt_text。"""
+        return self.messages or [self.prompt_text]
 
     def to_json(self) -> dict[str, Any]:
         return {
             "task_id": self.task_public_id,
             "model": self.requested_model,
             "prompt": self.prompt_text,
+            "messages": self.effective_messages(),
             "created_at": self.created_at,
             "tools": self.tool_names if self.has_tools else [],
         }
@@ -111,6 +123,9 @@ class Connector:
         self, external_user_id: str, text: str, *, context_token: str | None = None
     ) -> None:
         """主动向外部用户发送文本（用于提示任务已结束等）。默认忽略。"""
+
+    async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
+        """主动向外部用户发送文件（/file 命令外发通路）。默认忽略。"""
 
 
 InboundCallback = Callable[[int, InboundMessage], Awaitable[InboundResult]]

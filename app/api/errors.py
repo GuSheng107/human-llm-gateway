@@ -320,9 +320,16 @@ def install_error_handlers(app: FastAPI) -> None:
         )
         if 400 <= exc.status_code < 600:
             status = exc.status_code
+        # 携带 public_code 时优先透出（如 draft_version_conflict /
+        # task_already_resolved），供前端精确分支；与 /v1 协议路径的
+        # `exc.public_code or code` 语义一致（protocols/errors.py）。
+        # 信封 code 本就是自由字符串（ApiError 路径已使用自定义码）。
+        envelope_code = exc.public_code or code.value
         return JSONResponse(
             status_code=status,
-            content=error_body(code.value, exc.message, action.value, {}, get_request_id(request)),
+            content=error_body(
+                envelope_code, exc.message, action.value, {}, get_request_id(request)
+            ),
         )
 
     @app.exception_handler(ApiError)

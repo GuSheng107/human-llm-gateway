@@ -12,7 +12,7 @@ export const REPLY_STRATEGY_LABELS: Record<string, string> = {
 
 export const DELIVERY_MODE_LABELS: Record<string, string> = {
   web: "Web",
-  im: "IM",
+  im: "消息网关",
 };
 
 export const EVENT_TYPE_LABELS: Record<string, string> = {
@@ -31,7 +31,7 @@ export const EVENT_TYPE_LABELS: Record<string, string> = {
 export const ACTOR_TYPE_LABELS: Record<string, string> = {
   system: "系统",
   user: "用户",
-  im: "IM",
+  im: "消息网关",
   upstream: "上游",
   caller: "调用方",
 };

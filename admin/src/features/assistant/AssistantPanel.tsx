@@ -35,7 +35,7 @@ const CONTEXT_FEATURE_LABELS: Record<string, string> = {
   replies: "回复工作台",
   api_keys: "API 管理",
   llm_configs: "LLM 管理",
-  connections: "连接 IM",
+  connections: "消息网关",
   models: "模型广场",
   logs: "日志查询",
   invitations: "邀请码",

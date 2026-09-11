@@ -22,6 +22,13 @@ def _classify(exc: Exception) -> ConnectorError:
 
     if isinstance(exc, WSAuthFailureError):
         return ConnectorError(ERROR_AUTH, "企微认证失败，请检查 Bot 配置")
+    try:
+        from wecom_aibot_sdk.types import WSReconnectExhaustedError
+
+        if isinstance(exc, WSReconnectExhaustedError):
+            return ConnectorError(ERROR_NETWORK, "企微重连失败，连接已关闭")
+    except ImportError:
+        pass
     text = type(exc).__name__
     return ConnectorError(ERROR_NETWORK, f"企微连接错误: {text}")
 
@@ -61,7 +68,18 @@ class WeComAibotConnector(Connector):
             secret=str(self.ctx.config["secret"]),
         )
         self._client.on("message.text", self._handle_text_message)
+        # SDK 自带重连，但重连耗尽（WSReconnectExhaustedError）时连接无法恢复。
+        # 监听 error 事件，在该错误出现时让 _run 结束，交由 manager 退避重连。
+        self._client.on("error", self._handle_sdk_error)
         self._task = asyncio.create_task(self._run(), name=f"wecom-aibot-{self.ctx.connection_id}")
+
+    async def _handle_sdk_error(self, error: Any) -> None:
+        """SDK error 事件：仅在重连耗尽时结束连接，避免干扰 SDK 自动重连。"""
+        from wecom_aibot_sdk.types import WSReconnectExhaustedError
+
+        if isinstance(error, WSReconnectExhaustedError):
+            self._last_error = _classify(error)
+            self._closed.set()
 
     async def _handle_text_message(self, frame: Any) -> None:
         """把企微文本消息桥接到统一入站流程；未绑定时文本即绑定码。"""
@@ -84,19 +102,23 @@ class WeComAibotConnector(Connector):
         if not is_group_chat and not chat_id:
             chat_id = sender
         is_personal_chat = not is_group_chat and (not chat_id or chat_id == sender)
-        result = await self._inbound(
-            self.ctx.connection_id,
-            InboundMessage(
-                external_message_id=external_id,
-                sender_external_id=sender,
-                text=text,
-                binding_code=text if is_personal_chat else None,
-                raw={
-                    "chatid": chat_id,
-                    "chattype": chat_type,
-                },
-            ),
-        )
+        try:
+            result = await self._inbound(
+                self.ctx.connection_id,
+                InboundMessage(
+                    external_message_id=external_id,
+                    sender_external_id=sender,
+                    text=text,
+                    binding_code=text if is_personal_chat else None,
+                    raw={
+                        "chatid": chat_id,
+                        "chattype": chat_type,
+                    },
+                ),
+            )
+        except Exception as exc:  # 进站异常不阻塞 SDK 事件循环
+            logger.warning("wecom inbound handle failed", exc_info=exc)
+            return
         result_value = getattr(result, "value", result)
         if result_value == "bound" and self._client is not None:
             await self._client.reply(
@@ -142,22 +164,73 @@ class WeComAibotConnector(Connector):
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=10)
-            except (TimeoutError, Exception):  # noqa: BLE001
+            except TimeoutError:
+                # wait_for 超时已自动取消内部 task；此处再等待其真正结束，
+                # 确保 _run 的 finally（client.disconnect 等清理）执行完毕，
+                # 避免资源未完全释放就置空引用。
                 self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:  # 取消后清理仍失败：记录不中断
+                    logger.warning(
+                        "wecom stop cleanup failed",
+                        extra={"connection_id": self.ctx.connection_id},
+                        exc_info=True,
+                    )
             self._task = None
         self._client = None
 
     async def deliver(self, envelope: DeliveryEnvelope) -> None:
         client = self._client
-        if client is None or not getattr(client, "is_connected", lambda: True)():
+        if client is None or not client.is_connected:
             raise ConnectorError(ERROR_DELIVERY, "企微连接不在线")
         target = envelope.reply_to_external_id or ""
         if not target:
             raise ConnectorError(ERROR_DELIVERY, "缺少投递目标")
+        # 两消息投递：逐条发送提示条/内容条（无 messages 时回退单条 prompt）。
+        try:
+            for message in envelope.effective_messages():
+                await client.send_message(
+                    target,
+                    {"msgtype": "markdown", "markdown": {"content": message}},
+                )
+        except Exception as exc:
+            raise _classify(exc) from exc
+
+    async def send_reply_text(
+        self, external_user_id: str, text: str, *, context_token: str | None = None
+    ) -> None:
+        """主动发送文本（/page 外发通路）。"""
+        client = self._client
+        if client is None or not client.is_connected:
+            raise ConnectorError(ERROR_DELIVERY, "企微连接不在线")
+        if not external_user_id:
+            raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
         try:
             await client.send_message(
-                target,
-                {"msgtype": "markdown", "markdown": {"content": envelope.prompt_text}},
+                external_user_id, {"msgtype": "text", "text": {"content": text}}
             )
+        except Exception as exc:
+            raise _classify(exc) from exc
+
+    async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
+        """主动发送文件（/file 外发通路）：三步分片上传后发送 file 消息。"""
+        client = self._client
+        if client is None or not client.is_connected:
+            raise ConnectorError(ERROR_DELIVERY, "企微连接不在线")
+        if not external_user_id:
+            raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
+        try:
+            result = await client.upload_media(
+                content.encode("utf-8"), type="file", filename=filename
+            )
+            media_id = str(result.get("media_id") or "")
+            if not media_id:
+                raise ConnectorError(ERROR_DELIVERY, "企微素材上传未返回 media_id")
+            await client.send_media_message(external_user_id, "file", media_id)
+        except ConnectorError:
+            raise
         except Exception as exc:
             raise _classify(exc) from exc

@@ -4,7 +4,25 @@
 """
 
 # 数据库 Schema 版本：与代码不一致时启动失败，不执行迁移。
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
+
+# IM 两消息投递与命令层（docs/PRODUCT.md §6.4）
+# 提示条（含任务定位头）字符上限
+IM_HINT_BAR_CHARS = 300
+# 内容条"简版"字符上限（超出降级为提示 + /page 提示）
+IM_CONTENT_DETAIL_CHARS = 500
+# /page 每页字符上限（聊天记录分页，每页 500 字）
+IM_PAGE_CHARS = 500
+# /file 允许的文件格式（默认 txt，/file 发整个聊天记录）
+IM_FILE_FORMATS = ("txt", "md")
+IM_FILE_NAME_MAX_LENGTH = 200
+# LLM 压缩目标字符数（开启 LLM 压缩时把聊天记录压缩到 500 字）
+IM_LLM_COMPRESS_CHARS = 500
+
+# LLM 总结（提示条摘要）生成：短超时、小输出，失败静默降级为尾部摘要
+LLM_SUMMARY_TIMEOUT_SECONDS = 20
+LLM_SUMMARY_PROMPT_CHARS = 6000
+LLM_SUMMARY_MAX_CHARS = 200
 
 # 加密契约（详见 docs/DATABASE.md §2.4）
 SECRET_ENVELOPE_PREFIX = "hlg1"

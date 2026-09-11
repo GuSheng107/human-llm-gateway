@@ -526,6 +526,8 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 每个字段只能采用四种处理：`透传`、`等价转换`、`网关消费`、`拒绝 400`。禁止使用“忽略”“尽量转换”或把未知字段塞进 metadata 冒充等价支持。
 
+本矩阵及后文的「显式提交」指字段以非 `null` 的 JSON 值出现；JSON `null` 一律视同未提交（客户端 SDK 的 nullish 默认值不触发拒绝，如 @ai-sdk/openai 会携带 `store: null`），并原样保留在落库的原始请求中。
+
 | 语义 | OpenAI Chat | OpenAI Responses | Anthropic Messages | 跨协议规则 |
 | --- | --- | --- | --- | --- |
 | 系统指令 | system/developer message | `instructions` 或输入项 | 顶级 `system` | 按原有顺序转换，再在末尾追加 Fake Model 身份指令。 |
@@ -560,7 +562,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 
 `POST /v1/chat/completions`
 
-最低要求：`model` 为非空字符串，`messages` 为非空数组。其余字段完整保存；人工处理只读取必要的规范化投影。显式提交 `store` 按 12.6 矩阵返回 400 `unsupported_parameter`。
+最低要求：`model` 为非空字符串，`messages` 为非空数组。其余字段完整保存；人工处理只读取必要的规范化投影。显式提交 `store`（非 `null`）按 12.6 矩阵返回 400 `unsupported_parameter`。
 
 ### 13.2 非流式响应
 

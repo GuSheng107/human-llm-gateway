@@ -66,8 +66,8 @@ Human LLM Gateway is a self-hostable **LLM identity gateway**:
 ### 👤 Human-in-the-Loop
 - Web task console: full raw request, timeline, drafts
 - Unified reply workbench with inbox, unread state, conversation context, and draft version protection
-- IM delivery: WeCom, webhook, WebSocket, HTTP polling
-- IM DSL: `::: reasoning` / `::: tool` fences, shared structure with the web editor
+- IM delivery: WeCom, Feishu, webhook, WebSocket, HTTP polling
+- IM reply commands: slash commands (/ans /res /commit /page /file) and `#<task-id>` targeting, shared structure with the web editor
 - First valid submission wins — irrevocable
 
 > ⚠️ When replying manually, tool calls may **only reference tools declared by the caller in the original request** (names must match; otherwise the reply is rejected with 400). The gateway never executes any tool and makes no guarantee about execution results — the caller declares and runs tools at their own risk.

@@ -112,7 +112,7 @@ export function AdminConnectionsPage() {
   return (
     <div className="space-y-5">
       <PageHeader
-        title="IM 连接监管"
+        title="消息网关监管"
         description="可停用或删除连接，不能查看凭据。"
         actions={
           <Button variant="ghost" loading={loading} onClick={() => void load()}>

@@ -44,6 +44,9 @@ class ConnectionWatchdog:
             from ..core.db import SessionLocal
 
             with SessionLocal() as session:
+                # 先分页读取全部可见连接，随后立即提交以释放读事务。
+                # 后续逐行处理会执行异步连接器操作（stop/health），不能让
+                # 这些网络 I/O 把数据库读事务长时间挂起（SQLite 下会积压锁）。
                 rows = []
                 page = 1
                 while True:
@@ -57,6 +60,8 @@ class ConnectionWatchdog:
                     if len(rows) >= total or not batch:
                         break
                     page += 1
+                session.commit()  # expire_on_commit=False：rows 仍可读
+
                 reports: list[dict[str, Any]] = []
                 for row in rows:
                     connector = manager.get_instance(row.id)
@@ -112,29 +117,38 @@ class ConnectionWatchdog:
                     disabled = False
                     if abnormal:
                         await manager.stop(row.id)
-                        row.desired_running = False
-                        if check_error:
-                            row.state = ConnectionState.ERROR
-                            row.last_error_code = "health_check_failed"
-                            row.last_error_message = check_error
-                        disabled = True
-                        log_event(
-                            "warning",
-                            "connection.watchdog_disabled",
-                            "看门狗发现异常连接并关闭启用开关",
-                            connection_id=row.id,
-                            platform=row.platform,
-                            state=row.state.value,
-                            error_code=row.last_error_code,
-                        )
-                        self.audit.add(
-                            session,
-                            action=AuditAction.CONNECTION_WATCHDOG_DISABLED,
-                            resource_type="im_connection",
-                            resource_id=str(row.id),
-                            owner_user_id=row.owner_user_id,
-                            metadata={"reason": row.last_error_code or row.state.value},
-                        )
+                        # 用 updated_at 快照做乐观锁写回停用：仅当连接自快照
+                        # （本轮读取）以来未被用户并发修改（如 restart）时才置
+                        # desired_running=False。start 会更新 updated_at，故用
+                        # updated_at 快照可精确区分"看门狗要停用的连接"与"用户
+                        # 刚 restart 的连接"；若用户已并发 restart，此处不命中，
+                        # 保持用户期望的运行状态。
+                        if self.service.repo.disable_if_desired(
+                            session, row.id, expected_updated_at=row.updated_at
+                        ):
+                            row.desired_running = False
+                            if check_error:
+                                row.state = ConnectionState.ERROR
+                                row.last_error_code = "health_check_failed"
+                                row.last_error_message = check_error
+                            disabled = True
+                            log_event(
+                                "warning",
+                                "connection.watchdog_disabled",
+                                "看门狗发现异常连接并关闭启用开关",
+                                connection_id=row.id,
+                                platform=row.platform,
+                                state=row.state.value,
+                                error_code=row.last_error_code,
+                            )
+                            self.audit.add(
+                                session,
+                                action=AuditAction.CONNECTION_WATCHDOG_DISABLED,
+                                resource_type="im_connection",
+                                resource_id=str(row.id),
+                                owner_user_id=row.owner_user_id,
+                                metadata={"reason": row.last_error_code or row.state.value},
+                            )
                     row.last_health_at = utc_now()
                     owner = session.get(User, row.owner_user_id)
                     reports.append(
@@ -162,7 +176,9 @@ class ConnectionWatchdog:
                             "auto_disabled": disabled,
                         }
                     )
-                session.commit()
+                    # 逐行提交：每行独立的短写事务，避免把多行状态变更
+                    # 累积在单个长事务里，也避免异步连接器操作期间持有写锁。
+                    session.commit()
                 return reports
 
     async def run(self) -> None:
