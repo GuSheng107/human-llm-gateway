@@ -29,6 +29,17 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "name": "DeepSeek",
         "owned_by": "deepseek",
         "models": {
+            # V4.1 Flash（2026-09-10 发布）：552B MoE，Causal-Encoder-Decoder
+            # 非对称架构（输入激活 8B / 输出 16B），原生多模态，1M 上下文。
+            # 官方 API 名 deepseek-flash；此处取峰谷定价中的闲时价。
+            "deepseek-v4.1-flash": {
+                "input": 1,
+                "output": 4,
+                "cached": 0.02,
+                "context": 1_000_000,
+                "max_output": 128_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+            },
             "deepseek-v4-pro": {
                 "input": 4,
                 "output": 16,
@@ -187,6 +198,16 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
                 "max_output": 64_000,
                 "capabilities": ["vision", "tools", "thinking", "streaming"],
             },
+            # K2.8 Preview（2026-09-11 全量上线）：沿用 kimi-for-coding ID，
+            # 1M 上下文，low/high/max 三档思考强度，性能逼近 K3。
+            "kimi-k2.8": {
+                "input": 6.5,
+                "output": 27,
+                "cached": 1.3,
+                "context": 1_000_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+            },
             "kimi-k2.7-code": {
                 "input": 4,
                 "output": 16,
@@ -242,7 +263,8 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "owned_by": "grok",
         "models": {
             "grok-4.7": {
-                # 参数与 grok-4.6 一致（尚未发布，先占位）
+                # 2026-09-12 正式发布：2.1T 参数（较 4.6 增约 40%），
+                # 预训练后补训 SpaceX 工程与 Starlink 数据。
                 "input": 18,
                 "output": 72,
                 "context": 500_000,
@@ -352,6 +374,17 @@ DEFAULT_MODEL_GROUPS: list[dict] = [
         "owned_by": "gemini",
         "models": {
             "gemini-3.8-flash": {
+                "input": 5.25,
+                "output": 26.25,
+                "cached": 0.26,
+                "context": 1_000_000,
+                "max_output": 64_000,
+                "capabilities": ["vision", "tools", "thinking", "streaming"],
+            },
+            # Gemini 3.8 Flash Cyber（2026-09-02 发布）：与标准版同底座，
+            # 面向防御性漏洞发现与自动化修复，官方仅通过 Fairwind 计划
+            # 向受信防御方开放。此处按标准版定价登记。
+            "gemini-3.8-flash-cyber": {
                 "input": 5.25,
                 "output": 26.25,
                 "cached": 0.26,
