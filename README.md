@@ -255,7 +255,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [AGENTS.md](AGE
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=GuSheng107/human-llm-gateway&type=Date)](https://star-history.com/#GuSheng107/human-llm-gateway&Date)
+<img src="docs/assets/star-history.svg" alt="Star History Chart" width="800">
+
+<sub>Rendered from the GitHub API by <a href="scripts/generate_star_history.py"><code>scripts/generate_star_history.py</code></a>. The third-party star-history.com service returns degraded charts since GitHub restricted star data access in August 2026 — normalized y-axis, no real samples — so this project renders its own.</sub>
 
 ---
 
