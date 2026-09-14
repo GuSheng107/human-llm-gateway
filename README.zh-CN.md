@@ -249,7 +249,9 @@ gh pr create --base master --fill
 
 ## ⭐ Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=GuSheng107/human-llm-gateway&type=Date)](https://star-history.com/#GuSheng107/human-llm-gateway&Date)
+<img src="docs/assets/star-history.svg" alt="Star History 图表" width="800">
+
+<sub>由 <a href="scripts/generate_star_history.py"><code>scripts/generate_star_history.py</code></a> 直接调用 GitHub API 渲染。第三方 star-history.com 自 2026 年 8 月 GitHub 限制 star 数据访问后持续返回降级图表——纵轴被错误归一化、缺少真实采样点——因此本项目自行渲染。</sub>
 
 ---
 
