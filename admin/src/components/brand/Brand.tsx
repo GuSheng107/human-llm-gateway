@@ -16,37 +16,34 @@ export function BrandLogo({ size = "md" }: { size?: "sm" | "md" | "lg" }) {
     <svg viewBox="0 0 120 120" className={SIZE_CLASSES[size]} aria-hidden>
       <defs>
         <linearGradient id="brand-bg" x1="0" y1="0" x2="1" y2="1">
-          <stop offset="0%" stopColor="#2563eb" />
-          <stop offset="100%" stopColor="#7c3aed" />
+          <stop offset="0%" stopColor="#059669" />
+          <stop offset="100%" stopColor="#0891b2" />
         </linearGradient>
       </defs>
-      <rect x="4" y="4" width="112" height="112" rx="24" fill="url(#brand-bg)" />
-      <circle cx="34" cy="34" r="9" fill="#ffffff" opacity="0.95" />
-      <circle cx="86" cy="86" r="9" fill="#ffffff" opacity="0.95" />
-      <circle cx="60" cy="52" r="12" fill="#ffffff" />
-      <path d="M40 84 a20 16 0 0 1 40 0 z" fill="#ffffff" />
+      <rect x="4" y="4" width="112" height="112" rx="26" fill="url(#brand-bg)" />
+      {/* 外围网关环（human-in-the-loop），断口在底部 */}
       <path
-        d="M42 42 L52 50"
+        d="M60 22 a38 38 0 1 0 0.01 0"
+        fill="none"
         stroke="#ffffff"
-        strokeWidth="3"
+        strokeWidth="5"
+        strokeDasharray="168 70"
+        strokeDashoffset="-84"
+      />
+      {/* 环上的两个端点：入口与出口 */}
+      <circle cx="60" cy="22" r="5" fill="#ffffff" />
+      <circle cx="60" cy="98" r="5" fill="#ffffff" opacity="0.9" />
+      {/* 中心人形 */}
+      <circle cx="60" cy="52" r="11" fill="#ffffff" />
+      <path d="M44 84 a16 22 0 0 1 32 0 z" fill="#ffffff" />
+      {/* 顶部入口到人的引导线 */}
+      <path
+        d="M60 27 L60 40"
+        stroke="#ffffff"
+        strokeWidth="4"
         strokeLinecap="round"
         opacity="0.7"
       />
-      <path
-        d="M68 58 L78 78"
-        stroke="#ffffff"
-        strokeWidth="3"
-        strokeLinecap="round"
-        opacity="0.7"
-      />
-      <path
-        d="M72 40 h14 a4 4 0 0 1 4 4 v8 a4 4 0 0 1 -4 4 h-10 l-4 4 v-4 h-0 a4 4 0 0 1 -4 -4 v-8 a4 4 0 0 1 4 -4 z"
-        fill="#ffffff"
-        opacity="0.55"
-      />
-      <circle cx="79" cy="48" r="1.6" fill="#2563eb" />
-      <circle cx="84" cy="48" r="1.6" fill="#2563eb" />
-      <circle cx="89" cy="48" r="1.6" fill="#2563eb" />
     </svg>
   );
 }
