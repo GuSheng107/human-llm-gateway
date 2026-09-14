@@ -22,8 +22,6 @@ Any OpenAI- or Anthropic-compatible client can call it. The reply is written by 
 
 > **Project status: invitation-only beta.** Core features are implemented for a single-instance deployment. Verify real IM accounts, LLM upstreams and the public proxy using the [deployment checklist](docs/DEPLOYMENT.md) before inviting users. The roadmap records remaining acceptance work.
 
-> **In mainland China?** A read-only mirror is maintained on Gitee for faster clones. See [Gitee mirror](docs/GITEE_MIRROR.md). GitHub remains the source of truth for branches, PRs and CI.
-
 </div>
 
 ---
