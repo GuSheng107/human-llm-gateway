@@ -99,6 +99,7 @@ def test_model_marketplace_metadata_and_filters(client, admin_headers) -> None:
         "/api/fake-models", headers=admin_headers, params={"provider": "deepseek"}
     ).json()
     assert {item["model_id"] for item in deepseek["items"]} == {
+        "deepseek-v4.1-flash",
         "deepseek-v4-pro",
         "deepseek-v4-flash",
     }
