@@ -1,0 +1,61 @@
+name: Mirror to Gitee
+
+# master 更新后，把仓库镜像推送到 Gitee，供国内用户快速访问与克隆。
+#
+# 前置条件（由仓库管理员在 GitHub 仓库设置中一次性配置）：
+#   Secret: GITEE_TOKEN —— Gitee 私人令牌，需勾选 projects 权限
+#   Variable: GITEE_REPO —— 目标仓库全路径，形如 owner/repo
+# 详见 docs/GITEE_MIRROR.md。
+#
+# 未配置 Secret 时本工作流直接跳过，不会让流水线变红。
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-mirror
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check mirror configuration
+        id: check
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPO: ${{ vars.GITEE_REPO }}
+        run: |
+          if [ -z "$GITEE_TOKEN" ] || [ -z "$GITEE_REPO" ]; then
+            echo "::notice::未配置 GITEE_TOKEN 或 GITEE_REPO，跳过镜像同步。"
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout full history
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Push mirror to Gitee
+        if: steps.check.outputs.enabled == 'true'
+        env:
+          GITEE_TOKEN: ${{ secrets.GITEE_TOKEN }}
+          GITEE_REPO: ${{ vars.GITEE_REPO }}
+        run: |
+          set -euo pipefail
+          # 令牌通过 URL 传入，仅存在于本次进程环境，不落盘、不写 remote。
+          remote="https://oauth2:${GITEE_TOKEN}@gitee.com/${GITEE_REPO}.git"
+          # 镜像 master 与所有标签；逐分支推送以便失败时看到明确的 ref 名。
+          git push --force "$remote" "refs/heads/master:refs/heads/master"
+          git push --force "$remote" --tags || true
+          echo "::notice::已同步 master 至 Gitee（${GITEE_REPO}）。"
