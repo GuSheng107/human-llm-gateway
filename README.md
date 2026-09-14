@@ -22,6 +22,8 @@ Any OpenAI- or Anthropic-compatible client can call it. The reply is written by 
 
 > **Project status: invitation-only beta.** Core features are implemented for a single-instance deployment. Verify real IM accounts, LLM upstreams and the public proxy using the [deployment checklist](docs/DEPLOYMENT.md) before inviting users. The roadmap records remaining acceptance work.
 
+> **In mainland China?** A read-only mirror is maintained on Gitee for faster clones. See [Gitee mirror](docs/GITEE_MIRROR.md). GitHub remains the source of truth for branches, PRs and CI.
+
 </div>
 
 ---
@@ -256,8 +258,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [AGENTS.md](AGE
 ## ⭐ Star History
 
 <img src="docs/assets/star-history.svg" alt="Star History Chart" width="800">
-
-<sub>Rendered from the GitHub API by <a href="scripts/generate_star_history.py"><code>scripts/generate_star_history.py</code></a>. The third-party star-history.com service returns degraded charts since GitHub restricted star data access in August 2026 — normalized y-axis, no real samples — so this project renders its own.</sub>
 
 ---
 

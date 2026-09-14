@@ -22,6 +22,8 @@
 | `docs/API_CONTRACT.md` | 管理 API、推理协议和错误契约 |
 | `docs/DATABASE.md` | 目标表结构、索引、事务和初始化规则 |
 | `docs/UI_GUIDE.md` | Tailwind 浅色后台和页面交互规范 |
+| `docs/DEPLOYMENT.md` | 部署、运维、备份与恢复 |
+| `docs/GITEE_MIRROR.md` | Gitee 只读镜像的配置与同步机制 |
 | `docs/ROADMAP.md` | 阶段进度唯一事实来源 |
 
 设计或实现发生冲突时，先停止扩散，更新对应事实来源并取得产品确认。不得把 `.trae`、IDE 配置、临时聊天记录或个人笔记当作项目规范。

@@ -22,6 +22,8 @@
 
 > **项目状态：受邀试用版本。** 核心功能已实现，适合按单实例方式部署给受邀用户使用；真实 IM、LLM 上游和公网环境须按[部署验收说明](docs/DEPLOYMENT.md)验证。完整进度以路线图为准。
 
+> **国内访问**：Gitee 维护只读镜像，克隆更快，详见 [Gitee 镜像](docs/GITEE_MIRROR.md)。分支、PR 与 CI 仍以 GitHub 为准。
+
 </div>
 
 ---
@@ -250,8 +252,6 @@ gh pr create --base master --fill
 ## ⭐ Star History
 
 <img src="docs/assets/star-history.svg" alt="Star History 图表" width="800">
-
-<sub>由 <a href="scripts/generate_star_history.py"><code>scripts/generate_star_history.py</code></a> 直接调用 GitHub API 渲染。第三方 star-history.com 自 2026 年 8 月 GitHub 限制 star 数据访问后持续返回降级图表——纵轴被错误归一化、缺少真实采样点——因此本项目自行渲染。</sub>
 
 ---
 
