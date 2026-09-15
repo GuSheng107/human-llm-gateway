@@ -292,8 +292,9 @@ def _push_best_effort(
                 await connector.send_reply_text(target, text)
             if filename and file_content is not None:
                 await connector.send_file(target, filename, file_content)
-        except Exception:  # 外发失败不影响进站命令事务
+        except Exception as exc:  # 外发失败不影响进站命令事务
             logger.exception("outbound push failed via %s", connector.platform)
+            await _notify_push_failure(connector, target, exc)
 
     try:
         asyncio.get_running_loop()
@@ -318,6 +319,31 @@ def _push_best_effort(
             task.add_done_callback(_log_push_exception)
 
         event.listen(session, "after_commit", _push_after_commit, once=True)
+
+
+def _notify_push_failure(connector: Connector, target: str, exc: Exception) -> None:
+    """外发失败后尽力给用户回发一条失败提示（提示失败只记日志，不递归）。
+
+    仅 push 平台且有绑定目标时尝试；错误信息统一脱敏，避免把内部异常
+    细节泄露给外部用户。
+    """
+    import asyncio
+
+    if not target:
+        return
+
+    async def _run() -> None:
+        try:
+            await connector.send_reply_text(target, "消息发送失败，请稍后重试。")
+        except Exception:
+            logger.exception("outbound failure notice failed via %s", connector.platform)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_run())
+    else:
+        asyncio.get_running_loop().create_task(_run())
 
 
 def _log_push_exception(task: asyncio.Task[Any]) -> None:

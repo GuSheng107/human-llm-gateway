@@ -252,9 +252,11 @@ class LarkConnector(Connector):
                 self._bound_chat_type = "chat_id" if chat_id else "open_id"
             if self._client is not None:
                 # 在事件循环线程内调度同步阻塞的 SDK 发送，避免阻塞事件循环。
+                from ...core.constants import IM_COMMAND_HELP
+
                 self._schedule_send_text(
                     self._bound_chat_id,
-                    "连接绑定成功，可以开始接收任务。",
+                    f"连接绑定成功，可以开始接收任务。\n{IM_COMMAND_HELP}",
                     self._bound_chat_type,
                 )
         elif text == "connect lark" and not is_personal_chat and self._client is not None:

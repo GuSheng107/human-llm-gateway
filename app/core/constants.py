@@ -18,6 +18,14 @@ IM_FILE_FORMATS = ("txt", "md")
 IM_FILE_NAME_MAX_LENGTH = 200
 # LLM 压缩目标字符数（开启 LLM 压缩时把聊天记录压缩到 500 字）
 IM_LLM_COMPRESS_CHARS = 500
+# IM 指令清单（绑定欢迎语、任务提示条、无法处理消息的引导共用）
+IM_COMMAND_HELP = (
+    "可用指令：\n"
+    "/ans #<任务ID> <正文> 暂存回答，/res 暂存思考，/commit 确认提交\n"
+    "/page 查看全文，/file 导出聊天记录文件\n"
+    "有唯一等待任务时，直接回复文字即可提交。\n"
+    "示例：/ans #t_ab12cd34 你好；/page；/file md"
+)
 
 # LLM 总结（提示条摘要）生成：短超时、小输出，失败静默降级为尾部摘要
 LLM_SUMMARY_TIMEOUT_SECONDS = 20

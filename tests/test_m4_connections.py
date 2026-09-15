@@ -503,6 +503,131 @@ def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
         assert row.bound_external_user_id == "wx-user-1"
 
 
+def test_start_sends_bind_welcome_for_qr_login_platform(client, admin_headers, monkeypatch) -> None:
+    """首次扫码绑定后启用连接：补发欢迎消息（绑定发生在浏览器侧，IM 无确认）。
+
+    复现用户流程：创建连接 -> 扫码绑定（desired_running 仍为 False）-> start。
+    start 成功后必须调度欢迎消息，否则用户在 IM 侧收不到任何主动通知。
+    """
+    from app.connectors import connection_manager as manager
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-welcome")
+    created = _create_connection(
+        client, headers, name="ilink-welcome", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    # 扫码绑定结果直接落库（等价于 poll_login confirmed 之后的状态）。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        session.commit()
+
+    scheduled: list[tuple[int, str]] = []
+
+    def _fake_schedule(self, cid: int, target: str) -> None:
+        scheduled.append((cid, target))
+
+    async def _fake_manager_start(row, _config, _inbound) -> None:
+        return None
+
+    monkeypatch.setattr(ConnectionService, "_schedule_bind_welcome", _fake_schedule)
+    monkeypatch.setattr(manager, "start", _fake_manager_start)
+    response = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert response.status_code == 200, response.text
+    assert scheduled == [(connection_id, "wx-user-1")]
+
+
+def test_start_skips_bind_welcome_for_chat_command_platforms(
+    client, admin_headers, monkeypatch
+) -> None:
+    """lark 等聊天命令绑定平台不补发欢迎：绑定确认已在聊天内回复，避免重复。"""
+    from app.connectors import connection_manager as manager
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "lark-no-welcome")
+    created = _create_connection(
+        client,
+        headers,
+        name="lark-no-welcome",
+        platform="lark",
+        config={"app_id": "cli_x", "app_secret": "sec_x"},
+    )
+    connection_id = int(created["id"])
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "ou_x"
+        session.commit()
+
+    scheduled: list[tuple[int, str]] = []
+
+    def _fake_schedule(self, cid: int, target: str) -> None:
+        scheduled.append((cid, target))
+
+    async def _fake_manager_start(row, _config, _inbound) -> None:
+        return None
+
+    monkeypatch.setattr(ConnectionService, "_schedule_bind_welcome", _fake_schedule)
+    monkeypatch.setattr(manager, "start", _fake_manager_start)
+    response = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert response.status_code == 200, response.text
+    assert scheduled == []
+
+
+def test_send_bind_welcome_pushes_command_help_when_connector_online() -> None:
+    """连接器就绪后欢迎消息推送给绑定用户，文案包含指令清单。"""
+    from app.services.connection_service import ConnectionService
+
+    sent: list[tuple[str, str]] = []
+
+    class _FakeConnector:
+        async def send_reply_text(self, target: str, text: str) -> None:
+            sent.append((target, text))
+
+    class _FakeManager:
+        def get_instance(self, connection_id: int):
+            return _FakeConnector()
+
+    asyncio.run(ConnectionService()._send_bind_welcome(7, "wx-user-1", _FakeManager()))
+
+    assert len(sent) == 1
+    target, text = sent[0]
+    assert target == "wx-user-1"
+    assert text.startswith("连接绑定成功，可以开始接收任务。")
+    assert "/ans" in text and "/commit" in text and "/page" in text
+
+
+def test_send_bind_welcome_skips_when_connector_never_online(caplog) -> None:
+    """连接一直未上线（如启动失败）时静默跳过：只记 warning，不抛错。"""
+    from app.services.connection_service import ConnectionService
+
+    class _FakeManager:
+        def get_instance(self, connection_id: int):
+            return None
+
+    with caplog.at_level("WARNING", logger="app.services.connection_service"):
+        asyncio.run(
+            ConnectionService()._send_bind_welcome(
+                1, "wx-x", _FakeManager(), tries=3, interval=0.01
+            )
+        )
+    assert any("bind welcome skipped" in rec.message for rec in caplog.records)
+
+
+def test_ilink_classify_no_context_token_is_delivery_error() -> None:
+    """NoContextTokenError 是协议限制（用户未发过消息），不是网络错误。"""
+    from app.connectors.implementations.wecom_ilink import _classify
+
+    class NoContextTokenError(Exception):
+        pass
+
+    err = _classify(NoContextTokenError())
+    assert err.code == "delivery_failed"
+    assert "尚未发消息" in err.message
+
+
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:
     """扫码会话跨请求共享：未先 start 直接 poll 返回 400，而不是未处理 500。"""
     headers = _create_user(client, admin_headers, "qr-poll-first")
