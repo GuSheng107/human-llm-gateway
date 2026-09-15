@@ -24,6 +24,11 @@ def _classify(exc: Exception) -> ConnectorError:
     text = type(exc).__name__
     if getattr(exc, "is_session_expired", False):
         return ConnectorError(ERROR_AUTH, "iLink 会话已过期，请重新扫码登录")
+    # push/send_file 在用户从未发过消息（或连接重启后令牌缓存被清空）时
+    # 抛 NoContextTokenError：这是协议限制而非网络故障，归为投递错误并
+    # 给出可操作提示，避免误导性的“网络错误”。
+    if text == "NoContextTokenError":
+        return ConnectorError(ERROR_DELIVERY, "iLink 用户尚未发消息，无法主动推送")
     status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
     if status in (401, 403):
         return ConnectorError(ERROR_AUTH, "iLink 认证被拒绝")
@@ -183,6 +188,36 @@ class WeComIlinkConnector(Connector):
             raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
         try:
             await asyncio.to_thread(client.push, external_user_id, text)
+        except Exception as exc:
+            raise _classify(exc) from exc
+
+    async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
+        """主动发送文件（/file 外发通路）。
+
+        SDK 的 send_media_file 需要 context_token（收到用户消息时 SDK 自动
+        缓存）；缓存缺失说明用户从未主动发过消息，明确报错而非静默失败。
+        """
+        client = self._client
+        if client is None or self._thread is None or not self._thread.is_alive():
+            raise ConnectorError(ERROR_DELIVERY, "iLink 连接不在线")
+        if not external_user_id:
+            raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
+        context_token = client.get_context_token(external_user_id)
+        if not context_token:
+            raise ConnectorError(
+                ERROR_DELIVERY, "缺少 iLink 会话令牌，请先在微信中给机器人发一条消息"
+            )
+
+        def _send() -> None:
+            client.send_media_file(
+                external_user_id,
+                context_token,
+                content.encode("utf-8"),
+                filename,
+            )
+
+        try:
+            await asyncio.to_thread(_send)
         except Exception as exc:
             raise _classify(exc) from exc
 

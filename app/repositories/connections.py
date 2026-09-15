@@ -424,3 +424,19 @@ class ConnectionRepository:
                 InboundReceipt.external_message_id == external_message_id,
             )
         ).scalar_one_or_none()
+
+    def count_inbound_receipts(self, session: Session, connection_id: int) -> int:
+        """统计连接累计进站消息数（含刚写入的当前回执）。
+
+        用于识别「绑定后的第一条消息」（计数值为 1）：iLink 等扫码绑定平台
+        用户从未发过消息，第一条进站消息是唯一能主动回复的时机。
+        """
+        from sqlalchemy import func
+
+        return int(
+            session.execute(
+                select(func.count())
+                .select_from(InboundReceipt)
+                .where(InboundReceipt.connection_id == connection_id)
+            ).scalar_one()
+        )

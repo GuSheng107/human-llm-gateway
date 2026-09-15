@@ -446,6 +446,50 @@ def test_command_first_legacy_syntax_pure_text(client, webhook_scene) -> None:
         assert draft.final_text == "兼容语法"
 
 
+def test_first_inbound_message_gets_welcome_feedback(client, admin_headers, monkeypatch) -> None:
+    """扫码绑定平台的首条进站消息（无等待任务）回欢迎语而非冷提示。
+
+    微信 iLink 等平台绑定发生在浏览器扫码，机器人只有收到用户第一条消息
+    后才有会话令牌，欢迎与指令说明必须在首条消息的回复里下发。
+    """
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, f"welcome-owner-{secrets.token_hex(3)}")
+    created = _create_connection(client, headers, name="welcome-conn")
+    connection_id = int(created["id"])
+    token = _generated_token(created)
+    # 落库绑定（等价扫码确认，不经聊天消息），此时连接无任何进站回执。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "u-1"
+        session.commit()
+
+    captured: list[str] = []
+
+    def _fake_feedback(self, session, *, row, text) -> None:
+        captured.append(text)
+
+    monkeypatch.setattr(ConnectionService, "_send_feedback", _fake_feedback)
+
+    def _inbound(message_id: str, text: str):
+        return client.post(
+            f"/connectors/webhook/{connection_id}/inbound",
+            json={"external_message_id": message_id, "sender": "u-1", "text": text},
+            headers={"X-Webhook-Token": token},
+        )
+
+    first = _inbound("welcome-m1", "你好")
+    assert first.json()["result"] == InboundResult.UNHANDLED.value
+    assert len(captured) == 1
+    assert captured[0].startswith("连接绑定成功，可以开始接收任务。")
+    assert "/ans" in captured[0] and "/commit" in captured[0]
+
+    second = _inbound("welcome-m2", "还在吗")
+    assert second.json()["result"] == InboundResult.UNHANDLED.value
+    assert len(captured) == 2
+    assert captured[1].startswith("这条消息没有对应的等待任务。")
+
+
 # ---------------------------------------------------------------------------
 # 两消息投递
 # ---------------------------------------------------------------------------
@@ -485,7 +529,8 @@ def test_delivery_envelope_two_messages_and_outbox_payload(client, admin_headers
         hint, content = messages
         assert hint.startswith("[任务 task_public_two]")
         assert "/page" in hint
-        assert len(hint) <= IM_HINT_BAR_CHARS
+        assert "/commit" in hint  # 指令清单已完整展示（含暂存/提交命令）
+        assert len(hint) <= IM_HINT_BAR_CHARS * 2  # 摘要预算 + 追加的完整指令清单
         assert "…（前面内容已省略" in content or len(content) <= IM_CONTENT_DETAIL_CHARS
 
 

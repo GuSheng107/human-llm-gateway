@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import inspect
@@ -55,6 +56,19 @@ from ..repositories.tasks import TaskRepository
 
 _IM_CONFIG_PURPOSE = "im-config"
 logger = logging.getLogger(__name__)
+
+# 绑定欢迎消息等“即发即忘”后台任务的强引用集合：事件循环对任务只持弱引用，
+# 不保存引用可能被 GC 中途回收；任务结束后由回调移出集合。
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _on_background_task_done(task: asyncio.Task[None]) -> None:
+    _BACKGROUND_TASKS.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("background task raised", exc_info=exc)
 
 
 class ConnectionService:
@@ -500,6 +514,12 @@ class ConnectionService:
                 DomainErrorCode.CONFLICT, "连接启动失败，请稍后重试", status_code=500
             ) from exc
 
+        # 扫码绑定平台（如微信 iLink）：绑定发生在浏览器扫码确认，用户在 IM 侧
+        # 没有任何确认消息（不像 lark/aibot 在聊天内回“绑定成功”）。首次启用
+        # 是连接真正上线、能主动 push 的时刻，补发欢迎消息（含指令清单）。
+        if spec.supports_login:
+            self._schedule_bind_welcome(row.id, row.bound_external_user_id or "")
+
         # connection.started 审计在初始 starting 状态成功提交后再追加，
         # 写入独立短事务：监督任务创建成功才视为启用成功。
         await run_in_threadpool(session.refresh, row)
@@ -883,7 +903,13 @@ class ConnectionService:
         except ConnectorError as exc:
             raise _login_domain_error(exc) from exc
         if result.get("status") != "confirmed":
-            return {"status": str(result.get("status") or "wait")}
+            # 附带当前绑定态：绑定可能在其他入口（另一标签页/自动启用/他人
+            # 扫码）已完成，前端据此直接收敛到成功态，避免展示一张扫了也
+            # 没反应的过期二维码。
+            return {
+                "status": str(result.get("status") or "wait"),
+                "bound": row.bound_external_user_id is not None,
+            }
 
         token = str(result.get("bot_token") or "").strip()
         external_user_id = str(result.get("ilink_user_id") or "").strip()
@@ -922,6 +948,9 @@ class ConnectionService:
                     extra={"connection_id": row.id},
                     exc_info=exc,
                 )
+            else:
+                # 后台发送：等待连接器就绪最长 10s，不能阻塞 poll 响应。
+                self._schedule_bind_welcome(row.id, row.bound_external_user_id or "")
         self.audit.add(
             session,
             action=AuditAction.CONNECTION_UPDATED,
@@ -1161,6 +1190,18 @@ class ConnectionService:
             )
 
         if task is None or not text:
+            from ..core.constants import IM_COMMAND_HELP
+
+            # 绑定后的第一条进站消息：这是扫码绑定平台（如微信 iLink）唯一能
+            # 主动回复的时机——iLink SDK 只有在收到用户消息后才有会话令牌，
+            # 扫码/启动时的欢迎推送会因缺令牌失败。把欢迎语与指令清单放在
+            # 这里回给用户，替代冷冰冰的“没有等待任务”。
+            is_first_message = text and self.repo.count_inbound_receipts(session, row.id) == 1
+            if is_first_message:
+                feedback = f"连接绑定成功，可以开始接收任务。\n{IM_COMMAND_HELP}"
+            else:
+                feedback = f"这条消息没有对应的等待任务。\n{IM_COMMAND_HELP}"
+            self._send_feedback(session, row=row, text=feedback)
             return InboundResult.UNHANDLED
 
         # IM 回复当前为纯文本语义（后续迭代将重构富文本回复）：整段正文即
@@ -1182,6 +1223,7 @@ class ConnectionService:
                 actor_user_id=row.owner_user_id,
                 payload={"source": "im", "connection_id": row.id},
             )
+            self._send_feedback(session, row=row, text="已提交回复。")
             receipt.task_id = task.id
             log_event(
                 "info",
@@ -1358,6 +1400,58 @@ class ConnectionService:
         )
         receipt.task_id = task.id
         return InboundResult.LATE
+
+    async def _send_bind_welcome(
+        self,
+        connection_id: int,
+        target: str,
+        manager: Any,
+        *,
+        tries: int = 20,
+        interval: float = 0.5,
+    ) -> None:
+        """绑定成功后给绑定用户推一条欢迎消息（含指令清单）。
+
+        连接上线是异步监督任务，这里轮询等待连接器实例就绪（默认最多 10s），
+        就绪后主动 push；失败只记日志，不影响绑定/启动结果。
+        只用普通参数（不用 ORM 行），可安全脱离请求会话在后台运行。
+        """
+        if not target:
+            return
+        from ..core.constants import IM_COMMAND_HELP
+
+        connector = None
+        for _ in range(tries):
+            connector = manager.get_instance(connection_id)
+            if connector is not None:
+                break
+            await asyncio.sleep(interval)
+        if connector is None:
+            logger.warning(
+                "bind welcome skipped, connection not online (connection %s)", connection_id
+            )
+            return
+        try:
+            await connector.send_reply_text(
+                target, f"连接绑定成功，可以开始接收任务。\n{IM_COMMAND_HELP}"
+            )
+        except Exception:  # 欢迎消息失败不影响绑定事务
+            logger.exception("bind welcome send failed (connection %s)", connection_id)
+
+    def _schedule_bind_welcome(self, connection_id: int, target: str) -> None:
+        """后台发送绑定欢迎消息，不阻塞调用方请求（等待就绪最长 10s）。
+
+        首次扫码绑定（desired_running=False）时连接尚未启动，无法立刻推送：
+        绑定消息由随后用户启用连接（start）时补发；重新扫码（连接已启用）
+        时 poll_login 内重启完成后同样走这里。
+        """
+        from ..connectors import connection_manager as manager
+
+        task = asyncio.get_running_loop().create_task(
+            self._send_bind_welcome(connection_id, target, manager)
+        )
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_on_background_task_done)
 
     def _send_feedback(self, session: Session, *, row: ImConnection, text: str) -> None:
         """尽力发送一条命令反馈给绑定用户；失败只记日志，不影响命令事务。
