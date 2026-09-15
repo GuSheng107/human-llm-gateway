@@ -79,13 +79,19 @@ class WeComIlinkConnector(Connector):
             # 并发创建两个 client 导致连接错乱。
             if self._client is None:
                 self._client = Client(**kwargs)
+            client = self._client
 
         def _on_session_expired() -> None:
             self._thread_error = ConnectorError(ERROR_AUTH, "iLink 会话已过期，请重新扫码登录")
+            # 会话过期后 SDK 会以 5 分钟为周期对失效会话空转轮询，且 wait_closed
+            # 永不返回，监督任务会带着死会话一直显示在线。立即停止 client 让
+            # 监听线程尽快退出，监督任务据此转入 auth_required 并等待重新扫码。
+            client.stop()
 
         def _on_error(exc: Exception) -> None:
             logger.warning(
-                "ilink monitor error",
+                "ilink monitor error: %s",
+                exc,
                 extra={"connection_id": self.ctx.connection_id, "error": type(exc).__name__},
             )
 

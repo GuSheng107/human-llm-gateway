@@ -725,6 +725,60 @@ def test_ilink_classify_no_context_token_is_delivery_error() -> None:
     assert "尚未发消息" in err.message
 
 
+def test_ilink_session_expired_stops_monitor_and_reports_auth() -> None:
+    """会话过期必须终止监听线程并上报 auth_required。
+
+    SDK 对过期会话以 5 分钟为周期空转轮询且永不退出；连接器必须在过期
+    回调里主动停止 client，让 wait_closed 返回、监督任务读到 auth 错误
+    转入 auth_required 等待重新扫码，而不是带着死会话一直显示在线。
+    """
+    from app.connectors.base import ConnectorContext
+    from app.connectors.implementations.wecom_ilink import WeComIlinkConnector
+
+    class _FakeMonitorOptions:
+        def __init__(self, on_session_expired=None, on_error=None, **_kwargs):
+            self.on_session_expired = on_session_expired
+            self.on_error = on_error
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            self.stopped = False
+            self.monitor_options: _FakeMonitorOptions | None = None
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def monitor(self, _handler, options) -> None:
+            self.monitor_options = options
+            # 模拟 SDK 检测到会话过期：触发回调后立刻返回（线程随之结束）。
+            if options.on_session_expired is not None:
+                options.on_session_expired()
+
+    import openilink
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(openilink, "Client", _FakeClient)
+    monkeypatch.setattr(openilink, "MonitorOptions", _FakeMonitorOptions)
+    try:
+        connector = WeComIlinkConnector(
+            ConnectorContext(
+                connection_id=99,
+                owner_user_id=1,
+                name="ilink-expired",
+                platform="wecom_ilink",
+                config={"token": "t-1"},
+            )
+        )
+        asyncio.run(connector.start())
+        # 监听线程应在过期后很快退出：wait_closed 可完成而非永久挂起。
+        asyncio.run(asyncio.wait_for(connector.wait_closed(), timeout=5))
+        error = connector.last_error()
+        assert error is not None and error.is_auth
+        assert "重新扫码" in error.message
+    finally:
+        monkeypatch.undo()
+
+
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:
     """扫码会话跨请求共享：未先 start 直接 poll 返回 400，而不是未处理 500。"""
     headers = _create_user(client, admin_headers, "qr-poll-first")

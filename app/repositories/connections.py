@@ -440,3 +440,24 @@ class ConnectionRepository:
                 .where(InboundReceipt.connection_id == connection_id)
             ).scalar_one()
         )
+
+    def count_inbound_receipts_since(
+        self, session: Session, connection_id: int, since: datetime
+    ) -> int:
+        """统计连接自 `since` 之后的进站消息数（含刚写入的当前回执）。
+
+        用于识别「（重新）绑定后的第一条消息」：重新扫码会刷新
+        last_authenticated_at，旧回执不计入，欢迎语得以在重新绑定后重新下发。
+        """
+        from sqlalchemy import func
+
+        return int(
+            session.execute(
+                select(func.count())
+                .select_from(InboundReceipt)
+                .where(
+                    InboundReceipt.connection_id == connection_id,
+                    InboundReceipt.created_at > since,
+                )
+            ).scalar_one()
+        )

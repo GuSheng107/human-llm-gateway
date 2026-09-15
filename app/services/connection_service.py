@@ -1196,7 +1196,18 @@ class ConnectionService:
             # 主动回复的时机——iLink SDK 只有在收到用户消息后才有会话令牌，
             # 扫码/启动时的欢迎推送会因缺令牌失败。把欢迎语与指令清单放在
             # 这里回给用户，替代冷冰冰的“没有等待任务”。
-            is_first_message = text and self.repo.count_inbound_receipts(session, row.id) == 1
+            # 「绑定后」以最近一次上线认证时间（last_authenticated_at）为准：
+            # 重新扫码会重启连接并刷新该时间，欢迎语在重新绑定后同样生效。
+            is_first_message = False
+            if text:
+                authenticated_since = row.last_authenticated_at
+                if authenticated_since is not None:
+                    is_first_message = (
+                        self.repo.count_inbound_receipts_since(session, row.id, authenticated_since)
+                        == 1
+                    )
+                else:
+                    is_first_message = self.repo.count_inbound_receipts(session, row.id) == 1
             if is_first_message:
                 feedback = f"连接绑定成功，可以开始接收任务。\n{IM_COMMAND_HELP}"
             else:
@@ -1434,6 +1445,12 @@ class ConnectionService:
         try:
             await connector.send_reply_text(
                 target, f"连接绑定成功，可以开始接收任务。\n{IM_COMMAND_HELP}"
+            )
+        except ConnectorError as exc:
+            # 预期内的不可推送（如 iLink 用户尚未发消息、缺会话令牌）：欢迎语
+            # 会由「绑定后第一条进站消息」的回复路径补发，这里降级为 warning。
+            logger.warning(
+                "bind welcome not delivered (connection %s): %s", connection_id, exc.message
             )
         except Exception:  # 欢迎消息失败不影响绑定事务
             logger.exception("bind welcome send failed (connection %s)", connection_id)
