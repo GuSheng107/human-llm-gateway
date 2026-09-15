@@ -3,6 +3,11 @@
 SDK 是同步实现，在线程中运行 monitor 长轮询循环；进站消息通过
 run_coroutine_threadsafe 桥接到异步进站回调。会话过期（扫码失效）
 映射为 auth_required，由连接管理器停止重试并等待所有者重新扫码。
+
+iLink 服务（ilinkai.weixin.qq.com）是国内直连端点：SDK 默认的
+urlopen 会遵循系统代理，代理（VPN）会破坏到微信服务的 TLS 连接且
+SDK 静默吞掉网络错误，导致监听"假在线"收不到任何消息。本连接器
+强制直连（绕过系统代理），保证微信链路不受代理软件影响。
 """
 
 from __future__ import annotations
@@ -10,13 +15,52 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import ssl
 import threading
+import urllib.error
+import urllib.request
 from typing import Any
+
+from openilink.http import Response
 
 from ...domain.connections import ERROR_AUTH, ERROR_DELIVERY, ERROR_NETWORK, ConnectorError
 from ..base import Connector, ConnectorContext, DeliveryEnvelope, InboundMessage
 
 logger = logging.getLogger(__name__)
+
+
+class _NoProxyHTTPDoer:
+    """openilink HTTPDoer：直连实现，忽略系统代理。
+
+    openilink 默认使用 urlopen（遵循系统代理设置）。iLink 是微信国内
+    端点，经代理访问会 TLS 握手失败，且 SDK 的 monitor 会把 URLError
+    静默吞掉——表现为连接假在线但收不到任何消息。这里用空 ProxyHandler
+    的 opener 强制直连；HTTPError 语义与默认实现保持一致。
+    """
+
+    def __init__(self) -> None:
+        self._ssl_ctx = ssl.create_default_context()
+        https_handler = urllib.request.HTTPSHandler(context=self._ssl_ctx)
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), https_handler)
+
+    def do(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        timeout: float = 15,
+    ) -> Any:
+        req = urllib.request.Request(url, data=body, method=method)
+        if headers:
+            for key, value in headers.items():
+                req.add_header(key, value)
+        try:
+            with self._opener.open(req, timeout=timeout) as resp:
+                return Response(status_code=resp.status, content=resp.read())
+        except urllib.error.HTTPError as exc:
+            return Response(status_code=exc.code, content=exc.read())
 
 
 def _classify(exc: Exception) -> ConnectorError:
@@ -71,7 +115,7 @@ class WeComIlinkConnector(Connector):
         token = str(config.get("token") or "")
         if not token:
             raise ConnectorError(ERROR_AUTH, "缺少 iLink Token，请先扫码登录")
-        kwargs: dict[str, Any] = {"token": token}
+        kwargs: dict[str, Any] = {"token": token, "http_doer": _NoProxyHTTPDoer()}
         if config.get("base_url"):
             kwargs["base_url"] = str(config["base_url"])
         with self._client_lock:
@@ -233,7 +277,10 @@ class WeComIlinkConnector(Connector):
         with self._client_lock:
             client = self._client
             if client is None:
-                kwargs: dict[str, Any] = {"token": str(self.ctx.config.get("token") or "")}
+                kwargs: dict[str, Any] = {
+                    "token": str(self.ctx.config.get("token") or ""),
+                    "http_doer": _NoProxyHTTPDoer(),
+                }
                 if self.ctx.config.get("base_url"):
                     kwargs["base_url"] = str(self.ctx.config["base_url"])
                 client = Client(**kwargs)

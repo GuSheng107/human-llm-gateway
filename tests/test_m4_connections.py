@@ -503,6 +503,134 @@ def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
         assert row.bound_external_user_id == "wx-user-1"
 
 
+def test_qr_relogin_recovers_watchdog_disabled_connection(
+    client, admin_headers, monkeypatch
+) -> None:
+    """重新扫码必须能恢复被看门狗停用的连接（修复恢复死锁）。
+
+    复现用户场景：会话过期 -> state=auth_required -> 看门狗停用
+    （desired_running=0）-> 用户重新扫码确认。旧逻辑下 poll_login 因
+    desired_running=0 跳过重启，状态停留 auth_required，手动启用又被
+    start 的状态校验拒绝——用户重扫多少次都被堵死。修复后：确认时清除
+    失效错误状态并恢复启用，连接直接拉起。
+    """
+    from app.connectors import connection_manager as manager
+    from app.domain.enums import ConnectionState
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-relock")
+    created = _create_connection(
+        client, headers, name="ilink-relock", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {
+                "status": "confirmed",
+                "bot_token": "bot-token-2",
+                "baseurl": "",
+                "ilink_user_id": "wx-user-2",
+            }
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    async def _fake_manager_start(row, _config, _inbound) -> None:
+        return None
+
+    async def _fake_manager_stop(_connection_id) -> None:
+        return None
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+    monkeypatch.setattr(manager, "start", _fake_manager_start)
+    monkeypatch.setattr(manager, "stop", _fake_manager_stop)
+
+    # 等价「会话过期 + 看门狗已停用」的现场。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        row.desired_running = False
+        row.state = ConnectionState.AUTH_REQUIRED
+        row.last_error_code = "auth_required"
+        row.last_error_message = "iLink 会话已过期，请重新扫码登录"
+        session.commit()
+
+    started = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert started.status_code == 200, started.text
+    polled = client.get(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "confirmed"
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.state is ConnectionState.STOPPED or row.state is ConnectionState.ONLINE
+        assert row.last_error_code is None
+        assert row.desired_running is True
+
+
+def test_qr_relogin_keeps_user_stopped_connection_stopped(
+    client, admin_headers, monkeypatch
+) -> None:
+    """用户主动停用的连接重扫码后保持停用，但清除失效错误状态。
+
+    与看门狗停用不同：state=STOPPED + desired_running=0 是用户显式停止，
+    重新扫码只更新凭据并清理状态，不代用户启用；随后手动 start 不再被
+    状态校验拒绝。
+    """
+    from app.domain.enums import ConnectionState
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-restop")
+    created = _create_connection(
+        client, headers, name="ilink-restop", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {
+                "status": "confirmed",
+                "bot_token": "bot-token-3",
+                "baseurl": "",
+                "ilink_user_id": "wx-user-3",
+            }
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        row.desired_running = False
+        row.state = ConnectionState.STOPPED
+        session.commit()
+
+    started = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert started.status_code == 200, started.text
+    polled = client.get(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "confirmed"
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.state is ConnectionState.STOPPED
+        assert row.desired_running is False
+        assert row.last_error_code is None
+
+
 def test_qr_login_poll_reports_bound_when_binding_finished_elsewhere(
     client, admin_headers, monkeypatch
 ) -> None:
@@ -777,6 +905,45 @@ def test_ilink_session_expired_stops_monitor_and_reports_auth() -> None:
         assert "重新扫码" in error.message
     finally:
         monkeypatch.undo()
+
+
+def test_ilink_client_created_with_no_proxy_doer(client, admin_headers, monkeypatch) -> None:
+    """iLink client 必须使用直连 HTTPDoer，绕过系统代理。
+
+    iLink 是微信国内直连端点；代理（VPN）会破坏 TLS 且 SDK 静默吞掉
+    网络错误，表现为连接假在线收不到任何消息。开启系统代理的环境下，
+    start/start_login 创建的 client 都必须强制直连。
+    """
+    import openilink
+
+    created_clients: list[dict] = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs) -> None:
+            created_clients.append(kwargs)
+
+        def fetch_qr_code(self):
+            return _FakeResponse()
+
+    class _FakeResponse:
+        qrcode = "qr-1"
+        qrcode_img_content = b""
+
+    monkeypatch.setattr(openilink, "Client", _FakeClient)
+    headers = _create_user(client, admin_headers, "ilink-noproxy")
+    created = _create_connection(
+        client, headers, name="ilink-noproxy", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    # 扫码登录路径创建的 client
+    resp = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert len(created_clients) == 1
+    assert created_clients[0]["http_doer"] is not None
+    from app.connectors.implementations.wecom_ilink import _NoProxyHTTPDoer
+
+    assert isinstance(created_clients[0]["http_doer"], _NoProxyHTTPDoer)
 
 
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:

@@ -931,12 +931,27 @@ class ConnectionService:
             )
         row.config_ciphertext = self._encrypt_config(config)
         self.repo.bind_external_user(session, row.id, external_user_id)
+        # 新凭据替换了失效会话：旧的 auth_required/error 状态随之失效，必须
+        # 清除，否则 start 的状态校验会把「重新扫码」这条唯一恢复路径堵死
+        # （看门狗停用后 desired_running=0 + state=auth_required，重扫不重启，
+        # 手动启用又被状态校验拒绝，用户陷入循环）。
+        was_watchdog_disabled = not row.desired_running and row.state in (
+            ConnectionState.AUTH_REQUIRED,
+            ConnectionState.ERROR,
+        )
+        row.state = ConnectionState.STOPPED
+        row.last_error_code = None
+        row.last_error_message = None
         await run_in_threadpool(session.flush)
         await run_in_threadpool(session.refresh, row)
         # 线程安全移除登录态连接器；运行中的连接仍持有旧 Token，
         # 重扫码成功后重启，让新凭据立即生效。
         self._drop_login_connector(row.id)
-        if row.desired_running:
+        if row.desired_running or was_watchdog_disabled:
+            # 重新扫码是所有者的显式恢复动作：被看门狗停用的连接随之恢复
+            # 启用，与 desired_running=1 的重扫码路径行为一致。
+            row.desired_running = True
+            await run_in_threadpool(session.flush)
             from ..connectors import connection_manager as manager
 
             await manager.stop(row.id)
