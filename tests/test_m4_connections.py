@@ -503,6 +503,103 @@ def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
         assert row.bound_external_user_id == "wx-user-1"
 
 
+def test_qr_login_poll_reports_bound_when_binding_finished_elsewhere(
+    client, admin_headers, monkeypatch
+) -> None:
+    """轮询未确认时附带当前绑定态：绑定已在别处完成时前端可收敛到成功态。
+
+    复现用户场景：扫码绑定已成功且连接被自动启用，但浏览器仍持有过期的
+    未绑定状态并发起新登录会话——此时轮询应返回 bound=true，前端据此
+    收起无效二维码，而不是让用户扫一张没有任何反应的码。
+    """
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-bound-elsewhere")
+    created = _create_connection(
+        client,
+        headers,
+        name="ilink-bound-elsewhere",
+        platform="wecom_ilink",
+        config={},
+    )
+    connection_id = int(created["id"])
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {"status": "wait"}
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+
+    # 绑定已在别处完成（等价自动启用/另一标签页 confirmed 落库）。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        session.commit()
+
+    started = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert started.status_code == 200, started.text
+
+    polled = client.get(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert polled.status_code == 200
+    body = polled.json()
+    assert body["status"] == "wait"
+    assert body["bound"] is True
+
+    # 清理残留登录态连接器，避免污染共享的单例 _login_connectors。
+    from app.api import connections as _connections_api
+
+    _connections_api._service._drop_login_connector(connection_id)
+
+
+def test_qr_login_poll_reports_unbound_when_not_yet_bound(
+    client, admin_headers, monkeypatch
+) -> None:
+    """未绑定连接的轮询返回 bound=false，前端继续等待扫码。"""
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-unbound")
+    created = _create_connection(
+        client, headers, name="ilink-unbound", platform="wecom_ilink", config={}
+    )
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {"status": "wait"}
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+    assert (
+        client.post(f"/api/im-connections/{created['id']}/login", headers=headers).status_code
+        == 200
+    )
+
+    polled = client.get(f"/api/im-connections/{created['id']}/login", headers=headers)
+    assert polled.status_code == 200
+    body = polled.json()
+    assert body["status"] == "wait"
+    assert body["bound"] is False
+
+    # 清理残留登录态连接器，避免污染共享的单例 _login_connectors。
+    from app.api import connections as _connections_api
+
+    _connections_api._service._drop_login_connector(int(created["id"]))
+
+
 def test_start_sends_bind_welcome_for_qr_login_platform(client, admin_headers, monkeypatch) -> None:
     """首次扫码绑定后启用连接：补发欢迎消息（绑定发生在浏览器侧，IM 无确认）。
 

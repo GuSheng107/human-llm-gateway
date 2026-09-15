@@ -903,7 +903,13 @@ class ConnectionService:
         except ConnectorError as exc:
             raise _login_domain_error(exc) from exc
         if result.get("status") != "confirmed":
-            return {"status": str(result.get("status") or "wait")}
+            # 附带当前绑定态：绑定可能在其他入口（另一标签页/自动启用/他人
+            # 扫码）已完成，前端据此直接收敛到成功态，避免展示一张扫了也
+            # 没反应的过期二维码。
+            return {
+                "status": str(result.get("status") or "wait"),
+                "bound": row.bound_external_user_id is not None,
+            }
 
         token = str(result.get("bot_token") or "").strip()
         external_user_id = str(result.get("ilink_user_id") or "").strip()

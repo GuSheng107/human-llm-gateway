@@ -67,6 +67,14 @@ export function QrLoginSection({ connection, onBound, disabled = false }: QrLogi
             onBound();
             return;
           }
+          // 绑定已在其他入口完成（另一标签页/自动启用/旧会话），本地还拿着
+          // 过期的未绑定状态：直接收敛到成功，避免用户扫一张无效二维码。
+          if (result.bound) {
+            stopPolling();
+            setPhase("success");
+            onBound();
+            return;
+          }
           if (result.status === "expired") {
             stopPolling();
             setPhase("expired");
