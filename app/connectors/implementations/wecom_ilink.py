@@ -217,7 +217,10 @@ class WeComIlinkConnector(Connector):
         client = self._client
         if client is None or self._thread is None or not self._thread.is_alive():
             raise ConnectorError(ERROR_DELIVERY, "iLink 连接不在线")
-        target = envelope.reply_to_external_id or ""
+        # 目标定位：显式 reply_to_external_id 优先，否则回退到连接绑定的
+        # 外部用户（DeliveryService.build_envelope 不填目标字段，绑定用户
+        # 由 manager 从数据库预填到 ctx；缺回退时任务永远投不出去）。
+        target = envelope.reply_to_external_id or self.ctx.bound_external_user_id or ""
         if not target:
             raise ConnectorError(ERROR_DELIVERY, "缺少投递目标")
         # 两消息投递：逐条发送提示条/内容条（无 messages 时回退单条 prompt）。

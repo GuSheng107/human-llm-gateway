@@ -853,6 +853,55 @@ def test_ilink_classify_no_context_token_is_delivery_error() -> None:
     assert "尚未发消息" in err.message
 
 
+def test_ilink_deliver_falls_back_to_bound_user() -> None:
+    """投递包未显式指定目标时，必须回退到连接绑定的外部用户。
+
+    回归：DeliveryService.build_envelope 不填 reply_to_external_id，而
+    wecom_ilink.deliver 缺少绑定用户回退时，任务投递必然失败
+    （「缺少投递目标」→ delivery_failed），微信连接永远收不到任务。
+    """
+    from app.connectors.base import ConnectorContext, DeliveryEnvelope
+    from app.connectors.implementations.wecom_ilink import WeComIlinkConnector
+
+    pushed: list[tuple[str, str]] = []
+
+    class _FakeClient:
+        def get_context_token(self, user_id: str) -> str | None:
+            return "ctx-token-1"  # 已缓存（用户发过消息）
+
+        def push(self, to: str, text: str) -> str:
+            pushed.append((to, text))
+            return "client-id-1"
+
+    ctx = ConnectorContext(
+        connection_id=98,
+        owner_user_id=1,
+        name="ilink-deliv",
+        platform="wecom_ilink",
+        config={"token": "t-1"},
+        bound_external_user_id="wx-bound-user",
+    )
+    connector = WeComIlinkConnector(ctx)
+    connector._client = _FakeClient()
+
+    class _AliveThread:
+        def is_alive(self) -> bool:
+            return True
+
+    connector._thread = _AliveThread()  # 连接在线（监听线程存活）
+    envelope = DeliveryEnvelope(
+        task_public_id="t_deliv1",
+        requested_model="m",
+        prompt_text="问题全文",
+        owner_user_id=1,
+        messages=["提示条", "内容条"],
+    )
+
+    asyncio.run(connector.deliver(envelope))
+
+    assert pushed == [("wx-bound-user", "提示条"), ("wx-bound-user", "内容条")]
+
+
 def test_ilink_session_expired_stops_monitor_and_reports_auth() -> None:
     """会话过期必须终止监听线程并上报 auth_required。
 
