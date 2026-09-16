@@ -17,6 +17,7 @@ import concurrent.futures
 import logging
 import ssl
 import threading
+import types
 import urllib.error
 import urllib.request
 from typing import Any
@@ -79,6 +80,57 @@ def _classify(exc: Exception) -> ConnectorError:
     return ConnectorError(ERROR_NETWORK, f"iLink 网络错误: {text}")
 
 
+def _no_proxy_cdn_post(self: Any, cdn_url: str, body: bytes) -> str:
+    """直连版 `_do_cdn_post`：用无代理 opener 替换 urlopen（其余语义同 SDK）。
+
+    SDK 原版 `_do_cdn_post` 直接用 urlopen（遵循系统代理），不经过注入的
+    http_doer；代理（VPN）环境下 TLS 握手被破坏，/file 的媒体上传 100%
+    失败（SSL: UNEXPECTED_EOF_WHILE_READING）。这里只替换传输层。
+    """
+    from urllib.error import HTTPError as _URLHTTPError
+
+    from openilink.http import HTTPError as _SDKHTTPError
+
+    req = urllib.request.Request(cdn_url, data=body, method="POST")
+    req.add_header("Content-Type", "application/octet-stream")
+    if self.route_tag:
+        req.add_header("SKRouteTag", self.route_tag)
+    try:
+        with _NO_PROXY_OPENER.open(req, timeout=self._CDN_TIMEOUT) as resp:
+            download_param = resp.headers.get("x-encrypted-param", "")
+            resp.read()  # drain body
+    except _URLHTTPError as exc:
+        err_msg = ""
+        try:
+            err_msg = exc.headers.get("x-error-message", "") or exc.read().decode(errors="replace")
+        except Exception:  # noqa: BLE001, S110  # 读取错误信息失败不影响主错误
+            pass
+        raise _SDKHTTPError(exc.code, err_msg.encode() if err_msg else b"") from exc
+    if not download_param:
+        raise RuntimeError("CDN response missing x-encrypted-param header")
+    return download_param
+
+
+_NO_PROXY_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}),
+    urllib.request.HTTPSHandler(context=ssl.create_default_context()),
+)
+
+
+def _create_client(**kwargs: Any) -> Any:
+    """创建 openilink Client 并覆写 CDN 上传通路为直连。
+
+    用实例方法补丁（types.MethodType）而非模块级子类，避免在导入期
+    绑定真实 Client 破坏测试的 monkeypatch（`openilink.Client` 在函数
+    内动态解析，测试用 fake Client 时同样被补丁）。
+    """
+    from openilink import Client
+
+    client = Client(**kwargs)
+    client._do_cdn_post = types.MethodType(_no_proxy_cdn_post, client)  # type: ignore[attr-defined]
+    return client
+
+
 class WeComIlinkConnector(Connector):
     platform = "wecom_ilink"
 
@@ -104,7 +156,7 @@ class WeComIlinkConnector(Connector):
         self._inbound = callback
 
     async def start(self) -> None:
-        from openilink import Client, MonitorOptions
+        from openilink import MonitorOptions
 
         if self._thread is not None and self._thread.is_alive():
             return
@@ -122,7 +174,7 @@ class WeComIlinkConnector(Connector):
             # 若 start_login 已创建 client（扫码登录中），复用同一实例，避免
             # 并发创建两个 client 导致连接错乱。
             if self._client is None:
-                self._client = Client(**kwargs)
+                self._client = _create_client(**kwargs)
             client = self._client
 
         def _on_session_expired() -> None:
@@ -275,8 +327,6 @@ class WeComIlinkConnector(Connector):
             raise _classify(exc) from exc
 
     async def start_login(self) -> dict[str, Any]:
-        from openilink import Client
-
         with self._client_lock:
             client = self._client
             if client is None:
@@ -286,7 +336,7 @@ class WeComIlinkConnector(Connector):
                 }
                 if self.ctx.config.get("base_url"):
                     kwargs["base_url"] = str(self.ctx.config["base_url"])
-                client = Client(**kwargs)
+                client = _create_client(**kwargs)
                 self._client = client
         try:
             response = await asyncio.to_thread(client.fetch_qr_code)

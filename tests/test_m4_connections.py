@@ -995,6 +995,29 @@ def test_ilink_client_created_with_no_proxy_doer(client, admin_headers, monkeypa
     assert isinstance(created_clients[0]["http_doer"], _NoProxyHTTPDoer)
 
 
+def test_ilink_client_cdn_upload_bypasses_system_proxy() -> None:
+    """iLink client 的 CDN 上传必须直连（绕过系统代理）。
+
+    回归：SDK 的 _do_cdn_post 用 urlopen 直发（遵循系统代理），代理
+    环境下 TLS 握手被破坏 -> /file 的 CDN 上传 100% 失败
+    （SSL: UNEXPECTED_EOF_WHILE_READING）。本连接器创建的 client 必须
+    覆写 CDN 通路为直连 opener。
+    """
+    from app.connectors.implementations.wecom_ilink import _create_client
+
+    client = _create_client(token="t-1")
+
+    # 1) _do_cdn_post 已被覆写为直连实现（不再走 SDK 的 urlopen 原始版本）
+    from app.connectors.implementations.wecom_ilink import _NO_PROXY_OPENER, _no_proxy_cdn_post
+
+    assert client._do_cdn_post.__func__ is _no_proxy_cdn_post
+
+    # 2) 直连 opener 不带任何代理 handler（空代理配置下 build_opener 不装配
+    #    ProxyHandler，与默认 urlopen 的系统代理通路相对，即直连）
+    proxy_handlers = [h for h in _NO_PROXY_OPENER.handlers if type(h).__name__ == "ProxyHandler"]
+    assert not proxy_handlers, "直连 opener 不应装配代理 handler"
+
+
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:
     """扫码会话跨请求共享：未先 start 直接 poll 返回 400，而不是未处理 500。"""
     headers = _create_user(client, admin_headers, "qr-poll-first")

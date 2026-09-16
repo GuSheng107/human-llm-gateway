@@ -366,6 +366,30 @@ def test_page_file_unknown_commands(client, webhook_scene) -> None:
         assert task.state is TaskState.WAITING_HUMAN
 
 
+def test_push_failure_notice_is_awaitable_in_sync_context() -> None:
+    """外发失败提示必须可被 await（回归：同步 def 返回 None 被 await 崩成 500）。
+
+    复现链路：webhook 同步入口 -> _push_best_effort 同步分支 asyncio.run(_run())
+    -> push 抛错 -> await _notify_push_failure(...) —— 同步函数返回 None，
+    await None 直接 TypeError，把「尽力而为」的外发失败冒泡成 HTTP 500。
+    """
+    import asyncio
+
+    from app.services.outbound_service import _notify_push_failure
+
+    class _FailingConnector:
+        platform = "wecom_ilink"
+
+        async def send_reply_text(self, *_args, **_kwargs) -> None:
+            raise RuntimeError("push broken")
+
+    async def _run() -> None:
+        # 修复前：TypeError: object NoneType can't be used in 'await' expression
+        await _notify_push_failure(_FailingConnector(), "u-1", RuntimeError("cdn down"))
+
+    asyncio.run(_run())  # 不应抛异常
+
+
 def test_ans_to_late_task_returns_late(client, webhook_scene) -> None:
     scene = webhook_scene
     with database.SessionLocal() as session:
