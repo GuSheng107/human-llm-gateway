@@ -37,15 +37,20 @@ def build_hint_bar(task: RequestTask, *, summary: str | None = None) -> str:
     版式：定位头 -> 命令速查行 -> 分隔线 -> 摘要（LLM 总结或 prompt 尾部）。
     摘要超预算截断加省略号，命令速查始终完整展示。
     """
+    from ..core.constants import IM_COMMAND_HELP
+
     body = summary if summary else _tail_prompt(task)
     head = f"[任务 {task.public_id}] 模型 {task.requested_model}"
-    commands = f"回复命令：/ans #<{task.public_id}> <正文> 提交回复 ｜ /page 全文 ｜ /file 导出文件"
+    commands = f"回复命令：/ans #<{task.public_id}> <正文> 暂存回答（/commit 提交） ｜ /page 全文 ｜ /file 导出文件"
     sep = "\n" + "─" * 8 + "\n"
     summary_prefix = "提问摘要：\n"
     budget = IM_HINT_BAR_CHARS - len(head) - 1 - len(commands) - len(sep) - len(summary_prefix)
     if len(body) > budget:
         body = body[: max(budget - 1, 0)].rstrip() + "…"
-    return f"{head}\n{commands}{sep}{summary_prefix}{body}"
+    hint = f"{head}\n{commands}{sep}{summary_prefix}{body}"
+    if len(hint) + 1 + len(IM_COMMAND_HELP) <= IM_HINT_BAR_CHARS * 2:
+        return f"{hint}\n{IM_COMMAND_HELP}"
+    return hint
 
 
 def build_content_bar(task: RequestTask) -> str | None:

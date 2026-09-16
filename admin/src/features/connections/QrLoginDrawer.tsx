@@ -67,6 +67,14 @@ export function QrLoginSection({ connection, onBound, disabled = false }: QrLogi
             onBound();
             return;
           }
+          // 绑定已在其他入口完成（另一标签页/自动启用/旧会话），本地还拿着
+          // 过期的未绑定状态：直接收敛到成功，避免用户扫一张无效二维码。
+          if (result.bound) {
+            stopPolling();
+            setPhase("success");
+            onBound();
+            return;
+          }
           if (result.status === "expired") {
             stopPolling();
             setPhase("expired");
@@ -172,6 +180,12 @@ export function QrLoginSection({ connection, onBound, disabled = false }: QrLogi
           <Button variant="ghost" onClick={() => void beginLogin(connection.id)}>
             重新扫码绑定
           </Button>
+        )}
+        {phase === "success" && (
+          <p className="text-xs text-slate-400">
+            微信平台限制：机器人只能在用户先发消息后回复。请在微信中给机器人发送任意一条消息以激活会话，
+            首条消息会收到回复指令说明。
+          </p>
         )}
         {disabled && (
           <p className="text-xs text-amber-600 mt-2">管理员只读视图，不可执行扫码绑定操作</p>

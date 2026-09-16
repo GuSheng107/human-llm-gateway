@@ -3,6 +3,11 @@
 SDK 是同步实现，在线程中运行 monitor 长轮询循环；进站消息通过
 run_coroutine_threadsafe 桥接到异步进站回调。会话过期（扫码失效）
 映射为 auth_required，由连接管理器停止重试并等待所有者重新扫码。
+
+iLink 服务（ilinkai.weixin.qq.com）是国内直连端点：SDK 默认的
+urlopen 会遵循系统代理，代理（VPN）会破坏到微信服务的 TLS 连接且
+SDK 静默吞掉网络错误，导致监听"假在线"收不到任何消息。本连接器
+强制直连（绕过系统代理），保证微信链路不受代理软件影响。
 """
 
 from __future__ import annotations
@@ -10,8 +15,13 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import ssl
 import threading
+import urllib.error
+import urllib.request
 from typing import Any
+
+from openilink.http import Response
 
 from ...domain.connections import ERROR_AUTH, ERROR_DELIVERY, ERROR_NETWORK, ConnectorError
 from ..base import Connector, ConnectorContext, DeliveryEnvelope, InboundMessage
@@ -19,11 +29,50 @@ from ..base import Connector, ConnectorContext, DeliveryEnvelope, InboundMessage
 logger = logging.getLogger(__name__)
 
 
+class _NoProxyHTTPDoer:
+    """openilink HTTPDoer：直连实现，忽略系统代理。
+
+    openilink 默认使用 urlopen（遵循系统代理设置）。iLink 是微信国内
+    端点，经代理访问会 TLS 握手失败，且 SDK 的 monitor 会把 URLError
+    静默吞掉——表现为连接假在线但收不到任何消息。这里用空 ProxyHandler
+    的 opener 强制直连；HTTPError 语义与默认实现保持一致。
+    """
+
+    def __init__(self) -> None:
+        self._ssl_ctx = ssl.create_default_context()
+        https_handler = urllib.request.HTTPSHandler(context=self._ssl_ctx)
+        self._opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), https_handler)
+
+    def do(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        body: bytes | None = None,
+        timeout: float = 15,
+    ) -> Any:
+        req = urllib.request.Request(url, data=body, method=method)
+        if headers:
+            for key, value in headers.items():
+                req.add_header(key, value)
+        try:
+            with self._opener.open(req, timeout=timeout) as resp:
+                return Response(status_code=resp.status, content=resp.read())
+        except urllib.error.HTTPError as exc:
+            return Response(status_code=exc.code, content=exc.read())
+
+
 def _classify(exc: Exception) -> ConnectorError:
     """把 SDK 异常归类为脱敏连接错误。"""
     text = type(exc).__name__
     if getattr(exc, "is_session_expired", False):
         return ConnectorError(ERROR_AUTH, "iLink 会话已过期，请重新扫码登录")
+    # push/send_file 在用户从未发过消息（或连接重启后令牌缓存被清空）时
+    # 抛 NoContextTokenError：这是协议限制而非网络故障，归为投递错误并
+    # 给出可操作提示，避免误导性的“网络错误”。
+    if text == "NoContextTokenError":
+        return ConnectorError(ERROR_DELIVERY, "iLink 用户尚未发消息，无法主动推送")
     status = getattr(exc, "status", None) or getattr(exc, "status_code", None)
     if status in (401, 403):
         return ConnectorError(ERROR_AUTH, "iLink 认证被拒绝")
@@ -66,7 +115,7 @@ class WeComIlinkConnector(Connector):
         token = str(config.get("token") or "")
         if not token:
             raise ConnectorError(ERROR_AUTH, "缺少 iLink Token，请先扫码登录")
-        kwargs: dict[str, Any] = {"token": token}
+        kwargs: dict[str, Any] = {"token": token, "http_doer": _NoProxyHTTPDoer()}
         if config.get("base_url"):
             kwargs["base_url"] = str(config["base_url"])
         with self._client_lock:
@@ -74,13 +123,19 @@ class WeComIlinkConnector(Connector):
             # 并发创建两个 client 导致连接错乱。
             if self._client is None:
                 self._client = Client(**kwargs)
+            client = self._client
 
         def _on_session_expired() -> None:
             self._thread_error = ConnectorError(ERROR_AUTH, "iLink 会话已过期，请重新扫码登录")
+            # 会话过期后 SDK 会以 5 分钟为周期对失效会话空转轮询，且 wait_closed
+            # 永不返回，监督任务会带着死会话一直显示在线。立即停止 client 让
+            # 监听线程尽快退出，监督任务据此转入 auth_required 并等待重新扫码。
+            client.stop()
 
         def _on_error(exc: Exception) -> None:
             logger.warning(
-                "ilink monitor error",
+                "ilink monitor error: %s",
+                exc,
                 extra={"connection_id": self.ctx.connection_id, "error": type(exc).__name__},
             )
 
@@ -186,13 +241,46 @@ class WeComIlinkConnector(Connector):
         except Exception as exc:
             raise _classify(exc) from exc
 
+    async def send_file(self, external_user_id: str, filename: str, content: str) -> None:
+        """主动发送文件（/file 外发通路）。
+
+        SDK 的 send_media_file 需要 context_token（收到用户消息时 SDK 自动
+        缓存）；缓存缺失说明用户从未主动发过消息，明确报错而非静默失败。
+        """
+        client = self._client
+        if client is None or self._thread is None or not self._thread.is_alive():
+            raise ConnectorError(ERROR_DELIVERY, "iLink 连接不在线")
+        if not external_user_id:
+            raise ConnectorError(ERROR_DELIVERY, "缺少发送目标")
+        context_token = client.get_context_token(external_user_id)
+        if not context_token:
+            raise ConnectorError(
+                ERROR_DELIVERY, "缺少 iLink 会话令牌，请先在微信中给机器人发一条消息"
+            )
+
+        def _send() -> None:
+            client.send_media_file(
+                external_user_id,
+                context_token,
+                content.encode("utf-8"),
+                filename,
+            )
+
+        try:
+            await asyncio.to_thread(_send)
+        except Exception as exc:
+            raise _classify(exc) from exc
+
     async def start_login(self) -> dict[str, Any]:
         from openilink import Client
 
         with self._client_lock:
             client = self._client
             if client is None:
-                kwargs: dict[str, Any] = {"token": str(self.ctx.config.get("token") or "")}
+                kwargs: dict[str, Any] = {
+                    "token": str(self.ctx.config.get("token") or ""),
+                    "http_doer": _NoProxyHTTPDoer(),
+                }
                 if self.ctx.config.get("base_url"):
                     kwargs["base_url"] = str(self.ctx.config["base_url"])
                 client = Client(**kwargs)

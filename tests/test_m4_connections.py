@@ -503,6 +503,449 @@ def test_qr_login_returns_base64_qrcode_and_atomically_saves_binding(
         assert row.bound_external_user_id == "wx-user-1"
 
 
+def test_qr_relogin_recovers_watchdog_disabled_connection(
+    client, admin_headers, monkeypatch
+) -> None:
+    """重新扫码必须能恢复被看门狗停用的连接（修复恢复死锁）。
+
+    复现用户场景：会话过期 -> state=auth_required -> 看门狗停用
+    （desired_running=0）-> 用户重新扫码确认。旧逻辑下 poll_login 因
+    desired_running=0 跳过重启，状态停留 auth_required，手动启用又被
+    start 的状态校验拒绝——用户重扫多少次都被堵死。修复后：确认时清除
+    失效错误状态并恢复启用，连接直接拉起。
+    """
+    from app.connectors import connection_manager as manager
+    from app.domain.enums import ConnectionState
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-relock")
+    created = _create_connection(
+        client, headers, name="ilink-relock", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {
+                "status": "confirmed",
+                "bot_token": "bot-token-2",
+                "baseurl": "",
+                "ilink_user_id": "wx-user-2",
+            }
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    async def _fake_manager_start(row, _config, _inbound) -> None:
+        return None
+
+    async def _fake_manager_stop(_connection_id) -> None:
+        return None
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+    monkeypatch.setattr(manager, "start", _fake_manager_start)
+    monkeypatch.setattr(manager, "stop", _fake_manager_stop)
+
+    # 等价「会话过期 + 看门狗已停用」的现场。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        row.desired_running = False
+        row.state = ConnectionState.AUTH_REQUIRED
+        row.last_error_code = "auth_required"
+        row.last_error_message = "iLink 会话已过期，请重新扫码登录"
+        session.commit()
+
+    started = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert started.status_code == 200, started.text
+    polled = client.get(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "confirmed"
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.state is ConnectionState.STOPPED or row.state is ConnectionState.ONLINE
+        assert row.last_error_code is None
+        assert row.desired_running is True
+
+
+def test_qr_relogin_keeps_user_stopped_connection_stopped(
+    client, admin_headers, monkeypatch
+) -> None:
+    """用户主动停用的连接重扫码后保持停用，但清除失效错误状态。
+
+    与看门狗停用不同：state=STOPPED + desired_running=0 是用户显式停止，
+    重新扫码只更新凭据并清理状态，不代用户启用；随后手动 start 不再被
+    状态校验拒绝。
+    """
+    from app.domain.enums import ConnectionState
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-restop")
+    created = _create_connection(
+        client, headers, name="ilink-restop", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {
+                "status": "confirmed",
+                "bot_token": "bot-token-3",
+                "baseurl": "",
+                "ilink_user_id": "wx-user-3",
+            }
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        row.desired_running = False
+        row.state = ConnectionState.STOPPED
+        session.commit()
+
+    started = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert started.status_code == 200, started.text
+    polled = client.get(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "confirmed"
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        assert row.state is ConnectionState.STOPPED
+        assert row.desired_running is False
+        assert row.last_error_code is None
+
+
+def test_qr_login_poll_reports_bound_when_binding_finished_elsewhere(
+    client, admin_headers, monkeypatch
+) -> None:
+    """轮询未确认时附带当前绑定态：绑定已在别处完成时前端可收敛到成功态。
+
+    复现用户场景：扫码绑定已成功且连接被自动启用，但浏览器仍持有过期的
+    未绑定状态并发起新登录会话——此时轮询应返回 bound=true，前端据此
+    收起无效二维码，而不是让用户扫一张没有任何反应的码。
+    """
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-bound-elsewhere")
+    created = _create_connection(
+        client,
+        headers,
+        name="ilink-bound-elsewhere",
+        platform="wecom_ilink",
+        config={},
+    )
+    connection_id = int(created["id"])
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {"status": "wait"}
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+
+    # 绑定已在别处完成（等价自动启用/另一标签页 confirmed 落库）。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        session.commit()
+
+    started = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert started.status_code == 200, started.text
+
+    polled = client.get(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert polled.status_code == 200
+    body = polled.json()
+    assert body["status"] == "wait"
+    assert body["bound"] is True
+
+    # 清理残留登录态连接器，避免污染共享的单例 _login_connectors。
+    from app.api import connections as _connections_api
+
+    _connections_api._service._drop_login_connector(connection_id)
+
+
+def test_qr_login_poll_reports_unbound_when_not_yet_bound(
+    client, admin_headers, monkeypatch
+) -> None:
+    """未绑定连接的轮询返回 bound=false，前端继续等待扫码。"""
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-unbound")
+    created = _create_connection(
+        client, headers, name="ilink-unbound", platform="wecom_ilink", config={}
+    )
+
+    class _FakeConnector:
+        async def start_login(self):
+            return {"qrcode": "QR-DATA", "qrcode_img_content": b"\x89PNG-fake"}
+
+        async def poll_login(self):
+            return {"status": "wait"}
+
+    def _fake_login_connector(self, row):
+        connector = _FakeConnector()
+        self._login_connectors[row.id] = connector
+        return connector
+
+    monkeypatch.setattr(ConnectionService, "_login_connector", _fake_login_connector)
+    assert (
+        client.post(f"/api/im-connections/{created['id']}/login", headers=headers).status_code
+        == 200
+    )
+
+    polled = client.get(f"/api/im-connections/{created['id']}/login", headers=headers)
+    assert polled.status_code == 200
+    body = polled.json()
+    assert body["status"] == "wait"
+    assert body["bound"] is False
+
+    # 清理残留登录态连接器，避免污染共享的单例 _login_connectors。
+    from app.api import connections as _connections_api
+
+    _connections_api._service._drop_login_connector(int(created["id"]))
+
+
+def test_start_sends_bind_welcome_for_qr_login_platform(client, admin_headers, monkeypatch) -> None:
+    """首次扫码绑定后启用连接：补发欢迎消息（绑定发生在浏览器侧，IM 无确认）。
+
+    复现用户流程：创建连接 -> 扫码绑定（desired_running 仍为 False）-> start。
+    start 成功后必须调度欢迎消息，否则用户在 IM 侧收不到任何主动通知。
+    """
+    from app.connectors import connection_manager as manager
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "qr-welcome")
+    created = _create_connection(
+        client, headers, name="ilink-welcome", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    # 扫码绑定结果直接落库（等价于 poll_login confirmed 之后的状态）。
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "wx-user-1"
+        session.commit()
+
+    scheduled: list[tuple[int, str]] = []
+
+    def _fake_schedule(self, cid: int, target: str) -> None:
+        scheduled.append((cid, target))
+
+    async def _fake_manager_start(row, _config, _inbound) -> None:
+        return None
+
+    monkeypatch.setattr(ConnectionService, "_schedule_bind_welcome", _fake_schedule)
+    monkeypatch.setattr(manager, "start", _fake_manager_start)
+    response = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert response.status_code == 200, response.text
+    assert scheduled == [(connection_id, "wx-user-1")]
+
+
+def test_start_skips_bind_welcome_for_chat_command_platforms(
+    client, admin_headers, monkeypatch
+) -> None:
+    """lark 等聊天命令绑定平台不补发欢迎：绑定确认已在聊天内回复，避免重复。"""
+    from app.connectors import connection_manager as manager
+    from app.services.connection_service import ConnectionService
+
+    headers = _create_user(client, admin_headers, "lark-no-welcome")
+    created = _create_connection(
+        client,
+        headers,
+        name="lark-no-welcome",
+        platform="lark",
+        config={"app_id": "cli_x", "app_secret": "sec_x"},
+    )
+    connection_id = int(created["id"])
+
+    with database.SessionLocal() as session:
+        row = session.get(ImConnection, connection_id)
+        row.bound_external_user_id = "ou_x"
+        session.commit()
+
+    scheduled: list[tuple[int, str]] = []
+
+    def _fake_schedule(self, cid: int, target: str) -> None:
+        scheduled.append((cid, target))
+
+    async def _fake_manager_start(row, _config, _inbound) -> None:
+        return None
+
+    monkeypatch.setattr(ConnectionService, "_schedule_bind_welcome", _fake_schedule)
+    monkeypatch.setattr(manager, "start", _fake_manager_start)
+    response = client.post(f"/api/im-connections/{connection_id}/start", headers=headers)
+    assert response.status_code == 200, response.text
+    assert scheduled == []
+
+
+def test_send_bind_welcome_pushes_command_help_when_connector_online() -> None:
+    """连接器就绪后欢迎消息推送给绑定用户，文案包含指令清单。"""
+    from app.services.connection_service import ConnectionService
+
+    sent: list[tuple[str, str]] = []
+
+    class _FakeConnector:
+        async def send_reply_text(self, target: str, text: str) -> None:
+            sent.append((target, text))
+
+    class _FakeManager:
+        def get_instance(self, connection_id: int):
+            return _FakeConnector()
+
+    asyncio.run(ConnectionService()._send_bind_welcome(7, "wx-user-1", _FakeManager()))
+
+    assert len(sent) == 1
+    target, text = sent[0]
+    assert target == "wx-user-1"
+    assert text.startswith("连接绑定成功，可以开始接收任务。")
+    assert "/ans" in text and "/commit" in text and "/page" in text
+
+
+def test_send_bind_welcome_skips_when_connector_never_online(caplog) -> None:
+    """连接一直未上线（如启动失败）时静默跳过：只记 warning，不抛错。"""
+    from app.services.connection_service import ConnectionService
+
+    class _FakeManager:
+        def get_instance(self, connection_id: int):
+            return None
+
+    with caplog.at_level("WARNING", logger="app.services.connection_service"):
+        asyncio.run(
+            ConnectionService()._send_bind_welcome(
+                1, "wx-x", _FakeManager(), tries=3, interval=0.01
+            )
+        )
+    assert any("bind welcome skipped" in rec.message for rec in caplog.records)
+
+
+def test_ilink_classify_no_context_token_is_delivery_error() -> None:
+    """NoContextTokenError 是协议限制（用户未发过消息），不是网络错误。"""
+    from app.connectors.implementations.wecom_ilink import _classify
+
+    class NoContextTokenError(Exception):
+        pass
+
+    err = _classify(NoContextTokenError())
+    assert err.code == "delivery_failed"
+    assert "尚未发消息" in err.message
+
+
+def test_ilink_session_expired_stops_monitor_and_reports_auth() -> None:
+    """会话过期必须终止监听线程并上报 auth_required。
+
+    SDK 对过期会话以 5 分钟为周期空转轮询且永不退出；连接器必须在过期
+    回调里主动停止 client，让 wait_closed 返回、监督任务读到 auth 错误
+    转入 auth_required 等待重新扫码，而不是带着死会话一直显示在线。
+    """
+    from app.connectors.base import ConnectorContext
+    from app.connectors.implementations.wecom_ilink import WeComIlinkConnector
+
+    class _FakeMonitorOptions:
+        def __init__(self, on_session_expired=None, on_error=None, **_kwargs):
+            self.on_session_expired = on_session_expired
+            self.on_error = on_error
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            self.stopped = False
+            self.monitor_options: _FakeMonitorOptions | None = None
+
+        def stop(self) -> None:
+            self.stopped = True
+
+        def monitor(self, _handler, options) -> None:
+            self.monitor_options = options
+            # 模拟 SDK 检测到会话过期：触发回调后立刻返回（线程随之结束）。
+            if options.on_session_expired is not None:
+                options.on_session_expired()
+
+    import openilink
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(openilink, "Client", _FakeClient)
+    monkeypatch.setattr(openilink, "MonitorOptions", _FakeMonitorOptions)
+    try:
+        connector = WeComIlinkConnector(
+            ConnectorContext(
+                connection_id=99,
+                owner_user_id=1,
+                name="ilink-expired",
+                platform="wecom_ilink",
+                config={"token": "t-1"},
+            )
+        )
+        asyncio.run(connector.start())
+        # 监听线程应在过期后很快退出：wait_closed 可完成而非永久挂起。
+        asyncio.run(asyncio.wait_for(connector.wait_closed(), timeout=5))
+        error = connector.last_error()
+        assert error is not None and error.is_auth
+        assert "重新扫码" in error.message
+    finally:
+        monkeypatch.undo()
+
+
+def test_ilink_client_created_with_no_proxy_doer(client, admin_headers, monkeypatch) -> None:
+    """iLink client 必须使用直连 HTTPDoer，绕过系统代理。
+
+    iLink 是微信国内直连端点；代理（VPN）会破坏 TLS 且 SDK 静默吞掉
+    网络错误，表现为连接假在线收不到任何消息。开启系统代理的环境下，
+    start/start_login 创建的 client 都必须强制直连。
+    """
+    import openilink
+
+    created_clients: list[dict] = []
+
+    class _FakeClient:
+        def __init__(self, **kwargs) -> None:
+            created_clients.append(kwargs)
+
+        def fetch_qr_code(self):
+            return _FakeResponse()
+
+    class _FakeResponse:
+        qrcode = "qr-1"
+        qrcode_img_content = b""
+
+    monkeypatch.setattr(openilink, "Client", _FakeClient)
+    headers = _create_user(client, admin_headers, "ilink-noproxy")
+    created = _create_connection(
+        client, headers, name="ilink-noproxy", platform="wecom_ilink", config={}
+    )
+    connection_id = int(created["id"])
+
+    # 扫码登录路径创建的 client
+    resp = client.post(f"/api/im-connections/{connection_id}/login", headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert len(created_clients) == 1
+    assert created_clients[0]["http_doer"] is not None
+    from app.connectors.implementations.wecom_ilink import _NoProxyHTTPDoer
+
+    assert isinstance(created_clients[0]["http_doer"], _NoProxyHTTPDoer)
+
+
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:
     """扫码会话跨请求共享：未先 start 直接 poll 返回 400，而不是未处理 500。"""
     headers = _create_user(client, admin_headers, "qr-poll-first")
