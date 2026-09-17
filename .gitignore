@@ -15,3 +15,6 @@ __pycache__/
 /logs/
 admin/node_modules/
 admin/dist/
+admin/e2e/.auth/
+admin/playwright-report/
+admin/test-results/
