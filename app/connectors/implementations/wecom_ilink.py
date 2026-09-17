@@ -89,7 +89,7 @@ def _no_proxy_cdn_post(self: Any, cdn_url: str, body: bytes) -> str:
     """
     from urllib.error import HTTPError as _URLHTTPError
 
-    from openilink.http import HTTPError as _SDKHTTPError
+    from openilink.errors import HTTPError as _SDKHTTPError
 
     req = urllib.request.Request(cdn_url, data=body, method="POST")
     req.add_header("Content-Type", "application/octet-stream")

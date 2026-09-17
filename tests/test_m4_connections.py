@@ -1001,7 +1001,9 @@ def test_ilink_client_cdn_upload_bypasses_system_proxy() -> None:
     回归：SDK 的 _do_cdn_post 用 urlopen 直发（遵循系统代理），代理
     环境下 TLS 握手被破坏 -> /file 的 CDN 上传 100% 失败
     （SSL: UNEXPECTED_EOF_WHILE_READING）。本连接器创建的 client 必须
-    覆写 CDN 通路为直连 opener。
+    覆写 CDN 通路为直连 opener；覆写函数必须实际可用（含 SDK
+    HTTPError 的 import 路径——曾因写成 openilink.http 而在真实
+    上传时 ImportError 重试到失败）。
     """
     from app.connectors.implementations.wecom_ilink import _create_client
 
@@ -1016,6 +1018,47 @@ def test_ilink_client_cdn_upload_bypasses_system_proxy() -> None:
     #    ProxyHandler，与默认 urlopen 的系统代理通路相对，即直连）
     proxy_handlers = [h for h in _NO_PROXY_OPENER.handlers if type(h).__name__ == "ProxyHandler"]
     assert not proxy_handlers, "直连 opener 不应装配代理 handler"
+
+    # 3) 覆写函数真实可用：stub 掉 opener 的传输层，验证成功路径（读取
+    #    x-encrypted-param）与 4xx 错误路径（抛 SDK openilink.errors.HTTPError，
+    #    SDK 的 _upload_to_cdn 重试逻辑依赖该类型）。真实上传曾因 import
+    #    写成 openilink.http（该模块无此名）在运行时 ImportError 重试到失败。
+    from typing import ClassVar
+    from urllib.error import HTTPError as _URLHTTPError
+
+    from openilink.errors import HTTPError as _SDKHTTPError
+
+    stub_self = type("S", (), {"route_tag": "rt-1", "_CDN_TIMEOUT": 5})()
+
+    class _FakeResp:
+        headers: ClassVar[dict[str, str]] = {"x-encrypted-param": "param-123"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"ok"
+
+    class _FakeOpener:
+        def open(self, req, timeout=None):
+            assert timeout == 5
+            if req.full_url.endswith("/ok"):
+                return _FakeResp()
+            raise _URLHTTPError(req.full_url, 403, "denied", hdrs=None, fp=None)
+
+    import app.connectors.implementations.wecom_ilink as _mod
+
+    original = _mod._NO_PROXY_OPENER
+    _mod._NO_PROXY_OPENER = _FakeOpener()
+    try:
+        assert _no_proxy_cdn_post(stub_self, "https://cdn.test/ok", b"payload") == "param-123"
+        with pytest.raises(_SDKHTTPError):
+            _no_proxy_cdn_post(stub_self, "https://cdn.test/denied", b"payload")
+    finally:
+        _mod._NO_PROXY_OPENER = original
 
 
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:
