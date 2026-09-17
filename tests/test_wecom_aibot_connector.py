@@ -115,6 +115,39 @@ def test_delivery_uses_sdk_message_body_contract() -> None:
     ]
 
 
+def test_delivery_falls_back_to_bound_user_when_target_missing() -> None:
+    """投递包未填 reply_to_external_id 时回退到绑定用户。
+
+    回归：DeliveryService.build_envelope 不填目标字段，连接器缺少
+    绑定用户回退时任务永远投不出去（缺少投递目标）。
+    """
+    connector = WeComAibotConnector(
+        ConnectorContext(
+            connection_id=7,
+            owner_user_id=9,
+            name="mycom",
+            platform="wecom_aibot",
+            config={"bot_id": "bot", "secret": "secret"},
+            bound_external_user_id="wx-bound-1",
+        )
+    )
+    client = _FakeClient()
+    connector._client = client
+
+    envelope = DeliveryEnvelope(
+        task_public_id="task-2",
+        requested_model="fake-model",
+        prompt_text="请处理任务",
+        owner_user_id=9,
+        messages=["第一条", "第二条"],
+    )
+    asyncio.run(connector.deliver(envelope))
+    assert client.sent == [
+        ("wx-bound-1", {"msgtype": "markdown", "markdown": {"content": "第一条"}}),
+        ("wx-bound-1", {"msgtype": "markdown", "markdown": {"content": "第二条"}}),
+    ]
+
+
 def test_deliver_rejects_when_client_offline() -> None:
     """is_connected=False（属性）时应抛 ERROR_DELIVERY，且不发送任何消息。"""
     connector = _connector()

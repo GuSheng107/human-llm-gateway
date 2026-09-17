@@ -198,6 +198,7 @@ class DeliveryService:
                 task_id=task.id,
                 platform=connection.platform,
                 error_code=str(error_code),
+                error_message=getattr(exc, "message", None) or str(exc),
                 via_outbox=via_outbox,
             )
             return DeliveryOutcome(
@@ -260,6 +261,7 @@ class DeliveryService:
                 connection_id=connection_id,
                 task_id=task_id,
                 error_code=error_code,
+                error_message=getattr(exc, "message", None) or str(exc),
                 via_outbox=via_outbox,
             )
         with SessionLocal() as session:
@@ -368,6 +370,15 @@ class DeliveryService:
                 delivered = True
             except Exception as exc:  # noqa: BLE001
                 error_code = str(getattr(exc, "code", ERROR_CONFIG))
+                log_event(
+                    "warning",
+                    "delivery.failed",
+                    "IM 投递失败（总结后台链路）",
+                    connection_id=connection_id,
+                    task_id=task_id,
+                    error_code=error_code,
+                    error_message=getattr(exc, "message", None) or str(exc),
+                )
             if via_outbox:
                 if delivered:
                     self.repo.mark_outbox_delivered(session, connection_id, task_id)

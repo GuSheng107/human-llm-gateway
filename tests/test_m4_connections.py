@@ -853,6 +853,55 @@ def test_ilink_classify_no_context_token_is_delivery_error() -> None:
     assert "尚未发消息" in err.message
 
 
+def test_ilink_deliver_falls_back_to_bound_user() -> None:
+    """投递包未显式指定目标时，必须回退到连接绑定的外部用户。
+
+    回归：DeliveryService.build_envelope 不填 reply_to_external_id，而
+    wecom_ilink.deliver 缺少绑定用户回退时，任务投递必然失败
+    （「缺少投递目标」→ delivery_failed），微信连接永远收不到任务。
+    """
+    from app.connectors.base import ConnectorContext, DeliveryEnvelope
+    from app.connectors.implementations.wecom_ilink import WeComIlinkConnector
+
+    pushed: list[tuple[str, str]] = []
+
+    class _FakeClient:
+        def get_context_token(self, user_id: str) -> str | None:
+            return "ctx-token-1"  # 已缓存（用户发过消息）
+
+        def push(self, to: str, text: str) -> str:
+            pushed.append((to, text))
+            return "client-id-1"
+
+    ctx = ConnectorContext(
+        connection_id=98,
+        owner_user_id=1,
+        name="ilink-deliv",
+        platform="wecom_ilink",
+        config={"token": "t-1"},
+        bound_external_user_id="wx-bound-user",
+    )
+    connector = WeComIlinkConnector(ctx)
+    connector._client = _FakeClient()
+
+    class _AliveThread:
+        def is_alive(self) -> bool:
+            return True
+
+    connector._thread = _AliveThread()  # 连接在线（监听线程存活）
+    envelope = DeliveryEnvelope(
+        task_public_id="t_deliv1",
+        requested_model="m",
+        prompt_text="问题全文",
+        owner_user_id=1,
+        messages=["提示条", "内容条"],
+    )
+
+    asyncio.run(connector.deliver(envelope))
+
+    assert pushed == [("wx-bound-user", "提示条"), ("wx-bound-user", "内容条")]
+
+
 def test_ilink_session_expired_stops_monitor_and_reports_auth() -> None:
     """会话过期必须终止监听线程并上报 auth_required。
 
@@ -944,6 +993,72 @@ def test_ilink_client_created_with_no_proxy_doer(client, admin_headers, monkeypa
     from app.connectors.implementations.wecom_ilink import _NoProxyHTTPDoer
 
     assert isinstance(created_clients[0]["http_doer"], _NoProxyHTTPDoer)
+
+
+def test_ilink_client_cdn_upload_bypasses_system_proxy() -> None:
+    """iLink client 的 CDN 上传必须直连（绕过系统代理）。
+
+    回归：SDK 的 _do_cdn_post 用 urlopen 直发（遵循系统代理），代理
+    环境下 TLS 握手被破坏 -> /file 的 CDN 上传 100% 失败
+    （SSL: UNEXPECTED_EOF_WHILE_READING）。本连接器创建的 client 必须
+    覆写 CDN 通路为直连 opener；覆写函数必须实际可用（含 SDK
+    HTTPError 的 import 路径——曾因写成 openilink.http 而在真实
+    上传时 ImportError 重试到失败）。
+    """
+    from app.connectors.implementations.wecom_ilink import _create_client
+
+    client = _create_client(token="t-1")
+
+    # 1) _do_cdn_post 已被覆写为直连实现（不再走 SDK 的 urlopen 原始版本）
+    from app.connectors.implementations.wecom_ilink import _NO_PROXY_OPENER, _no_proxy_cdn_post
+
+    assert client._do_cdn_post.__func__ is _no_proxy_cdn_post
+
+    # 2) 直连 opener 不带任何代理 handler（空代理配置下 build_opener 不装配
+    #    ProxyHandler，与默认 urlopen 的系统代理通路相对，即直连）
+    proxy_handlers = [h for h in _NO_PROXY_OPENER.handlers if type(h).__name__ == "ProxyHandler"]
+    assert not proxy_handlers, "直连 opener 不应装配代理 handler"
+
+    # 3) 覆写函数真实可用：stub 掉 opener 的传输层，验证成功路径（读取
+    #    x-encrypted-param）与 4xx 错误路径（抛 SDK openilink.errors.HTTPError，
+    #    SDK 的 _upload_to_cdn 重试逻辑依赖该类型）。真实上传曾因 import
+    #    写成 openilink.http（该模块无此名）在运行时 ImportError 重试到失败。
+    from typing import ClassVar
+    from urllib.error import HTTPError as _URLHTTPError
+
+    from openilink.errors import HTTPError as _SDKHTTPError
+
+    stub_self = type("S", (), {"route_tag": "rt-1", "_CDN_TIMEOUT": 5})()
+
+    class _FakeResp:
+        headers: ClassVar[dict[str, str]] = {"x-encrypted-param": "param-123"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return b"ok"
+
+    class _FakeOpener:
+        def open(self, req, timeout=None):
+            assert timeout == 5
+            if req.full_url.endswith("/ok"):
+                return _FakeResp()
+            raise _URLHTTPError(req.full_url, 403, "denied", hdrs=None, fp=None)
+
+    import app.connectors.implementations.wecom_ilink as _mod
+
+    original = _mod._NO_PROXY_OPENER
+    _mod._NO_PROXY_OPENER = _FakeOpener()
+    try:
+        assert _no_proxy_cdn_post(stub_self, "https://cdn.test/ok", b"payload") == "param-123"
+        with pytest.raises(_SDKHTTPError):
+            _no_proxy_cdn_post(stub_self, "https://cdn.test/denied", b"payload")
+    finally:
+        _mod._NO_PROXY_OPENER = original
 
 
 def test_qr_login_poll_without_start_returns_400_not_500(client, admin_headers) -> None:

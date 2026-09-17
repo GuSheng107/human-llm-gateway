@@ -321,29 +321,20 @@ def _push_best_effort(
         event.listen(session, "after_commit", _push_after_commit, once=True)
 
 
-def _notify_push_failure(connector: Connector, target: str, exc: Exception) -> None:
+async def _notify_push_failure(connector: Connector, target: str, exc: Exception) -> None:
     """外发失败后尽力给用户回发一条失败提示（提示失败只记日志，不递归）。
 
     仅 push 平台且有绑定目标时尝试；错误信息统一脱敏，避免把内部异常
-    细节泄露给外部用户。
+    细节泄露给外部用户。异步协程：调用方（_push_best_effort 的 _run 或
+    异步链路）已在事件循环内 await 本函数；此前为同步 def 返回 None，
+    被 await 时抛 TypeError，把「尽力而为」的外发失败冒泡成 HTTP 500。
     """
-    import asyncio
-
     if not target:
         return
-
-    async def _run() -> None:
-        try:
-            await connector.send_reply_text(target, "消息发送失败，请稍后重试。")
-        except Exception:
-            logger.exception("outbound failure notice failed via %s", connector.platform)
-
     try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        asyncio.run(_run())
-    else:
-        asyncio.get_running_loop().create_task(_run())
+        await connector.send_reply_text(target, "消息发送失败，请稍后重试。")
+    except Exception:
+        logger.exception("outbound failure notice failed via %s", connector.platform)
 
 
 def _log_push_exception(task: asyncio.Task[Any]) -> None:
