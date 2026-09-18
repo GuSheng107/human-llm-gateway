@@ -26,7 +26,7 @@ class CallerToolChoice(StrEnum):
     - auto：可自由决定是否调用（回复可以完全没有 Tool Call）。
     - none：禁止任何 Tool Call。
     - required：至少一个 Tool Call（仅提交期强制）。
-    - named：必须调用指定工具且至少一次（仅提交期强制）。
+    - named：只能调用指定工具且至少一次（仅提交期强制）。
     """
 
     AUTO = "auto"
@@ -179,10 +179,14 @@ def _parse_responses_choice(raw: Any) -> CallerToolPolicy:
 
 def _parse_anthropic_choice(raw: Any) -> CallerToolPolicy:
     if isinstance(raw, dict):
-        return _named(raw.get("name"))
-    choice = str(raw or "auto").lower()
+        if raw.get("type") == "tool":
+            return _named(raw.get("name"))
+        choice = raw.get("type", "auto")
+    else:
+        choice = str(raw or "auto").lower()
     mapping = {
         "auto": CallerToolChoice.AUTO,
+        "none": CallerToolChoice.NONE,
         "any": CallerToolChoice.REQUIRED,
         "tool": CallerToolChoice.NAMED,
     }
@@ -200,7 +204,9 @@ def _parse_policy(
         parallel = raw_payload.get("parallel_tool_calls")
     else:
         policy = _parse_anthropic_choice(tool_choice)
-        parallel = not bool(raw_payload.get("disable_parallel_tool_use"))
+        parallel = not (
+            isinstance(tool_choice, dict) and tool_choice.get("disable_parallel_tool_use") is True
+        )
     if isinstance(parallel, bool) and not parallel:
         return CallerToolPolicy(
             choice=policy.choice, required_name=policy.required_name, parallel_allowed=False

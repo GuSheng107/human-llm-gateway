@@ -120,9 +120,8 @@ class TaskService:
         Tool Call 保留调用方 ID，不做服务端重排（校验 ID 合法且唯一）。
         """
         calls = list(draft.tool_calls)
-        if calls:
-            catalog = catalog_for_task(task)
-            (validate_full if strict else validate_structural)(catalog, calls)
+        catalog = catalog_for_task(task)
+        (validate_full if strict else validate_structural)(catalog, calls)
         return draft
 
     @staticmethod
@@ -294,7 +293,7 @@ class TaskService:
         """
         self._assert_writable(task, owner)
         draft = self.validate_reply_draft(task, draft, strict=True)
-        self._assert_tool_call_warning_acknowledged(session, task, draft)
+        self.assert_tool_call_warning_acknowledged(session, task, draft)
         begin_immediate_if_sqlite(session)
         accepted = self.repo.first_reply_wins(
             session,
@@ -364,7 +363,7 @@ class TaskService:
     # ------------------------------------------------------------------
     # 内部
 
-    def _assert_tool_call_warning_acknowledged(
+    def assert_tool_call_warning_acknowledged(
         self, session: Session, task: RequestTask, draft: ReplyDraft
     ) -> None:
         """含 Tool Call 的最终提交要求本任务已确认风险告知（服务端兜底）。"""
