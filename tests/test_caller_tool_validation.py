@@ -176,7 +176,7 @@ def test_invalid_auto_result_not_persisted_and_slot_released(
                     "index": i,
                     "id": call["id"],
                     "name": call["name"],
-                    "arguments_raw": json.dumps(call["arguments"]),
+                    "arguments_delta": json.dumps(call["arguments"]),
                 }
             )
             for i, call in enumerate(_calls(names))
