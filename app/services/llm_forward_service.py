@@ -329,6 +329,9 @@ class LlmForwardService:
             )
             return False, None, exc.code.value
 
+        # 协议重写前的结构检查：上游返回的 Tool Call 必须命中调用方当前请求
+        # 声明的 Caller Tool（名称/参数 Schema/ID 唯一）。不满足按转发失败，
+        # 绝不静默丢弃或把未声明工具回传给调用方（§8.1 / §8.3）。
         # 自动转发是最终回复，空工具列表也必须满足 required/named 策略。
         try:
             validate_full(catalog_for_task(task), [c.model_dump() for c in draft.tool_calls])
