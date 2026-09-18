@@ -269,6 +269,16 @@ class LlmForwardService:
                 cfg, fake_model = self.resolve_config(session, task)
                 if stream:
                     chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
+                    # 聚合也可能因损坏参数失败，必须走同一失败处理，不能接受部分结果。
+                    collected: dict[str, Any] = {}
+                    for chunk in chunks:
+                        llm_upstream.collect_chunk(collected, chunk)
+                    summary = llm_upstream.finalize_collected(collected)
+                    draft = ReplyDraft(
+                        reasoning=summary["reasoning"],
+                        tool_calls=summary["tool_calls"],
+                        final_text=summary["final_text"],
+                    )
                 else:
                     draft = await self._call_upstream(session, task, cfg, fake_model)
         except TimeoutError:
@@ -318,18 +328,6 @@ class LlmForwardService:
                 ),
             )
             return False, None, exc.code.value
-
-        if stream:
-            # 聚合流式增量为 ReplyDraft（完整结果先持久化再回放，§13.3）。
-            collected: dict[str, Any] = {}
-            for chunk in chunks:
-                llm_upstream.collect_chunk(collected, chunk)
-            summary = llm_upstream.finalize_collected(collected)
-            draft = ReplyDraft(
-                reasoning=summary["reasoning"],
-                tool_calls=summary["tool_calls"],
-                final_text=summary["final_text"],
-            )
 
         # 自动转发是最终回复，空工具列表也必须满足 required/named 策略。
         try:

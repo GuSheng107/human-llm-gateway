@@ -9,7 +9,7 @@ import pytest
 import app.core.db as database
 from app.domain.caller_tools import build_caller_tool_catalog
 from app.domain.enums import InferenceProtocol, TaskState
-from app.domain.errors import DomainError
+from app.domain.errors import DomainError, DomainErrorCode
 from app.domain.values import ReplyDraft, ReplyToolCall
 from app.repositories.models import RequestTask, User
 from app.services.caller_tool_service import validate_full, validate_structural
@@ -203,6 +203,38 @@ def test_invalid_auto_result_not_persisted_and_slot_released(
             },
         )
     assert response.status_code == 500, response.text
+    task = _latest_task(int(key["id"]))
+    assert task.state is TaskState.FAILED
+    assert task.response_payload_json is None
+    with database.SessionLocal() as session:
+        assert session.get(User, created_user.user_id).active_task_count == 0
+
+
+def test_stream_aggregation_failure_releases_slot(client, created_user):
+    cfg = _create_llm_config(client, created_user.headers, _llm_body())
+    key = _create_strategy_key(
+        client, created_user.headers, strategy="llm", llm_config_id=int(cfg["id"])
+    )
+    with (
+        patch(
+            "app.services.llm_forward_service.LlmForwardService._call_upstream_stream",
+            return_value=[],
+        ),
+        patch(
+            "app.services.llm_upstream.finalize_collected",
+            side_effect=DomainError(DomainErrorCode.UPSTREAM_ERROR, "损坏的工具参数"),
+        ),
+    ):
+        response = client.post(
+            "/v1/chat/completions",
+            headers=_bearer(key["plaintext"]),
+            json={
+                "model": "deepseek-v4-pro",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+            },
+        )
+    assert response.status_code >= 400
     task = _latest_task(int(key["id"]))
     assert task.state is TaskState.FAILED
     assert task.response_payload_json is None
