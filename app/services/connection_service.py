@@ -53,6 +53,7 @@ from ..repositories.connections import ConnectionRepository
 from ..repositories.models import ImConnection, RequestTask, User
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
+from .task_service import TaskService
 
 _IM_CONFIG_PURPOSE = "im-config"
 logger = logging.getLogger(__name__)
@@ -1233,6 +1234,8 @@ class ConnectionService:
         # IM 回复当前为纯文本语义（后续迭代将重构富文本回复）：整段正文即
         # final_text，不解析工具/思考围栏。Web 回复工作台才是 Tool Call 入口。
         draft = ReplyDraft(reasoning=None, tool_calls=[], final_text=text)
+        if not self._validate_im_reply(session, row, task, draft):
+            return InboundResult.UNHANDLED
         accepted = self.tasks.first_reply_wins(
             session,
             task_id=task.id,
@@ -1396,6 +1399,8 @@ class ConnectionService:
         )
         if not (draft_obj.reasoning or draft_obj.final_text or draft_obj.tool_calls):
             return InboundResult.UNHANDLED
+        if not self._validate_im_reply(session, row, task, draft_obj):
+            return InboundResult.UNHANDLED
         accepted = self.tasks.first_reply_wins(
             session,
             task_id=task.id,
@@ -1426,6 +1431,22 @@ class ConnectionService:
         )
         receipt.task_id = task.id
         return InboundResult.LATE
+
+    def _validate_im_reply(
+        self, session: Session, row: ImConnection, task: RequestTask, draft: ReplyDraft
+    ) -> bool:
+        """IM 最终回复与 Web 共用校验；拒绝时保留任务和可编辑草稿。"""
+        try:
+            TaskService.validate_reply_draft(task, draft, strict=True)
+            TaskService().assert_tool_call_warning_acknowledged(session, task, draft)
+        except DomainError:
+            self._send_feedback(
+                session,
+                row=row,
+                text="回复未满足调用方工具要求，请在 Web 工作台检查工具调用和风险确认后提交。",
+            )
+            return False
+        return True
 
     async def _send_bind_welcome(
         self,

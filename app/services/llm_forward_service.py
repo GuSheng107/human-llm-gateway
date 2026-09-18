@@ -38,6 +38,7 @@ from ..repositories.models import FakeModel, LlmConfig, RequestTask, TaskEvent
 from ..repositories.system import AuditRepository
 from ..repositories.tasks import TaskRepository
 from . import llm_upstream
+from .caller_tool_service import catalog_for_task, validate_full
 from .llm_draft_service import (
     _apply_config,
     _build_anthropic_request,
@@ -268,6 +269,16 @@ class LlmForwardService:
                 cfg, fake_model = self.resolve_config(session, task)
                 if stream:
                     chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
+                    # 聚合也可能因损坏参数失败，必须走同一失败处理，不能接受部分结果。
+                    collected: dict[str, Any] = {}
+                    for chunk in chunks:
+                        llm_upstream.collect_chunk(collected, chunk)
+                    summary = llm_upstream.finalize_collected(collected)
+                    draft = ReplyDraft(
+                        reasoning=summary["reasoning"],
+                        tool_calls=summary["tool_calls"],
+                        final_text=summary["final_text"],
+                    )
                 else:
                     draft = await self._call_upstream(session, task, cfg, fake_model)
         except TimeoutError:
@@ -318,52 +329,36 @@ class LlmForwardService:
             )
             return False, None, exc.code.value
 
-        if stream:
-            # 聚合流式增量为 ReplyDraft（完整结果先持久化再回放，§13.3）。
-            collected: dict[str, Any] = {}
-            for chunk in chunks:
-                llm_upstream.collect_chunk(collected, chunk)
-            summary = llm_upstream.finalize_collected(collected)
-            draft = ReplyDraft(
-                reasoning=summary["reasoning"],
-                tool_calls=summary["tool_calls"],
-                final_text=summary["final_text"],
-            )
-
         # 协议重写前的结构检查：上游返回的 Tool Call 必须命中调用方当前请求
         # 声明的 Caller Tool（名称/参数 Schema/ID 唯一）。不满足按转发失败，
         # 绝不静默丢弃或把未声明工具回传给调用方（§8.1 / §8.3）。
-        if draft.tool_calls:
-            from .caller_tool_service import catalog_for_task, validate_structural
-
-            try:
-                validate_structural(
-                    catalog_for_task(task), [c.model_dump() for c in draft.tool_calls]
-                )
-            except DomainError:
-                log_event(
-                    "warning",
-                    "llm.forward_failed",
-                    "上游返回的 Tool Call 未通过 Caller Tool 校验",
-                    task_id=task.id,
-                    reason=reason,
-                    error_code="generated_tool_calls_invalid",
-                    detail=_fwd_detail(
-                        [
-                            _decision_section(reason, {"stream": stream}),
-                            {
-                                "key": "validation_error",
-                                "title": "Caller Tool 校验失败",
-                                "format": "json",
-                                "data": {
-                                    "error_code": "generated_tool_calls_invalid",
-                                    "tool_call_count": len(draft.tool_calls),
-                                },
+        # 自动转发是最终回复，空工具列表也必须满足 required/named 策略。
+        try:
+            validate_full(catalog_for_task(task), [c.model_dump() for c in draft.tool_calls])
+        except DomainError:
+            log_event(
+                "warning",
+                "llm.forward_failed",
+                "上游返回的 Tool Call 未通过 Caller Tool 校验",
+                task_id=task.id,
+                reason=reason,
+                error_code="generated_tool_calls_invalid",
+                detail=_fwd_detail(
+                    [
+                        _decision_section(reason, {"stream": stream}),
+                        {
+                            "key": "validation_error",
+                            "title": "Caller Tool 校验失败",
+                            "format": "json",
+                            "data": {
+                                "error_code": "generated_tool_calls_invalid",
+                                "tool_call_count": len(draft.tool_calls),
                             },
-                        ]
-                    ),
-                )
-                return False, None, "generated_tool_calls_invalid"
+                        },
+                    ]
+                ),
+            )
+            return False, None, "generated_tool_calls_invalid"
 
         payload = draft.model_dump_json(exclude_none=True)
         # 不依赖 ORM 缓存版本：以 claim 后的 DB 实际版本为准（SQLite RETURNING
