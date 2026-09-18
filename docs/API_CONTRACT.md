@@ -535,11 +535,11 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | Fake Model | `model` | `model` | `model` | 用于权限校验和对外身份；上游请求使用 LLM 配置的真实模型，响应改回 Fake Model。 |
 | 输出上限 | `max_completion_tokens` 或兼容 `max_tokens` | `max_output_tokens` | `max_tokens` | 数值与边界等价转换；同一请求同时给出冲突字段时返回 400。 |
 | 采样参数 | `temperature`, `top_p` | `temperature`, `top_p` | `temperature`, `top_p` | 目标协议支持且范围兼容时转换，否则 400。 |
-| 停止序列 | `stop` | 适配器声明的等价字段 | `stop_sequences` | 字符串转单元素数组；数量或限制超出目标能力时返回 400。 |
+| 停止序列 | `stop` | 无通用等价字段 | `stop_sequences` | Chat 与 Anthropic 的字符串/数组转换；转 Responses 显式提交停止序列返回 400。 |
 | 流式开关 | `stream` | `stream` | `stream` | 布尔值等价转换；事件结构由目标协议渲染器负责。 |
 | 函数工具 Schema | `tools[].function.parameters` | function tool parameters | `tools[].input_schema` | JSON Schema 子集等价转换；目标不支持的关键字或托管工具类型返回 400。 |
 | 工具选择 | `none/auto/required/指定函数` | 对应 function tool choice | `none/auto/any/tool` | `required` ↔ `any`，指定函数 ↔ `tool{name}`；其他不可等价值返回 400。 |
-| 并行工具控制 | `parallel_tool_calls` | `parallel_tool_calls` | `disable_parallel_tool_use` | 布尔语义取反转换；目标版本不支持时返回 400。 |
+| 并行工具控制 | `parallel_tool_calls` | `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` | 布尔语义取反转换；目标版本不支持时返回 400。 |
 | 工具调用/结果 | assistant tool_calls / tool role | function_call / function_call_output | tool_use / tool_result | 保留 call ID、name、JSON arguments 和结果配对；结构不完整返回 400。 |
 | reasoning 输出 | `reasoning_content` 兼容字段 | reasoning output item | thinking content block | 已生成文本可进入统一 reply schema；签名等不可伪造字段不转换。 |
 | reasoning 请求控制 | 供应商扩展 | `reasoning` 等控制 | thinking/budget 配置 | 只有矩阵后续明确证明等价的组合才转换，其他跨协议请求返回 400。 |
@@ -555,6 +555,40 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | 未知扩展字段 | 原样保留 | 原样保留 | 原样保留 | 同协议原样透传；跨协议返回 400 `unsupported_parameter`。 |
 
 转换适配器必须为每个非透传字段记录字段名、处理类型和结果，不记录字段值。新增支持前先更新此矩阵和契约测试。
+
+### 12.7 协议归一维护约束
+
+请求、响应和内容转换位于 `app/protocols/`。三种请求的规范化 options 保留未知
+字段供跨协议显式拒绝，原始请求独立完整落库。自动转发和手动生成共用转换器。
+
+- 同协议保留原始字段，包括未知顶级/嵌套字段。Responses 的网关
+  `previous_response_id` 仅消费该引用并把 input 替换成已展开 context；其余
+  tools、tool_choice、store=false 和扩展字段保留。手动过滤上下文也使用已展开
+  context。请求传输的 stream 由本次调用路径控制，不能向非流式读取器请求 SSE。
+- 跨协议工具定义分别编码为 Chat 嵌套 function、Responses 扁平 function、
+  Anthropic input_schema。工具历史保留调用 ID、名称、对象参数与结果；
+  Responses 的输出项 id 仅为项标识，工具关联使用 call_id，不能混用。
+- 跨协议检查消息、文本块、工具定义和 tool_choice 的未知字段，不能在转换前
+  静默过滤。非文本附件、非函数托管工具、非空 annotations、历史 reasoning/thinking、
+  tool_result.is_error=true 等未声明等价语义返回 400。前置 system/developer
+  指令按原顺序合并到 Anthropic system；对话中间的 system 指令不能无损提升
+  到顶层，返回 400。
+- OpenAI 两协议之间转换 json_object / json_schema 输出格式并保留 strict；
+  转 Anthropic 的结构化输出及函数 strict=true 返回 400。strict=false 可消费为
+  不要求强制 Schema 的普通函数。Schema 内容原样保留，不删改关键字。
+- 用户标识仅支持 user、safety_identifier 和 metadata.user_id 的对应转换；
+  同时给出不一致标识或额外 metadata 键返回 400。空值视为未提供。
+- Chat stream_options.include_usage 由网关的调用方协议渲染器消费；未知
+  stream_options 字段跨协议拒绝。温度与 top_p 必须满足目标协议范围。
+- 上游非流式及流式参数必须是合法 JSON object；损坏 JSON、非对象参数、缺失
+  调用关联不以空对象或伪造 ID 修补。Responses failed/incomplete/error 与流式
+  异常 EOF 不能作为成功回复保存。Chat 同帧多个工具、分片参数和并行 index
+  分别聚合，不重复正文/思考，不丢失完整参数。
+- 流式接收仍遵循当前“聚合完整结果、校验、原子保存、回放”行为。此次归一
+  不代表实时首事件转发、断连取消或 fallback 终态改造已经完成。
+
+验证以锁定的 OpenAI/Anthropic SDK 类型和可控 HTTP Transport 为依据，覆盖
+三种调用协议 × 三种上游协议 × 流式/非流式的 18 种基础组合；不调用真实模型。
 
 ## 13. OpenAI Chat Completions
 

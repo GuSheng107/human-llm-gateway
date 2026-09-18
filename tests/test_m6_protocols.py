@@ -93,14 +93,14 @@ def test_chat_parse_invalid_json() -> None:
         assert exc.value.code is DomainErrorCode.INVALID_REQUEST
 
 
-def test_chat_parse_normalizes_stream_and_filters_options() -> None:
+def test_chat_parse_keeps_unknown_options_for_explicit_cross_rejection() -> None:
     parsed = chat_protocol.parse_request(
         json.dumps(_chat_payload(stream=True, temperature=0.7, weird_field="x")).encode()
     )
     assert parsed.stream is True
     normalized = parsed.normalized_request()
-    # 未声明的透传字段保留在原始投影，但规范化 options 只收采样白名单。
-    assert normalized["options"] == {"temperature": 0.7}
+    # 不能在转换前过滤未知字段，否则跨协议无法明确拒绝它们。
+    assert normalized["options"] == {"temperature": 0.7, "weird_field": "x"}
     assert parsed.options["weird_field"] == "x"
 
 
