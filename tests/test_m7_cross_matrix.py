@@ -81,11 +81,9 @@ def test_to_chat_developer_role_becomes_system() -> None:
     assert body["messages"][0] == {"role": "system", "content": "dev rules"}
 
 
-def test_to_anthropic_rejects_system_role_in_context() -> None:
+def test_to_anthropic_promotes_leading_system_role() -> None:
     normalized = _norm(context=[{"role": "system", "content": "x"}])
-    with pytest.raises(DomainError) as exc:
-        cross.to_anthropic_request(normalized, "claude")
-    assert _unsupported(exc)
+    assert cross.to_anthropic_request(normalized, "claude")["system"] == "x"
 
 
 # ----------------------------------------------------------------------
@@ -167,7 +165,6 @@ def test_responses_function_tool_to_chat_shape() -> None:
             "type": "function",
             "function": {
                 "name": "search",
-                "description": None,
                 "parameters": {"type": "object"},
             },
         }
@@ -412,7 +409,7 @@ def test_collect_parallel_tool_calls_by_index() -> None:
 def test_parse_chat_delta_content_and_reasoning() -> None:
     from app.services.llm_upstream import _parse_chat_delta
 
-    chunk = _parse_chat_delta(
+    (chunk,) = _parse_chat_delta(
         {"choices": [{"delta": {"content": "hi", "reasoning_content": "why"}}]}
     )
     assert chunk.text == "hi"
@@ -422,7 +419,7 @@ def test_parse_chat_delta_content_and_reasoning() -> None:
 def test_parse_chat_delta_tool_call_start() -> None:
     from app.services.llm_upstream import _parse_chat_delta
 
-    chunk = _parse_chat_delta(
+    (chunk,) = _parse_chat_delta(
         {
             "choices": [
                 {

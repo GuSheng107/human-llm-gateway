@@ -34,6 +34,9 @@ from ..domain.enums import (
 from ..domain.errors import DomainError, DomainErrorCode
 from ..domain.values import ReplyDraft, normalize_generation_instruction
 from ..protocols import cross
+from ..protocols.upstream_reply import parse_anthropic_response as _parse_anthropic_response
+from ..protocols.upstream_reply import parse_chat_response as _parse_chat_response
+from ..protocols.upstream_reply import parse_responses_response as _parse_responses_response
 from ..repositories.llm_configs import LlmConfigRepository
 from ..repositories.models import LlmConfig, RequestTask, TaskDraft, User
 from ..repositories.system import AuditRepository
@@ -293,12 +296,12 @@ def _build_chat_request(
         if not isinstance(item, dict):
             continue
         role = item.get("role")
-        if role not in {"user", "assistant", "system", "tool"}:
+        if role not in {"user", "assistant", "system", "developer", "tool"}:
             continue
-        message: dict[str, Any] = {"role": role, "content": item.get("content")}
+        message: dict[str, Any] = dict(item)
         if role == "assistant" and isinstance(item.get("tool_calls"), list):
             message["tool_calls"] = item["tool_calls"]
-            if message["content"] is None:
+            if message.get("content") is None:
                 message["content"] = None
         messages.append(message)
     body: dict[str, Any] = {"model": real_model, "messages": messages}
@@ -338,12 +341,7 @@ def _build_anthropic_request(
         role = item.get("role")
         if role not in {"user", "assistant"}:
             continue
-        messages.append(
-            {
-                "role": role,
-                "content": item.get("content"),
-            }
-        )
+        messages.append(dict(item))
     body: dict[str, Any] = {
         "model": real_model,
         "max_tokens": max_tokens,
@@ -353,6 +351,8 @@ def _build_anthropic_request(
         body["system"] = system_value
     if normalized.get("tools"):
         body["tools"] = normalized["tools"]
+    if normalized.get("tool_choice") is not None:
+        body["tool_choice"] = normalized["tool_choice"]
     for key, value in (normalized.get("options") or {}).items():
         if key in {"tools", "tool_choice"}:
             continue
@@ -386,8 +386,10 @@ def _build_responses_request(
     prepared = _prepare_rebuild(normalized, mode)
     body: dict[str, Any] = {
         "model": real_model,
-        "input": prepared.get("input") or [],
+        "input": prepared.get("context") or [],
     }
+    if prepared.get("store") is False:
+        body["store"] = False
     instructions = prepared.get("instructions")
     if isinstance(instructions, str) and instructions.strip():
         body["instructions"] = instructions
@@ -402,165 +404,6 @@ def _build_responses_request(
     if cfg is not None:
         _apply_config(body, cfg)
     return body
-
-
-def _parse_responses_response(payload: dict[str, Any]) -> ReplyDraft:
-    """OpenAI Responses 响应 → ReplyDraft。
-
-    output 数组：message（content[].output_text.text）、reasoning（summary[].text）、
-    function_call（name / arguments JSON）。"""
-    output = payload.get("output")
-    if not isinstance(output, list):
-        raise DomainError(DomainErrorCode.UPSTREAM_ERROR, "上游响应缺少 output", status_code=502)
-    final_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    for item in output:
-        if not isinstance(item, dict):
-            continue
-        item_type = item.get("type")
-        if item_type == "message":
-            for part in item.get("content") or []:
-                if isinstance(part, dict) and part.get("type") == "output_text":
-                    text = part.get("text") or ""
-                    if text:
-                        final_parts.append(text)
-        elif item_type == "reasoning":
-            for summary in item.get("summary") or []:
-                if isinstance(summary, dict) and summary.get("text"):
-                    reasoning_parts.append(summary["text"])
-        elif item_type == "function_call":
-            arguments = item.get("arguments") or ""
-            if isinstance(arguments, str):
-                try:
-                    arguments_obj = json.loads(arguments)
-                except (ValueError, TypeError):
-                    arguments_obj = {}
-            else:
-                arguments_obj = arguments
-            tool_calls.append(
-                {
-                    "id": item.get("id", ""),
-                    "name": item.get("name", ""),
-                    "arguments": arguments_obj,
-                }
-            )
-    return ReplyDraft(
-        reasoning="".join(reasoning_parts) or None,
-        tool_calls=tool_calls,
-        final_text="".join(final_parts) or None,
-    )
-
-
-def _parse_chat_response(payload: dict[str, Any]) -> ReplyDraft:
-    """OpenAI Chat Completions 响应 → ReplyDraft。
-
-    兼容字段：
-    - choices[0].message.content（最终文本）
-    - choices[0].message.reasoning_content（思考，M7-B 接受 chat protocol 兼容字段）
-    - choices[0].message.tool_calls（数组，type=function 时取 function.name/arguments）
-    """
-    choices = payload.get("choices") or []
-    if not isinstance(choices, list) or not choices:
-        raise DomainError(
-            DomainErrorCode.UPSTREAM_ERROR,
-            "上游响应缺少 choices",
-            status_code=502,
-        )
-    message = choices[0].get("message") or {}
-    final_text = message.get("content") or ""
-    if not isinstance(final_text, str):
-        final_text = str(final_text)
-    reasoning = message.get("reasoning_content")
-    if reasoning is not None and not isinstance(reasoning, str):
-        reasoning = str(reasoning)
-    tool_calls: list[dict[str, Any]] = []
-    for call in message.get("tool_calls") or []:
-        if not isinstance(call, dict):
-            continue
-        if call.get("type") == "function" and isinstance(call.get("function"), dict):
-            fn = call["function"]
-            arguments = fn.get("arguments") or "{}"
-            if isinstance(arguments, str):
-                try:
-                    arguments_obj = json.loads(arguments)
-                except (ValueError, TypeError):
-                    arguments_obj = {}
-            else:
-                arguments_obj = arguments
-            tool_calls.append(
-                {
-                    "id": call.get("id") or fn.get("name", "tool"),
-                    "name": fn.get("name", ""),
-                    "arguments": arguments_obj,
-                }
-            )
-        elif call.get("type") == "tool" or call.get("function") is None:
-            tool_calls.append(
-                {
-                    "id": call.get("id", "tool"),
-                    "name": (call.get("name") or call.get("function") or {}).get("name", "")
-                    if isinstance(call.get("name"), dict)
-                    else (call.get("name") or ""),
-                    "arguments": call.get("input") or call.get("arguments") or {},
-                }
-            )
-    return ReplyDraft(
-        reasoning=reasoning or None,
-        tool_calls=[
-            {"id": c["id"], "name": c["name"], "arguments": c["arguments"]} for c in tool_calls
-        ],
-        final_text=final_text or None,
-    )
-
-
-def _parse_anthropic_response(payload: dict[str, Any]) -> ReplyDraft:
-    """Anthropic Messages 响应 → ReplyDraft。
-
-    content blocks：
-    - type=text → final_text
-    - type=thinking → reasoning
-    - type=tool_use → tool_calls（id / name / input）
-    """
-    content = payload.get("content")
-    if not isinstance(content, list):
-        raise DomainError(
-            DomainErrorCode.UPSTREAM_ERROR,
-            "上游响应缺少 content",
-            status_code=502,
-        )
-    final_text_parts: list[str] = []
-    reasoning_parts: list[str] = []
-    tool_calls: list[dict[str, Any]] = []
-    for block in content:
-        if not isinstance(block, dict):
-            continue
-        btype = block.get("type")
-        if btype == "text":
-            text = block.get("text") or ""
-            if text:
-                final_text_parts.append(text)
-        elif btype == "thinking":
-            text = block.get("thinking") or block.get("text") or ""
-            if text:
-                reasoning_parts.append(text)
-        elif btype == "tool_use":
-            tool_calls.append(
-                {
-                    "id": block.get("id") or block.get("name", "tool"),
-                    "name": block.get("name", ""),
-                    "arguments": block.get("input") or {},
-                }
-            )
-    final_text = "\n".join(final_text_parts).strip() or None
-    reasoning = "\n".join(reasoning_parts).strip() or None
-    return ReplyDraft(
-        reasoning=reasoning,
-        tool_calls=[
-            {"id": c["id"], "name": c["name"], "arguments": c["arguments"]} for c in tool_calls
-        ],
-        final_text=final_text,
-    )
 
 
 async def _post_chat_completions(
@@ -695,6 +538,7 @@ class LlmDraftService:
             normalized = _drop_caller_system(normalized, protocol_kind)
         if not include_attachments:
             normalized = _strip_media_from_normalized(normalized)
+        normalized = _prepare_rebuild(normalized, mode)
         # 附件承载校验：同协议直拼/透传可携带多模态；跨协议或配置声明
         # 不支持图片输入时明确 422，绝不静默只取文本。
         has_attachments = _normalized_has_media(normalized)
@@ -727,11 +571,12 @@ class LlmDraftService:
                 raw_body = None
         # previous_response_id 是网关控制字段；即使上游同为 Responses，也必须
         # 使用已展开的规范化上下文，不能把本平台代理 ID 透传给上游。
-        if raw_body is not None and not (
-            cfg.protocol is LLMProtocol.OPENAI_RESPONSES
-            and raw_body.get("previous_response_id") is not None
-        ):
+        if raw_body is not None:
             body = raw_body
+            if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                body.pop("previous_response_id", None)
+                if task.previous_task_id is not None:
+                    body["input"] = normalized["context"]
             body["model"] = cfg.real_model
             body["stream"] = False
             if mode == MODE_REASONING:
@@ -766,6 +611,10 @@ class LlmDraftService:
             else:
                 body = cross.to_anthropic_request(normalized, cfg.real_model)
                 _apply_config(body, cfg)
+        if mode == MODE_REASONING:
+            body.pop("tools", None)
+            body.pop("tool_choice", None)
+            body.pop("parallel_tool_calls", None)
         # 5.5 提示注入。优先级固定：协议/Schema > 生成模式 > 用户生成引导 >
         # 调用方上下文。generation_instruction 先注入（在下），模式指令后
         # 注入（插到最前），最终顺序为 [mode, generation, caller system, ...]。

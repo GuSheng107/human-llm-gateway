@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -69,6 +69,22 @@ def _raise_bad_json() -> DomainError:
     return DomainError(
         DomainErrorCode.UPSTREAM_ERROR, "上游 LLM 响应不是合法 JSON", status_code=502
     )
+
+
+def _raise_incomplete_stream() -> DomainError:
+    return DomainError(DomainErrorCode.UPSTREAM_ERROR, "上游 LLM 流未正常完成", status_code=502)
+
+
+def _parse_tool_arguments(value: object) -> dict[str, Any]:
+    """只接受完整参数对象，不能把损坏的参数修复成合法空对象。"""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as exc:
+            raise _raise_bad_json() from exc
+    if not isinstance(value, dict):
+        raise _raise_bad_json()
+    return value
 
 
 def _raise_too_large(kind: str) -> DomainError:
@@ -293,9 +309,14 @@ async def stream_chat_completions(
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
             async for chunk in _iter_sse_data(resp, budget):
-                parsed = _parse_chat_delta(chunk)
-                parsed.status_code = resp.status_code
-                yield parsed
+                if chunk is None:  # Chat 的 data: [DONE]
+                    return
+                if "error" in chunk or chunk.get("type") == "error":
+                    raise _raise_incomplete_stream()
+                for parsed in _parse_chat_delta(chunk):
+                    parsed.status_code = resp.status_code
+                    yield parsed
+            raise _raise_incomplete_stream()
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
@@ -324,10 +345,17 @@ async def stream_responses(
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
             async for chunk in _iter_sse_data(resp, budget):
+                if chunk is None:  # Responses 不使用 Chat 的 [DONE]。
+                    raise _raise_incomplete_stream()
+                if chunk.get("type") == "response.completed":
+                    if (chunk.get("response") or {}).get("status") != "completed":
+                        raise _raise_incomplete_stream()
+                    return
                 parsed = _parse_responses_event(chunk)
                 if parsed is not None:
                     parsed.status_code = resp.status_code
                     yield parsed
+            raise _raise_incomplete_stream()
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
@@ -337,8 +365,10 @@ async def stream_responses(
 
 
 def _parse_responses_event(payload: dict[str, Any]) -> UpstreamChunk | None:
-    """Responses SSE 事件归一；仅处理主流增量事件，其余忽略。"""
+    """Responses SSE 内容归一；失败事件不得作为可忽略的通知。"""
     event_type = payload.get("type") or ""
+    if event_type in ("error", "response.failed", "response.incomplete") or "error" in payload:
+        raise _raise_incomplete_stream()
     if event_type == "response.output_text.delta":
         return UpstreamChunk(text=payload.get("delta") or "")
     if event_type in ("response.reasoning_summary_text.delta", "response.reasoning.delta"):
@@ -349,16 +379,11 @@ def _parse_responses_event(payload: dict[str, Any]) -> UpstreamChunk | None:
     if event_type == "response.output_item.done":
         item = payload.get("item") or {}
         if item.get("type") == "function_call":
-            arguments = item.get("arguments")
-            try:
-                parsed_args = json.loads(arguments) if isinstance(arguments, str) else {}
-            except ValueError:
-                parsed_args = {}
             return UpstreamChunk(
                 tool_call={
-                    "id": item.get("id", ""),
+                    "id": item.get("call_id", ""),
                     "name": item.get("name", ""),
-                    "arguments": parsed_args,
+                    "arguments": _parse_tool_arguments(item.get("arguments")),
                 }
             )
         return None
@@ -387,11 +412,18 @@ async def stream_anthropic_messages(
             if resp.status_code >= 400:
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
-            async for event in _iter_sse(resp, budget):
-                chunk = _parse_anthropic_event(event, tool_json_buffers)
+            async for event, payload in _iter_sse(resp, budget):
+                if payload is None:
+                    raise _raise_incomplete_stream()
+                if (payload.get("type") or event) == "message_stop":
+                    if tool_json_buffers:
+                        raise _raise_incomplete_stream()
+                    return
+                chunk = _parse_anthropic_event(event, payload, tool_json_buffers)
                 if chunk is not None:
                     chunk.status_code = resp.status_code
                     yield chunk
+            raise _raise_incomplete_stream()
     except httpx.TimeoutException as exc:
         raise _raise_timeout() from exc
     except httpx.RequestError as exc:
@@ -402,87 +434,78 @@ async def stream_anthropic_messages(
 
 async def _iter_sse_data(
     resp: httpx.Response, budget: _StreamBudget
-) -> AsyncIterator[dict[str, Any]]:
-    """提取 data: JSON 行（Chat 格式：每 data 行一个完整对象）。"""
-    async for line in resp.aiter_lines():
-        budget.charge(line)
-        if len(line.encode("utf-8", errors="replace")) > LLM_MAX_SSE_LINE_BYTES:
-            raise _raise_too_large("单行")
-        if not line.startswith("data:"):
-            continue
-        payload = line[5:].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            yield json.loads(payload)
-        except ValueError:
-            _log_bad_sse_line(payload)
+) -> AsyncIterator[dict[str, Any] | None]:
+    """读取完整 SSE 数据；None 仅表示 Chat 的 [DONE] 标记。"""
+    async for _event, payload in _iter_sse(resp, budget):
+        yield payload
 
 
 async def _iter_sse(
     resp: httpx.Response, budget: _StreamBudget
-) -> AsyncIterator[tuple[str, dict[str, Any]]]:
-    """提取 (event, data) 对（Anthropic 格式：event: + data: 成对）。"""
+) -> AsyncIterator[tuple[str, dict[str, Any] | None]]:
+    """按空行分隔 SSE 事件，拼接多行 data，拒绝坏 JSON 而不记录原文。"""
     event_name = ""
+    data_lines: list[str] = []
     async for line in resp.aiter_lines():
         budget.charge(line)
         if len(line.encode("utf-8", errors="replace")) > LLM_MAX_SSE_LINE_BYTES:
             raise _raise_too_large("单行")
-        if line.startswith("event:"):
+        if not line:
+            if data_lines:
+                raw = "\n".join(data_lines)
+                if raw.strip() == "[DONE]":
+                    yield event_name, None
+                else:
+                    try:
+                        payload = json.loads(raw)
+                    except ValueError as exc:
+                        raise _raise_bad_json() from exc
+                    if not isinstance(payload, dict):
+                        raise _raise_bad_json()
+                    yield event_name, payload
+            event_name = ""
+            data_lines = []
+        elif line.startswith("event:"):
             event_name = line[6:].strip()
         elif line.startswith("data:"):
-            payload = line[5:].strip()
-            if not payload:
-                continue
-            try:
-                yield event_name, json.loads(payload)
-            except ValueError:
-                _log_bad_sse_line(payload)
-                continue
-            event_name = ""
+            data_lines.append(line[5:].removeprefix(" "))
+    if data_lines:
+        raise _raise_incomplete_stream()
 
 
-def _log_bad_sse_line(payload: str) -> None:
-    """SSE 坏行告警（截断采样，线上排障必需；不整行落日志防放大）。"""
-    import logging
-
-    logging.getLogger("app.services.llm_upstream").warning(
-        "上游 SSE 行不是合法 JSON（已跳过）: %s...", payload[:80]
-    )
-
-
-def _parse_chat_delta(payload: dict[str, Any]) -> UpstreamChunk:
-    """解析 Chat delta；tool_call 增量携带上游 index（并行多调用不串位）。"""
+def _parse_chat_delta(payload: dict[str, Any]) -> Iterator[UpstreamChunk]:
+    """一帧可有多个工具：正文只产出一次，各工具携带自己的上游 index。"""
     choices = payload.get("choices") or []
     if not choices:
-        return UpstreamChunk()
+        return
     delta = choices[0].get("delta") or {}
     text = delta.get("content") or ""
     reasoning = delta.get("reasoning_content") or ""
-    tool_call: dict[str, Any] | None = None
+    if text or reasoning:
+        yield UpstreamChunk(text=text, reasoning=reasoning)
     calls = delta.get("tool_calls")
-    if isinstance(calls, list) and calls:
-        first = calls[0]
-        if isinstance(first, dict):
-            fn = first.get("function") or {}
-            index = first.get("index", 0)
-            if first.get("id") and fn.get("name"):
-                # 新调用开始：携带 index/id/name（arguments 后续按 index 增量）
-                tool_call = {
-                    "index": index,
-                    "id": first.get("id", ""),
-                    "name": fn.get("name", ""),
-                    "arguments_delta": fn.get("arguments") or "",
-                }
-            elif fn.get("arguments"):
-                tool_call = {"index": index, "arguments_delta": fn.get("arguments") or ""}
-    return UpstreamChunk(text=text, reasoning=reasoning, tool_call=tool_call)
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, dict):
+                raise _raise_bad_json()
+            fn = call.get("function") or {}
+            tool_call = {
+                "index": call.get("index", 0),
+                "arguments_delta": fn.get("arguments") or "",
+            }
+            if call.get("id"):
+                tool_call["id"] = call["id"]
+            if fn.get("name"):
+                tool_call["name"] = fn["name"]
+            yield UpstreamChunk(tool_call=tool_call)
 
 
 def _parse_anthropic_event(
     event: str, payload: dict[str, Any], tool_buffers: dict[int, dict[str, str]]
 ) -> UpstreamChunk | None:
     etype = payload.get("type") or event
+    if etype == "error" or "error" in payload:
+        raise _raise_incomplete_stream()
     if etype == "content_block_delta":
         delta = payload.get("delta") or {}
         dtype = delta.get("type")
@@ -492,7 +515,9 @@ def _parse_anthropic_event(
             return UpstreamChunk(reasoning=delta.get("thinking", ""))
         if dtype == "input_json_delta":
             index = payload.get("index", 0)
-            buf = tool_buffers.setdefault(index, {"json": ""})
+            buf = tool_buffers.get(index)
+            if buf is None:
+                raise _raise_incomplete_stream()
             buf["json"] += delta.get("partial_json", "")
             return None
         return None
@@ -504,6 +529,7 @@ def _parse_anthropic_event(
                 "id": block.get("id", ""),
                 "name": block.get("name", ""),
                 "json": "",
+                "initial_json": json.dumps(block.get("input", {})),
             }
         return None
     if etype == "content_block_stop":
@@ -511,10 +537,7 @@ def _parse_anthropic_event(
         buf = tool_buffers.pop(index, None)
         if buf is None:
             return None
-        try:
-            arguments = json.loads(buf["json"]) if buf["json"].strip() else {}
-        except ValueError:
-            arguments = {}
+        arguments = _parse_tool_arguments(buf["json"] or buf["initial_json"])
         return UpstreamChunk(
             tool_call={"id": buf.get("id", ""), "name": buf.get("name", ""), "arguments": arguments}
         )
@@ -575,20 +598,14 @@ def finalize_collected(target: dict[str, Any]) -> dict[str, Any]:
     """累积结果 -> 协议无关摘要（与 ReplyDraft 字段对齐；丢弃内部索引）。"""
     tool_calls: list[dict[str, Any]] = []
     for call in target.get("tool_calls", []):
-        raw = call.get("arguments_raw") or "{}"
-        try:
-            arguments = json.loads(raw) if raw.strip() else {}
-        except ValueError:
-            arguments = {}
+        arguments = _parse_tool_arguments(
+            call["arguments"] if "arguments" in call else call.get("arguments_raw", "")
+        )
         tool_calls.append(
             {"id": call.get("id", ""), "name": call.get("name", ""), "arguments": arguments}
         )
     if not tool_calls and target.get("arguments_raw_head"):
-        raw = target["arguments_raw_head"]
-        try:
-            arguments = json.loads(raw) if raw.strip() else {}
-        except ValueError:
-            arguments = {}
+        arguments = _parse_tool_arguments(target["arguments_raw_head"])
         tool_calls.append({"id": "", "name": "", "arguments": arguments})
     return {
         "reasoning": target.get("reasoning") or None,

@@ -41,7 +41,6 @@ from . import llm_upstream
 from .llm_draft_service import (
     _apply_config,
     _build_anthropic_request,
-    _build_chat_request,
     _decrypt_config,
     _parse_anthropic_response,
     _parse_chat_response,
@@ -268,6 +267,16 @@ class LlmForwardService:
                 cfg, fake_model = self.resolve_config(session, task)
                 if stream:
                     chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
+                    # 聚合也可能因损坏参数失败，必须走同一失败处理，不能接受部分结果。
+                    collected: dict[str, Any] = {}
+                    for chunk in chunks:
+                        llm_upstream.collect_chunk(collected, chunk)
+                    summary = llm_upstream.finalize_collected(collected)
+                    draft = ReplyDraft(
+                        reasoning=summary["reasoning"],
+                        tool_calls=summary["tool_calls"],
+                        final_text=summary["final_text"],
+                    )
                 else:
                     draft = await self._call_upstream(session, task, cfg, fake_model)
         except TimeoutError:
@@ -317,18 +326,6 @@ class LlmForwardService:
                 ),
             )
             return False, None, exc.code.value
-
-        if stream:
-            # 聚合流式增量为 ReplyDraft（完整结果先持久化再回放，§13.3）。
-            collected: dict[str, Any] = {}
-            for chunk in chunks:
-                llm_upstream.collect_chunk(collected, chunk)
-            summary = llm_upstream.finalize_collected(collected)
-            draft = ReplyDraft(
-                reasoning=summary["reasoning"],
-                tool_calls=summary["tool_calls"],
-                final_text=summary["final_text"],
-            )
 
         # 协议重写前的结构检查：上游返回的 Tool Call 必须命中调用方当前请求
         # 声明的 Caller Tool（名称/参数 Schema/ID 唯一）。不满足按转发失败，
@@ -446,11 +443,12 @@ class LlmForwardService:
                 raw_body = json.loads(task.raw_payload_json)
             except (TypeError, ValueError, json.JSONDecodeError):
                 raw_body = None
-            if isinstance(raw_body, dict) and not (
-                cfg.protocol is LLMProtocol.OPENAI_RESPONSES
-                and raw_body.get("previous_response_id") is not None
-            ):
+            if isinstance(raw_body, dict):
                 body = dict(raw_body)
+                if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                    body.pop("previous_response_id", None)
+                    if raw_body.get("previous_response_id") is not None:
+                        body["input"] = normalized["context"]
                 body["model"] = cfg.real_model
                 _apply_config(body, cfg)
                 if cfg.protocol is LLMProtocol.OPENAI_CHAT:
@@ -465,13 +463,8 @@ class LlmForwardService:
                     return body
                 return _inject_identity_anthropic(body, identity)
         if cfg.protocol is LLMProtocol.OPENAI_CHAT:
-            if expected in (LLMProtocol.OPENAI_CHAT, LLMProtocol.OPENAI_RESPONSES):
-                body = _build_chat_request(
-                    real_model=cfg.real_model, normalized=normalized, cfg=cfg
-                )
-            else:
-                body = cross.to_chat_request(normalized, cfg.real_model)
-                _apply_config(body, cfg)
+            body = cross.to_chat_request(normalized, cfg.real_model)
+            _apply_config(body, cfg)
             return _inject_identity_chat(body, identity)
         if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
             body = cross.to_responses_request(normalized, cfg.real_model)
@@ -516,6 +509,7 @@ class LlmForwardService:
             except (ValueError, json.JSONDecodeError):
                 normalized = {}
             body = self.build_upstream_request(task, cfg, fake_model, normalized)
+            body["stream"] = False
             try:
                 inbound_raw = json.loads(task.raw_payload_json)
             except (TypeError, ValueError, json.JSONDecodeError):

@@ -30,19 +30,6 @@ _CONSUMED_FIELDS = {
     "conversation",
     "store",
 }
-_OPTION_ALLOWLIST = (
-    "temperature",
-    "top_p",
-    "max_output_tokens",
-    "tools",
-    "tool_choice",
-    "parallel_tool_calls",
-    "text",
-    "metadata",
-    "reasoning",
-    "service_tier",
-    "safety_identifier",
-)
 
 
 class ResponsesRequest:
@@ -103,7 +90,9 @@ class ResponsesRequest:
             "tools": self.tools,
             "tool_choice": self.options.get("tool_choice"),
             "options": {
-                key: value for key, value in self.options.items() if key in _OPTION_ALLOWLIST
+                key: value
+                for key, value in self.options.items()
+                if key not in {"tools", "tool_choice"}
             },
             "input": self.input,
             "stream": self.stream,

@@ -22,15 +22,6 @@ from ..domain.values import ReplyDraft
 from .normalized import decode_object, require_non_empty_str
 
 _CONSUMED_FIELDS = {"model", "messages", "system", "stream", "max_tokens"}
-_OPTION_ALLOWLIST = (
-    "temperature",
-    "top_p",
-    "stop_sequences",
-    "tools",
-    "tool_choice",
-    "metadata",
-    "thinking",
-)
 
 
 class AnthropicRequest:
@@ -76,7 +67,9 @@ class AnthropicRequest:
             "tools": self.tools,
             "tool_choice": self.options.get("tool_choice"),
             "options": {
-                key: value for key, value in self.options.items() if key in _OPTION_ALLOWLIST
+                key: value
+                for key, value in self.options.items()
+                if key not in {"tools", "tool_choice"}
             },
             "max_tokens": self.max_tokens,
             "messages": self.messages,
