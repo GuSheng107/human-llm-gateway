@@ -387,8 +387,8 @@ async def stream_anthropic_messages(
             if resp.status_code >= 400:
                 await resp.aread()
                 raise _raise_upstream(resp.status_code)
-            async for event in _iter_sse(resp, budget):
-                chunk = _parse_anthropic_event(event, tool_json_buffers)
+            async for event_name, payload in _iter_sse(resp, budget):
+                chunk = _parse_anthropic_event(event_name, payload, tool_json_buffers)
                 if chunk is not None:
                     chunk.status_code = resp.status_code
                     yield chunk

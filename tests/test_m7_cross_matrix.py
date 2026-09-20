@@ -503,3 +503,102 @@ def test_parse_anthropic_tool_use_lifecycle() -> None:
 def test_finalize_empty_target() -> None:
     result = finalize_collected({})
     assert result == {"reasoning": None, "tool_calls": [], "final_text": None}
+
+
+def test_stream_anthropic_messages_parses_sse_events(monkeypatch) -> None:
+    """stream_anthropic_messages 端到端解析 SSE 流（回归：事件元组传参不匹配）。
+
+    _iter_sse 产出 (event, data) 元组；旧实现把元组整体作为 event 传入
+    _parse_anthropic_event，payload 与 tool_buffers 错位，首帧即抛
+    TypeError。本用例用假 SSE 流验证 text/reasoning/tool_call 归一。
+    """
+    import asyncio
+
+    from app.services import llm_upstream
+
+    lines = [
+        "event: content_block_start",
+        'data: {"type": "content_block_start", "index": 0, "content_block": {"type": "text"}}',
+        "",
+        "event: content_block_delta",
+        (
+            'data: {"type": "content_block_delta", "index": 0, '
+            '"delta": {"type": "text_delta", "text": "你好"}}'
+        ),
+        "",
+        "event: content_block_delta",
+        (
+            'data: {"type": "content_block_delta", "index": 1, '
+            '"delta": {"type": "thinking_delta", "thinking": "想"}}'
+        ),
+        "",
+        "event: content_block_start",
+        (
+            'data: {"type": "content_block_start", "index": 2, '
+            '"content_block": {"type": "tool_use", "id": "t1", "name": "lookup"}}'
+        ),
+        "",
+        "event: content_block_delta",
+        (
+            'data: {"type": "content_block_delta", "index": 2, '
+            '"delta": {"type": "input_json_delta", "partial_json": "{\\"k\\": \\"v\\"}"}}'
+        ),
+        "",
+        "event: content_block_stop",
+        'data: {"type": "content_block_stop", "index": 2}',
+        "",
+        "event: message_stop",
+        'data: {"type": "message_stop"}',
+        "",
+    ]
+
+    class _FakeResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+        async def aread(self) -> bytes:
+            return b""
+
+    class _FakeStreamCtx:
+        async def __aenter__(self):
+            return _FakeResponse()
+
+        async def __aexit__(self, *exc_info: object) -> bool:
+            return False
+
+    class _FakeClient:
+        def __init__(self, **kwargs: Any) -> None:
+            pass
+
+        def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStreamCtx:
+            return _FakeStreamCtx()
+
+        async def aclose(self) -> None:
+            return None
+
+    async def _fake_precheck(base_url: str) -> None:
+        return None
+
+    monkeypatch.setattr(llm_upstream, "_precheck_ssrf", _fake_precheck)
+    monkeypatch.setattr(llm_upstream.httpx, "AsyncClient", _FakeClient)
+
+    async def run() -> list[UpstreamChunk]:
+        chunks: list[UpstreamChunk] = []
+        async for chunk in llm_upstream.stream_anthropic_messages(
+            base_url="https://upstream.example.test",
+            api_key="sk-test",
+            request_body={"model": "m", "max_tokens": 16, "messages": []},
+            timeout_seconds=10.0,
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    chunks = asyncio.run(run())
+    assert [c.text for c in chunks if c.text] == ["你好"]
+    assert [c.reasoning for c in chunks if c.reasoning] == ["想"]
+    tool_calls = [c.tool_call for c in chunks if c.tool_call]
+    assert tool_calls == [{"id": "t1", "name": "lookup", "arguments": {"k": "v"}}]
+    assert all(c.status_code == 200 for c in chunks)
