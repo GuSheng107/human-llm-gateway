@@ -2,6 +2,9 @@
 
 使用官方 anthropic SDK 直接解析网关返回：非流式 Message 与流式事件
 序列都必须可被 SDK 消费；usage 正确；人工路径不返回 thinking block。
+
+等待人工回复统一走 sdk_wait_helpers 的轮询：固定 sleep 在负载抖动下会漏，
+漏掉时回复协程静默死亡、请求永久挂起（人工回复端点没有超时）。
 """
 
 from __future__ import annotations
@@ -12,10 +15,12 @@ from typing import Any
 import pytest
 from anthropic import AsyncAnthropic
 
-import app.core.db as database
-from app.domain.values import ReplyDraft
-from app.repositories.models import RequestTask
-from app.services.inference_service import InferenceService
+from tests.sdk_wait_helpers import (
+    SDK_CALL_TIMEOUT_SECONDS,
+    finish_reply_task,
+    latest_task_id,
+    start_reply_task,
+)
 
 _MODEL = "claude-sonnet-5"
 
@@ -39,46 +44,24 @@ async def anthropic_sdk(async_client: Any, created_key) -> Any:
     )
 
 
-def _submit_reply(task_id: int, owner_user_id: int) -> None:
-    draft = ReplyDraft(reasoning="思考过程", final_text="今天晴")
-    with database.SessionLocal() as session:
-        task = session.get(RequestTask, task_id)
-        InferenceService().tasks.first_reply_wins(
-            session,
-            task_id=task_id,
-            owner_user_id=owner_user_id,
-            expected_version=task.version,
-            response_payload_json=draft.model_dump_json(exclude_none=True),
-        )
-        session.commit()
-
-
-def _latest_task_id_for_key(api_key_id: int) -> int:
-    with database.SessionLocal() as session:
-        row = (
-            session.query(RequestTask)
-            .filter(RequestTask.api_key_id == api_key_id)
-            .order_by(RequestTask.id.desc())
-            .first()
-        )
-        assert row is not None
-        return row.id
-
-
 @pytest.mark.asyncio
 async def test_anthropic_non_stream_sdk_parseable(anthropic_sdk: Any, created_key: Any) -> None:
-    async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id)
-
-    runner = asyncio.create_task(reply_later())
-    message = await anthropic_sdk.messages.create(
-        model=_MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": "北京天气如何"}],
+    runner = start_reply_task(
+        created_key.id,
+        created_key.owner_user_id,
+        reasoning="思考过程",
+        final_text="今天晴",
+        after_id=latest_task_id(created_key.id) or 0,
     )
-    runner.cancel()
+    try:
+        async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+            message = await anthropic_sdk.messages.create(
+                model=_MODEL,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": "北京天气如何"}],
+            )
+    finally:
+        await finish_reply_task(runner)
     assert message.type == "message"
     assert message.role == "assistant"
     assert message.stop_reason == "end_turn"
@@ -94,20 +77,24 @@ async def test_anthropic_non_stream_sdk_parseable(anthropic_sdk: Any, created_ke
 
 @pytest.mark.asyncio
 async def test_anthropic_stream_sdk_parseable(anthropic_sdk: Any, created_key: Any) -> None:
-    async def reply_later() -> None:
-        await asyncio.sleep(0.6)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id)
-
-    runner = asyncio.create_task(reply_later())
-    async with anthropic_sdk.messages.stream(
-        model=_MODEL,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": "上海天气如何"}],
-    ) as stream:
-        text = await stream.get_final_text()
-        final_message = await stream.get_final_message()
-    runner.cancel()
+    runner = start_reply_task(
+        created_key.id,
+        created_key.owner_user_id,
+        reasoning="思考过程",
+        final_text="今天晴",
+        after_id=latest_task_id(created_key.id) or 0,
+    )
+    try:
+        async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+            async with anthropic_sdk.messages.stream(
+                model=_MODEL,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": "上海天气如何"}],
+            ) as stream:
+                text = await stream.get_final_text()
+                final_message = await stream.get_final_message()
+    finally:
+        await finish_reply_task(runner)
     assert text == "今天晴"
     assert final_message.stop_reason == "end_turn"
     assert final_message.usage.input_tokens >= 1
