@@ -582,8 +582,10 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
   stream_options 字段跨协议拒绝。温度与 top_p 必须满足目标协议范围。
 - 上游非流式及流式参数必须是合法 JSON object；损坏 JSON、非对象参数、缺失
   调用关联不以空对象或伪造 ID 修补。Responses failed/incomplete/error 与流式
-  异常 EOF 不能作为成功回复保存。Chat 同帧多个工具、分片参数和并行 index
-  分别聚合，不重复正文/思考，不丢失完整参数。
+  异常 EOF 不能作为成功回复保存。上游省略末帧分隔空行时，只要该事件 JSON
+  完整仍按完整事件处理，成败由 `[DONE]`、`response.completed`、`message_stop`
+  等终止事件决定；被截断的事件依旧显式失败。Chat 同帧多个工具、分片参数和
+  并行 index 分别聚合，不重复正文/思考，不丢失完整参数。
 - 流式接收仍遵循当前“聚合完整结果、校验、原子保存、回放”行为。此次归一
   不代表实时首事件转发、断连取消或 fallback 终态改造已经完成。
 

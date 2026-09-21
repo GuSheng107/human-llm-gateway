@@ -440,10 +440,30 @@ async def _iter_sse_data(
         yield payload
 
 
+def _decode_sse_event(event_name: str, data_lines: list[str]) -> tuple[str, dict[str, Any] | None]:
+    """拼接多行 data 并解析；坏 JSON 与非法结构都显式失败，不记录原文。"""
+    raw = "\n".join(data_lines)
+    if raw.strip() == "[DONE]":
+        return event_name, None
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise _raise_bad_json() from exc
+    if not isinstance(payload, dict):
+        raise _raise_bad_json()
+    return event_name, payload
+
+
 async def _iter_sse(
     resp: httpx.Response, budget: _StreamBudget
 ) -> AsyncIterator[tuple[str, dict[str, Any] | None]]:
-    """按空行分隔 SSE 事件，拼接多行 data，拒绝坏 JSON 而不记录原文。"""
+    """按空行分隔 SSE 事件，拼接多行 data，拒绝坏 JSON 而不记录原文。
+
+    规范要求事件以空行结束，但部分上游会省略最后一帧的分隔空行。流结束时
+    残留的数据只要 JSON 完整就照常产出——成败交给调用方按终止事件判定
+    （缺少终止事件仍会在各自 stream_* 的流结束处报失败）；真正被截断的事件
+    因 JSON 残缺而在本函数失败。
+    """
     event_name = ""
     data_lines: list[str] = []
     async for line in resp.aiter_lines():
@@ -452,17 +472,7 @@ async def _iter_sse(
             raise _raise_too_large("单行")
         if not line:
             if data_lines:
-                raw = "\n".join(data_lines)
-                if raw.strip() == "[DONE]":
-                    yield event_name, None
-                else:
-                    try:
-                        payload = json.loads(raw)
-                    except ValueError as exc:
-                        raise _raise_bad_json() from exc
-                    if not isinstance(payload, dict):
-                        raise _raise_bad_json()
-                    yield event_name, payload
+                yield _decode_sse_event(event_name, data_lines)
             event_name = ""
             data_lines = []
         elif line.startswith("event:"):
@@ -470,7 +480,7 @@ async def _iter_sse(
         elif line.startswith("data:"):
             data_lines.append(line[5:].removeprefix(" "))
     if data_lines:
-        raise _raise_incomplete_stream()
+        yield _decode_sse_event(event_name, data_lines)
 
 
 def _parse_chat_delta(payload: dict[str, Any]) -> Iterator[UpstreamChunk]:

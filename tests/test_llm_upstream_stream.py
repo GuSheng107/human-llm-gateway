@@ -291,8 +291,19 @@ async def test_comments_multiline_data_and_crlf(protocol: str, serve_sse: Callab
 
 
 @pytest.mark.parametrize("protocol", STREAMS)
-async def test_unterminated_final_event_is_not_success(protocol: str, serve_sse: Callable) -> None:
-    serve_sse((_text(protocol) + _end(protocol)).rstrip("\n"))
+async def test_missing_trailing_blank_line_still_succeeds(
+    protocol: str, serve_sse: Callable
+) -> None:
+    """上游省略末帧分隔空行但事件完整：终止事件仍应被正常消费。"""
+    stream = serve_sse((_text(protocol) + _end(protocol)).rstrip("\n"))
+    assert (await _collect(protocol))["final_text"] == "部分回复"
+    assert stream.closed
+
+
+@pytest.mark.parametrize("protocol", STREAMS)
+async def test_truncated_final_event_is_not_success(protocol: str, serve_sse: Callable) -> None:
+    """末帧 JSON 被截断：残缺数据不得被当成完整事件接受。"""
+    serve_sse((_text(protocol) + _end(protocol)).rstrip("\n")[:-1])
     with pytest.raises(DomainError):
         await _collect(protocol)
 
