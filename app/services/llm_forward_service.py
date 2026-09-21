@@ -42,7 +42,6 @@ from .caller_tool_service import catalog_for_task, validate_full
 from .llm_draft_service import (
     _apply_config,
     _build_anthropic_request,
-    _build_chat_request,
     _decrypt_config,
     _parse_anthropic_response,
     _parse_chat_response,
@@ -441,11 +440,12 @@ class LlmForwardService:
                 raw_body = json.loads(task.raw_payload_json)
             except (TypeError, ValueError, json.JSONDecodeError):
                 raw_body = None
-            if isinstance(raw_body, dict) and not (
-                cfg.protocol is LLMProtocol.OPENAI_RESPONSES
-                and raw_body.get("previous_response_id") is not None
-            ):
+            if isinstance(raw_body, dict):
                 body = dict(raw_body)
+                if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
+                    body.pop("previous_response_id", None)
+                    if raw_body.get("previous_response_id") is not None:
+                        body["input"] = normalized["context"]
                 body["model"] = cfg.real_model
                 _apply_config(body, cfg)
                 if cfg.protocol is LLMProtocol.OPENAI_CHAT:
@@ -460,13 +460,8 @@ class LlmForwardService:
                     return body
                 return _inject_identity_anthropic(body, identity)
         if cfg.protocol is LLMProtocol.OPENAI_CHAT:
-            if expected in (LLMProtocol.OPENAI_CHAT, LLMProtocol.OPENAI_RESPONSES):
-                body = _build_chat_request(
-                    real_model=cfg.real_model, normalized=normalized, cfg=cfg
-                )
-            else:
-                body = cross.to_chat_request(normalized, cfg.real_model)
-                _apply_config(body, cfg)
+            body = cross.to_chat_request(normalized, cfg.real_model)
+            _apply_config(body, cfg)
             return _inject_identity_chat(body, identity)
         if cfg.protocol is LLMProtocol.OPENAI_RESPONSES:
             body = cross.to_responses_request(normalized, cfg.real_model)
@@ -511,6 +506,7 @@ class LlmForwardService:
             except (ValueError, json.JSONDecodeError):
                 normalized = {}
             body = self.build_upstream_request(task, cfg, fake_model, normalized)
+            body["stream"] = False
             try:
                 inbound_raw = json.loads(task.raw_payload_json)
             except (TypeError, ValueError, json.JSONDecodeError):

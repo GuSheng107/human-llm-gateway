@@ -22,19 +22,6 @@ from .normalized import decode_object, reject_unsupported_field, require_non_emp
 # 契约声明的网关消费字段：不进入透传 options
 _CONSUMED_FIELDS = {"model", "messages", "stream", "store"}
 # 响应中禁止回显的供应商专有推理控制字段（跨协议等价在 M7 处理）
-_OPTION_ALLOWLIST = (
-    "max_tokens",
-    "max_completion_tokens",
-    "temperature",
-    "top_p",
-    "stop",
-    "tools",
-    "tool_choice",
-    "parallel_tool_calls",
-    "response_format",
-    "user",
-    "metadata",
-)
 
 
 class ChatCompletionsRequest:
@@ -75,7 +62,9 @@ class ChatCompletionsRequest:
             "tools": self.tools,
             "tool_choice": self.tool_choice,
             "options": {
-                key: value for key, value in self.options.items() if key in _OPTION_ALLOWLIST
+                key: value
+                for key, value in self.options.items()
+                if key not in {"tools", "tool_choice"}
             },
             "messages": self.messages,
             "stream": self.stream,
