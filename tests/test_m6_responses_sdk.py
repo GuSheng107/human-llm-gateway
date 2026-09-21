@@ -3,6 +3,9 @@
 使用官方 openai SDK 直接解析网关返回：非流式 Response 对象与流式事件
 序列都必须可以被 SDK 消费；usage / annotations / sequence_number /
 content part 事件齐全。
+
+等待人工回复统一走 sdk_wait_helpers 的轮询：固定 sleep 在负载抖动下会漏，
+漏掉时回复协程静默死亡、请求永久挂起（人工回复端点没有超时）。
 """
 
 from __future__ import annotations
@@ -14,10 +17,12 @@ import httpx
 import pytest
 from openai import AsyncOpenAI
 
-import app.core.db as database
-from app.domain.values import ReplyDraft
-from app.repositories.models import RequestTask
-from app.services.inference_service import InferenceService
+from tests.sdk_wait_helpers import (
+    SDK_CALL_TIMEOUT_SECONDS,
+    finish_reply_task,
+    latest_task_id,
+    start_reply_task,
+)
 
 _MODEL = "deepseek-v4-pro"
 
@@ -38,48 +43,34 @@ async def responses_openai_client(async_client: Any, created_key) -> Any:
     )
 
 
-def _submit_reply(task_id: int, owner_user_id: int) -> None:
-    draft = ReplyDraft(reasoning="先想一下", final_text="今天晴")
-    with database.SessionLocal() as session:
-        task = session.get(RequestTask, task_id)
-        InferenceService().tasks.first_reply_wins(
-            session,
-            task_id=task_id,
-            owner_user_id=owner_user_id,
-            expected_version=task.version,
-            response_payload_json=draft.model_dump_json(exclude_none=True),
-        )
-        session.commit()
+def _start_reply(created_key: Any) -> asyncio.Task[None]:
+    """以调用前的最新任务为基线发起回复，确保命中的是本次请求新建的任务。
 
-
-def _latest_task_id_for_key(api_key_id: int) -> int:
-    with database.SessionLocal() as session:
-        row = (
-            session.query(RequestTask)
-            .filter(RequestTask.api_key_id == api_key_id)
-            .order_by(RequestTask.id.desc())
-            .first()
-        )
-        assert row is not None
-        return row.id
+    同一用例内连续发两次请求时必须重新调用，否则会命中上一个已回复的任务。
+    """
+    return start_reply_task(
+        created_key.id,
+        created_key.owner_user_id,
+        reasoning="先想一下",
+        final_text="今天晴",
+        after_id=latest_task_id(created_key.id) or 0,
+    )
 
 
 @pytest.mark.asyncio
 async def test_responses_non_stream_sdk_parseable(
     responses_openai_client: Any, created_key: Any
 ) -> None:
-    async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id)
-
-    runner = asyncio.create_task(reply_later())
-    response = await responses_openai_client.responses.create(
-        model=_MODEL,
-        input="北京天气如何",
-        store=False,
-    )
-    runner.cancel()
+    runner = _start_reply(created_key)
+    try:
+        async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+            response = await responses_openai_client.responses.create(
+                model=_MODEL,
+                input="北京天气如何",
+                store=False,
+            )
+    finally:
+        await finish_reply_task(runner)
     # SDK 解析成功即证明结构兼容；再校验关键字段。
     assert response.object == "response"
     assert response.status == "completed"
@@ -99,34 +90,32 @@ async def test_responses_non_stream_sdk_parseable(
 async def test_responses_stream_sdk_parseable(
     responses_openai_client: Any, created_key: Any
 ) -> None:
-    async def reply_later() -> None:
-        await asyncio.sleep(0.6)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id)
-
-    runner = asyncio.create_task(reply_later())
-    stream = await responses_openai_client.responses.create(
-        model=_MODEL,
-        input="上海天气如何",
-        store=False,
-        stream=True,
-    )
-    created = None
-    in_progress = None
-    completed = None
-    text_done_events: list[str] = []
-    sequence_numbers: list[int] = []
-    async for event in stream:
-        sequence_numbers.append(event.sequence_number)
-        if event.type == "response.created":
-            created = event
-        elif event.type == "response.in_progress":
-            in_progress = event
-        elif event.type == "response.output_text.done":
-            text_done_events.append(event.text)
-        elif event.type == "response.completed":
-            completed = event
-    runner.cancel()
+    runner = _start_reply(created_key)
+    try:
+        async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+            stream = await responses_openai_client.responses.create(
+                model=_MODEL,
+                input="上海天气如何",
+                store=False,
+                stream=True,
+            )
+            created = None
+            in_progress = None
+            completed = None
+            text_done_events: list[str] = []
+            sequence_numbers: list[int] = []
+            async for event in stream:
+                sequence_numbers.append(event.sequence_number)
+                if event.type == "response.created":
+                    created = event
+                elif event.type == "response.in_progress":
+                    in_progress = event
+                elif event.type == "response.output_text.done":
+                    text_done_events.append(event.text)
+                elif event.type == "response.completed":
+                    completed = event
+    finally:
+        await finish_reply_task(runner)
     assert created is not None
     assert in_progress is not None
     assert completed is not None
@@ -145,41 +134,42 @@ async def test_chat_completions_usage_and_include_usage(
     responses_openai_client: Any, created_key: Any
 ) -> None:
     """Chat 非流式 usage 与 stream_options.include_usage 流式帧。"""
-
-    async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id)
-
-    runner = asyncio.create_task(reply_later())
-    completion = await responses_openai_client.chat.completions.create(
-        model=_MODEL,
-        messages=[{"role": "user", "content": "广州天气如何"}],
-    )
-    runner.cancel()
+    runner = _start_reply(created_key)
+    try:
+        async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+            completion = await responses_openai_client.chat.completions.create(
+                model=_MODEL,
+                messages=[{"role": "user", "content": "广州天气如何"}],
+            )
+    finally:
+        await finish_reply_task(runner)
     assert completion.usage is not None
     assert completion.usage.prompt_tokens >= 1
     assert completion.usage.completion_tokens >= 1
     assert completion.usage.total_tokens >= 2
 
-    runner = asyncio.create_task(reply_later())
-    stream = await responses_openai_client.chat.completions.create(
-        model=_MODEL,
-        messages=[{"role": "user", "content": "深圳天气如何"}],
-        stream=True,
-        stream_options={"include_usage": True},
-    )
-    ids: set[str] = set()
-    usage_chunk = None
-    finish_reasons: list[str] = []
-    async for chunk in stream:
-        ids.add(chunk.id)
-        if chunk.usage is not None:
-            usage_chunk = chunk
-        for choice in chunk.choices:
-            if choice.finish_reason:
-                finish_reasons.append(choice.finish_reason)
-    runner.cancel()
+    # 第二次请求必须重新取基线，否则会命中上一个已回复的任务。
+    runner = _start_reply(created_key)
+    try:
+        async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+            stream = await responses_openai_client.chat.completions.create(
+                model=_MODEL,
+                messages=[{"role": "user", "content": "深圳天气如何"}],
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            ids: set[str] = set()
+            usage_chunk = None
+            finish_reasons: list[str] = []
+            async for chunk in stream:
+                ids.add(chunk.id)
+                if chunk.usage is not None:
+                    usage_chunk = chunk
+                for choice in chunk.choices:
+                    if choice.finish_reason:
+                        finish_reasons.append(choice.finish_reason)
+    finally:
+        await finish_reply_task(runner)
     # 同一次流式响应稳定 ID；usage 帧带空 choices。
     assert len(ids) == 1
     assert usage_chunk is not None
