@@ -41,6 +41,13 @@ def latest_task_id(api_key_id: int) -> int | None:
     return None if row is None else row.id
 
 
+def task_state(task_id: int) -> Any:
+    """任务当前状态；行不存在（尚未提交或已回滚）时返回 None。仅用于超时诊断。"""
+    with database.SessionLocal() as session:
+        row = session.get(RequestTask, task_id)
+    return None if row is None else row.state
+
+
 async def wait_for_new_task(
     api_key_id: int,
     *,
@@ -85,14 +92,20 @@ async def wait_for_task_state(
     raise AssertionError(f"task_id={task_id} 在 {timeout}s 内没有进入状态 {state}")
 
 
-def submit_reply(
+def try_submit_reply(
     task_id: int, owner_user_id: int, *, reasoning: str | None = None, final_text: str
-) -> None:
-    """以首个有效提交写回人工回复（与端点提交同一裁决路径）。"""
+) -> bool:
+    """尝试提交一次人工回复，返回是否被接受（与端点提交同一裁决路径）。
+
+    任务行可能尚未提交、正在提交中或随后回滚，因此 task 缺失不是错误而是
+    「还没就绪」，返回 False 交给调用方重试。
+    """
     draft = ReplyDraft(reasoning=reasoning, final_text=final_text)
     with database.SessionLocal() as session:
         task = session.get(RequestTask, task_id)
-        InferenceService().tasks.first_reply_wins(
+        if task is None:
+            return False
+        accepted = InferenceService().tasks.first_reply_wins(
             session,
             task_id=task_id,
             owner_user_id=owner_user_id,
@@ -100,13 +113,31 @@ def submit_reply(
             response_payload_json=draft.model_dump_json(exclude_none=True),
         )
         session.commit()
+    return bool(accepted)
 
 
 async def reply_when_task_ready(
     api_key_id: int, owner_user_id: int, *, reasoning: str | None, final_text: str, after_id: int
 ) -> None:
-    task_id = await wait_for_new_task(api_key_id, after_id=after_id)
-    submit_reply(task_id, owner_user_id, reasoning=reasoning, final_text=final_text)
+    """反复尝试提交，直到该 Key 的新任务真正接受回复。
+
+    固定 sleep 会漏；只等「任务行出现」同样不够——任务可能尚未提交、状态尚未
+    推进到 waiting_human，甚至随后回滚。而 first_reply_wins 只在 waiting_human
+    且版本匹配时才返回 True，用它作为就绪信号不需要任何时序假设。
+    """
+    deadline = time.monotonic() + WAIT_TIMEOUT_SECONDS
+    observed = "没有出现新任务"
+    while time.monotonic() < deadline:
+        task_id = latest_task_id(api_key_id)
+        if task_id is not None and task_id > after_id:
+            observed = f"task_id={task_id} state={task_state(task_id)}"
+            if try_submit_reply(task_id, owner_user_id, reasoning=reasoning, final_text=final_text):
+                return
+        await asyncio.sleep(WAIT_INTERVAL_SECONDS)
+    raise AssertionError(
+        f"api_key_id={api_key_id} 的新任务在 {WAIT_TIMEOUT_SECONDS}s 内没有接受回复"
+        f"（基线 id={after_id}，最后一次观察：{observed}）"
+    )
 
 
 def start_reply_task(
