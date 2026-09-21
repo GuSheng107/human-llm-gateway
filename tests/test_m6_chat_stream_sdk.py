@@ -3,6 +3,9 @@
 锁定 openai 依赖版本后必须重新执行：本测试决定 Chat 流内错误的表示
 方式（error frame + EOF 触发 SDK APIError，client cancel 走
 caller_disconnected 取消任务并释放名额）。
+
+等待人工回复统一走 sdk_wait_helpers 的轮询：固定 sleep 在负载抖动下会漏，
+漏掉时回复协程静默死亡、请求永久挂起（人工回复端点没有超时）。
 """
 
 from __future__ import annotations
@@ -19,7 +22,13 @@ from app.domain.enums import TaskState
 from app.domain.values import ReplyDraft
 from app.protocols import chat_completions as chat_protocol
 from app.repositories.models import RequestTask
-from app.services.inference_service import InferenceService
+from tests.sdk_wait_helpers import (
+    SDK_CALL_TIMEOUT_SECONDS,
+    finish_reply_task,
+    latest_task_id,
+    start_reply_task,
+    wait_for_task_state,
+)
 
 
 @pytest.fixture
@@ -38,19 +47,14 @@ async def openai_client(async_client: Any, created_key) -> Any:
     )
 
 
-def _submit_reply(task_id: int, owner_user_id: int) -> None:
-    draft = ReplyDraft(final_text="done")
-    payload = draft.model_dump_json(exclude_none=True)
-    with database.SessionLocal() as session:
-        task = session.get(RequestTask, task_id)
-        InferenceService().tasks.first_reply_wins(
-            session,
-            task_id=task_id,
-            owner_user_id=owner_user_id,
-            expected_version=task.version,
-            response_payload_json=payload,
-        )
-        session.commit()
+def _start_reply(created_key: Any) -> asyncio.Task[None]:
+    """以调用前的最新任务为基线发起回复，确保命中的是本次请求新建的任务。"""
+    return start_reply_task(
+        created_key.id,
+        created_key.owner_user_id,
+        final_text="done",
+        after_id=latest_task_id(created_key.id) or 0,
+    )
 
 
 def _task(task_id: int) -> RequestTask:
@@ -66,26 +70,24 @@ async def test_chat_stream_normal_completion(async_client, created_user, created
         "messages": [{"role": "user", "content": "hi"}],
     }
 
-    async def reply_later() -> None:
-        await asyncio.sleep(0.6)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id)
+    runner = _start_reply(created_key)
+    try:
+        async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+            response = await async_client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {created_key.plaintext}"},
+                json=request_payload,
+            )
+            assert response.status_code == 200
+            chunks: list[dict[str, Any]] = []
+            async for line in response.aiter_lines():
+                if line.startswith("data:") and not line.startswith("data: [DONE]"):
+                    import json as _json
 
-    runner = asyncio.create_task(reply_later())
-    response = await async_client.post(
-        "/v1/chat/completions",
-        headers={"Authorization": f"Bearer {created_key.plaintext}"},
-        json=request_payload,
-    )
-    runner.cancel()
-    assert response.status_code == 200
+                    chunks.append(_json.loads(line[5:].strip()))
+    finally:
+        await finish_reply_task(runner)
     assert response.headers["content-type"].startswith("text/event-stream")
-    chunks: list[dict[str, Any]] = []
-    async for line in response.aiter_lines():
-        if line.startswith("data:") and not line.startswith("data: [DONE]"):
-            import json as _json
-
-            chunks.append(_json.loads(line[5:].strip()))
     assert chunks
     final = chunks[-1]
     assert final["choices"][0]["finish_reason"] in ("stop", "tool_calls")
@@ -105,22 +107,22 @@ async def test_chat_stream_midstream_error_raises_api_error(
 
     monkeypatch.setattr(chat_protocol, "stream_frames", boom)
 
-    async def reply_later() -> None:
-        await asyncio.sleep(0.5)
-        task_id = _latest_task_id_for_key(created_key.id)
-        _submit_reply(task_id, created_key.owner_user_id)
-
-    runner = asyncio.create_task(reply_later())
+    runner = _start_reply(created_key)
     sdk = AsyncOpenAI(
         api_key=created_key.plaintext, base_url="http://test/v1", http_client=async_client
     )
-    with pytest.raises(APIError) as exc:
-        stream = await sdk.chat.completions.create(
-            model="deepseek-v4-pro", messages=[{"role": "user", "content": "hi"}], stream=True
-        )
-        async for _chunk in stream:
-            pass
-    runner.cancel()
+    try:
+        with pytest.raises(APIError) as exc:
+            async with asyncio.timeout(SDK_CALL_TIMEOUT_SECONDS):
+                stream = await sdk.chat.completions.create(
+                    model="deepseek-v4-pro",
+                    messages=[{"role": "user", "content": "hi"}],
+                    stream=True,
+                )
+                async for _chunk in stream:
+                    pass
+    finally:
+        await finish_reply_task(runner)
     assert "server had an error" in str(exc.value).lower()
 
 
@@ -164,7 +166,9 @@ async def test_chat_stream_caller_disconnected_cancels_task(
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
 
         async def disconnect_later() -> None:
-            await asyncio.sleep(0.4)
+            # 必须等任务真正进入等待人工回复再注入断开；固定 sleep 在负载
+            # 抖动下会早于任务落库，断开落在请求处理前半段而测不到取消路径。
+            await wait_for_task_state(created_key.id, TaskState.WAITING_HUMAN, after_id=0)
             injector.disconnect.set()
 
         runner = asyncio.create_task(disconnect_later())
@@ -180,23 +184,8 @@ async def test_chat_stream_caller_disconnected_cancels_task(
         await runner
 
     assert response.status_code == 499
-    task_id = _latest_task_id_for_key(created_key.id)
+    task_id = latest_task_id(created_key.id)
+    assert task_id is not None
     task = _task(task_id)
     assert task.state is TaskState.CANCELLED
     assert task.cancel_reason_code == "caller_disconnected"
-
-
-def _latest_task_id_for_key(api_key_id: int) -> int:
-    from sqlalchemy import select
-
-    with database.SessionLocal() as session:
-        row = (
-            session.execute(
-                select(RequestTask)
-                .where(RequestTask.api_key_id == api_key_id)
-                .order_by(RequestTask.id.desc())
-            )
-            .scalars()
-            .first()
-        )
-        return row.id

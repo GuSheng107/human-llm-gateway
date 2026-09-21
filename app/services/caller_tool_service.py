@@ -4,12 +4,12 @@
 
 - Web 草稿保存 / 更新 / 提交
 - 手动 LLM 草稿生成结果
-- 自动 LLM 转发结果（协议重写前的结构检查）
+- 自动 LLM 转发结果（协议重写前的完整检查）
 - 页面 / 小助手工具参数生成
 
 校验分层：
 - 结构校验（save/generate/tool-arguments）：ID、名称、参数 object + Schema。
-- 完整校验（submit）：结构校验 + tool_choice / 并行约束。
+- 完整校验（submit/自动转发）：结构校验 + tool_choice / 并行约束。
 
 明确不做的判断（AGENTS.md §1/§5）：名称是否像 shell/exec/delete、参数是否
 包含绝对路径/内网地址/URL、工具可能产生何种副作用——网关根本不执行工具。
@@ -165,12 +165,12 @@ def validate_full(catalog: CallerToolCatalog, tool_calls: list[Any]) -> None:
             "请求 tool_choice=none，回复不允许携带 Tool Call",
             status_code=400,
         )
-    if catalog.policy.choice is CallerToolChoice.NAMED and catalog.policy.required_name:
-        names = {call.get("name") for call in tool_calls if isinstance(call, dict)}
-        if catalog.policy.required_name not in names:
+    if catalog.policy.choice is CallerToolChoice.NAMED:
+        names = {_tool_call_view(call, index).get("name") for index, call in enumerate(tool_calls)}
+        if not catalog.policy.required_name or names != {catalog.policy.required_name}:
             raise DomainError(
                 DomainErrorCode.VALIDATION_FAILED,
-                f"请求 tool_choice 指定了工具 {catalog.policy.required_name}，回复必须调用该工具",
+                f"请求 tool_choice 指定了工具 {catalog.policy.required_name}，回复只能调用该工具",
                 status_code=400,
             )
     if not catalog.policy.parallel_allowed and len(tool_calls) > 1:
