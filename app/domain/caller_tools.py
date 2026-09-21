@@ -179,9 +179,12 @@ def _parse_responses_choice(raw: Any) -> CallerToolPolicy:
 
 def _parse_anthropic_choice(raw: Any) -> CallerToolPolicy:
     if isinstance(raw, dict):
-        if raw.get("type") == "tool":
+        # type 大小写不敏感：{"type": "Any"} 与 "any" 同义，不能静默退化成 auto，
+        # 否则 required 约束会被悄悄放过（与下方字符串分支保持同一处理）。
+        kind = str(raw.get("type") or "auto").lower()
+        if kind == "tool":
             return _named(raw.get("name"))
-        choice = raw.get("type", "auto")
+        choice = kind
     else:
         choice = str(raw or "auto").lower()
     mapping = {

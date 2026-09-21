@@ -724,7 +724,8 @@ HTTP 轮询响应返回单调 cursor；重复 cursor、ACK 或回复必须幂等
 
 `auto` 允许没有调用，`none` 禁止调用，`required`（Anthropic `any`）至少一次，
 指定工具时所有调用都必须是该工具且至少一次。禁止并行时最多一次调用。
-Anthropic 的禁用并行字段位于 `tool_choice.disable_parallel_tool_use`。
+Anthropic 的 `tool_choice.type` 大小写不敏感（`Any` 与 `any` 同义，不得静默
+退化为 `auto`）；禁用并行字段位于 `tool_choice.disable_parallel_tool_use`。
 可编辑草稿和单工具参数建议不要求提前满足最终回复策略。
 IM 提交已有含工具草稿时，也必须已在 Web 确认本任务工具风险告知。
 网关不执行 Caller Tool；自动转发不要求人工确认告知。

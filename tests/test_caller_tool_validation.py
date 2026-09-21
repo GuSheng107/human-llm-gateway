@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 import app.core.db as database
-from app.domain.caller_tools import build_caller_tool_catalog
+from app.domain.caller_tools import CallerToolChoice, build_caller_tool_catalog
 from app.domain.enums import InferenceProtocol, TaskState
 from app.domain.errors import DomainError, DomainErrorCode
 from app.domain.values import ReplyDraft, ReplyToolCall
@@ -259,3 +259,40 @@ def test_im_final_submission_obeys_required(client, request, via_draft):
         task = session.get(RequestTask, scene["task_id"])
         assert task.state is TaskState.WAITING_HUMAN
         assert task.response_payload_json is None
+
+
+@pytest.mark.parametrize(
+    "raw_choice,expected,expected_name",
+    [
+        ({"type": "Tool", "name": "search"}, CallerToolChoice.NAMED, "search"),
+        ({"type": "Any"}, CallerToolChoice.REQUIRED, None),
+        ({"type": "NONE"}, CallerToolChoice.NONE, None),
+        ({"type": "Auto"}, CallerToolChoice.AUTO, None),
+        ("any", CallerToolChoice.REQUIRED, None),
+    ],
+)
+def test_anthropic_tool_choice_type_is_case_insensitive(raw_choice, expected, expected_name):
+    """Anthropic 的 tool_choice.type 大小写不敏感，大写不得静默降级成 auto。"""
+    catalog = build_caller_tool_catalog(
+        InferenceProtocol.ANTHROPIC_MESSAGES,
+        {
+            "tools": [{"name": "search", "input_schema": {"type": "object"}}],
+            "tool_choice": raw_choice,
+        },
+    )
+    assert catalog.policy.choice is expected
+    assert catalog.policy.required_name == expected_name
+
+
+@pytest.mark.parametrize("choice", ["any", "Any", {"type": "ANY"}])
+def test_uppercase_required_still_rejects_empty_reply(choice):
+    """大写写法同样触发 required 约束：空 Tool Call 列表必须被拒。"""
+    catalog = build_caller_tool_catalog(
+        InferenceProtocol.ANTHROPIC_MESSAGES,
+        {
+            "tools": [{"name": "search", "input_schema": {"type": "object"}}],
+            "tool_choice": choice,
+        },
+    )
+    with pytest.raises(DomainError):
+        validate_full(catalog, [])
