@@ -13,9 +13,11 @@ SSE 流式两种。错误统一映射为 DomainError（超时 504 / 网络 502 /
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -187,6 +189,60 @@ def _anthropic_headers(api_key: str) -> dict[str, str]:
     }
 
 
+@asynccontextmanager
+async def _upstream_response(
+    *,
+    base_url: str,
+    url: str,
+    headers: dict[str, str],
+    request_body: dict[str, Any],
+    timeout_seconds: float,
+) -> AsyncIterator[httpx.Response]:
+    """共享地址检查和总预算；不读取错误正文，不跟随重定向。"""
+    try:
+        async with asyncio.timeout(LLM_MAX_STREAM_SECONDS):
+            await _precheck_ssrf(base_url)
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                client.follow_redirects = False
+                async with client.stream("POST", url, headers=headers, json=request_body) as resp:
+                    if not 200 <= resp.status_code < 300:
+                        raise _raise_upstream(resp.status_code)
+                    yield resp
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise _raise_timeout() from exc
+    except httpx.RequestError as exc:
+        raise _raise_network() from exc
+
+
+async def _post_json(
+    *,
+    base_url: str,
+    url: str,
+    headers: dict[str, str],
+    request_body: dict[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    async with _upstream_response(
+        base_url=base_url,
+        url=url,
+        headers=headers,
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        raw = bytearray()
+        async for chunk in resp.aiter_bytes():
+            if len(raw) + len(chunk) > LLM_MAX_RESPONSE_BYTES:
+                raise _raise_too_large("体积")
+            raw.extend(chunk)
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise _raise_bad_json() from exc
+        if not isinstance(payload, dict):
+            raise _raise_bad_json()
+        return payload
+
+
 async def post_chat_completions(
     *,
     base_url: str,
@@ -194,24 +250,13 @@ async def post_chat_completions(
     request_body: dict[str, Any],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    await _precheck_ssrf(base_url)
-    url = _chat_completions_url(base_url)
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(url, headers=_chat_headers(api_key), json=request_body)
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    if resp.status_code >= 400:
-        raise _raise_upstream(resp.status_code)
-    raw = resp.content
-    if len(raw) > LLM_MAX_RESPONSE_BYTES:
-        raise _raise_too_large("体积")
-    try:
-        return json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise _raise_bad_json() from exc
+    return await _post_json(
+        base_url=base_url,
+        url=_chat_completions_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def post_anthropic_messages(
@@ -221,24 +266,13 @@ async def post_anthropic_messages(
     request_body: dict[str, Any],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    await _precheck_ssrf(base_url)
-    url = _anthropic_messages_url(base_url)
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(url, headers=_anthropic_headers(api_key), json=request_body)
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    if resp.status_code >= 400:
-        raise _raise_upstream(resp.status_code)
-    raw = resp.content
-    if len(raw) > LLM_MAX_RESPONSE_BYTES:
-        raise _raise_too_large("体积")
-    try:
-        return json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise _raise_bad_json() from exc
+    return await _post_json(
+        base_url=base_url,
+        url=_anthropic_messages_url(base_url),
+        headers=_anthropic_headers(api_key),
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -253,8 +287,10 @@ class _StreamBudget:
         self.bytes_read = 0
         self.started_at = time.monotonic()
 
-    def charge(self, line: str) -> None:
-        self.bytes_read += len(line.encode("utf-8", errors="replace")) + 1
+    def charge(self, chunk: bytes | str) -> None:
+        self.bytes_read += (
+            len(chunk) if isinstance(chunk, bytes) else len(chunk.encode("utf-8")) + 1
+        )
         if self.bytes_read > LLM_MAX_STREAM_BYTES:
             raise _raise_too_large("累计字节")
         if time.monotonic() - self.started_at > LLM_MAX_STREAM_SECONDS:
@@ -269,24 +305,13 @@ async def post_responses(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     """OpenAI Responses：POST {base_url}/responses。"""
-    await _precheck_ssrf(base_url)
-    url = _responses_url(base_url)
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(url, headers=_chat_headers(api_key), json=request_body)
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    if resp.status_code >= 400:
-        raise _raise_upstream(resp.status_code)
-    raw = resp.content
-    if len(raw) > LLM_MAX_RESPONSE_BYTES:
-        raise _raise_too_large("体积")
-    try:
-        return json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise _raise_bad_json() from exc
+    return await _post_json(
+        base_url=base_url,
+        url=_responses_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def stream_chat_completions(
@@ -298,31 +323,23 @@ async def stream_chat_completions(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Chat Completions：解析 delta.content / reasoning_content /
     tool_calls 增量并归一为 UpstreamChunk。"""
-    await _precheck_ssrf(base_url)
-    url = _chat_completions_url(base_url)
-    body = {**request_body, "stream": True}
     budget = _StreamBudget()
-    client = httpx.AsyncClient(timeout=timeout_seconds)
-    try:
-        async with client.stream("POST", url, headers=_chat_headers(api_key), json=body) as resp:
-            if resp.status_code >= 400:
-                await resp.aread()
-                raise _raise_upstream(resp.status_code)
-            async for chunk in _iter_sse_data(resp, budget):
-                if chunk is None:  # Chat 的 data: [DONE]
-                    return
-                if "error" in chunk or chunk.get("type") == "error":
-                    raise _raise_incomplete_stream()
-                for parsed in _parse_chat_delta(chunk):
-                    parsed.status_code = resp.status_code
-                    yield parsed
-            raise _raise_incomplete_stream()
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    finally:
-        await client.aclose()
+    async with _upstream_response(
+        base_url=base_url,
+        url=_chat_completions_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body={**request_body, "stream": True},
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        async for chunk in _iter_sse_data(resp, budget):
+            if chunk is None:  # Chat 的 data: [DONE]
+                return
+            if "error" in chunk or chunk.get("type") == "error":
+                raise _raise_incomplete_stream()
+            for parsed in _parse_chat_delta(chunk):
+                parsed.status_code = resp.status_code
+                yield parsed
+        raise _raise_incomplete_stream()
 
 
 async def stream_responses(
@@ -334,34 +351,26 @@ async def stream_responses(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 OpenAI Responses：解析 response.output_text.delta /
     response.reasoning_summary_text.delta / response.function_call_* 事件。"""
-    await _precheck_ssrf(base_url)
-    url = _responses_url(base_url)
-    body = {**request_body, "stream": True}
     budget = _StreamBudget()
-    client = httpx.AsyncClient(timeout=timeout_seconds)
-    try:
-        async with client.stream("POST", url, headers=_chat_headers(api_key), json=body) as resp:
-            if resp.status_code >= 400:
-                await resp.aread()
-                raise _raise_upstream(resp.status_code)
-            async for chunk in _iter_sse_data(resp, budget):
-                if chunk is None:  # Responses 不使用 Chat 的 [DONE]。
+    async with _upstream_response(
+        base_url=base_url,
+        url=_responses_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body={**request_body, "stream": True},
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        async for chunk in _iter_sse_data(resp, budget):
+            if chunk is None:  # Responses 不使用 Chat 的 [DONE]。
+                raise _raise_incomplete_stream()
+            if chunk.get("type") == "response.completed":
+                if (chunk.get("response") or {}).get("status") != "completed":
                     raise _raise_incomplete_stream()
-                if chunk.get("type") == "response.completed":
-                    if (chunk.get("response") or {}).get("status") != "completed":
-                        raise _raise_incomplete_stream()
-                    return
-                parsed = _parse_responses_event(chunk)
-                if parsed is not None:
-                    parsed.status_code = resp.status_code
-                    yield parsed
-            raise _raise_incomplete_stream()
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    finally:
-        await client.aclose()
+                return
+            parsed = _parse_responses_event(chunk)
+            if parsed is not None:
+                parsed.status_code = resp.status_code
+                yield parsed
+        raise _raise_incomplete_stream()
 
 
 def _parse_responses_event(payload: dict[str, Any]) -> UpstreamChunk | None:
@@ -399,37 +408,27 @@ async def stream_anthropic_messages(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Anthropic Messages：解析 content_block_delta（text_delta /
     thinking_delta / input_json_delta）并归一为 UpstreamChunk。"""
-    await _precheck_ssrf(base_url)
-    url = _anthropic_messages_url(base_url)
-    body = {**request_body, "stream": True}
     budget = _StreamBudget()
-    client = httpx.AsyncClient(timeout=timeout_seconds)
     tool_json_buffers: dict[int, dict[str, str]] = {}
-    try:
-        async with client.stream(
-            "POST", url, headers=_anthropic_headers(api_key), json=body
-        ) as resp:
-            if resp.status_code >= 400:
-                await resp.aread()
-                raise _raise_upstream(resp.status_code)
-            async for event, payload in _iter_sse(resp, budget):
-                if payload is None:
+    async with _upstream_response(
+        base_url=base_url,
+        url=_anthropic_messages_url(base_url),
+        headers=_anthropic_headers(api_key),
+        request_body={**request_body, "stream": True},
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        async for event, payload in _iter_sse(resp, budget):
+            if payload is None:
+                raise _raise_incomplete_stream()
+            if (payload.get("type") or event) == "message_stop":
+                if tool_json_buffers:
                     raise _raise_incomplete_stream()
-                if (payload.get("type") or event) == "message_stop":
-                    if tool_json_buffers:
-                        raise _raise_incomplete_stream()
-                    return
-                chunk = _parse_anthropic_event(event, payload, tool_json_buffers)
-                if chunk is not None:
-                    chunk.status_code = resp.status_code
-                    yield chunk
-            raise _raise_incomplete_stream()
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    finally:
-        await client.aclose()
+                return
+            chunk = _parse_anthropic_event(event, payload, tool_json_buffers)
+            if chunk is not None:
+                chunk.status_code = resp.status_code
+                yield chunk
+        raise _raise_incomplete_stream()
 
 
 async def _iter_sse_data(
@@ -454,6 +453,30 @@ def _decode_sse_event(event_name: str, data_lines: list[str]) -> tuple[str, dict
     return event_name, payload
 
 
+async def _bounded_sse_lines(resp: httpx.Response, budget: _StreamBudget) -> AsyncIterator[str]:
+    """按接收块计费，在等待换行前限制缓冲；支持 LF、CRLF 和 CR。"""
+    pending = bytearray()
+    skip_lf = False
+    async for chunk in resp.aiter_bytes():
+        budget.charge(chunk)
+        # 一次只保留单行；无换行的上游不能先无限缓存再校验。
+        for byte in chunk:
+            if skip_lf:
+                skip_lf = False
+                if byte == 10:
+                    continue
+            if byte in (10, 13):
+                yield pending.decode("utf-8", errors="replace")
+                pending.clear()
+                skip_lf = byte == 13
+            else:
+                pending.append(byte)
+                if len(pending) > LLM_MAX_SSE_LINE_BYTES:
+                    raise _raise_too_large("单行")
+    if pending:
+        yield pending.decode("utf-8", errors="replace")
+
+
 async def _iter_sse(
     resp: httpx.Response, budget: _StreamBudget
 ) -> AsyncIterator[tuple[str, dict[str, Any] | None]]:
@@ -466,10 +489,7 @@ async def _iter_sse(
     """
     event_name = ""
     data_lines: list[str] = []
-    async for line in resp.aiter_lines():
-        budget.charge(line)
-        if len(line.encode("utf-8", errors="replace")) > LLM_MAX_SSE_LINE_BYTES:
-            raise _raise_too_large("单行")
+    async for line in _bounded_sse_lines(resp, budget):
         if not line:
             if data_lines:
                 yield _decode_sse_event(event_name, data_lines)

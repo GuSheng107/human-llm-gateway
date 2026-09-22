@@ -9,12 +9,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
+from functools import partial
 from typing import Any
 
+from anyio import CancelScope
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
-from sse_starlette import EventSourceResponse, ServerSentEvent
+from sse_starlette import ServerSentEvent
 from starlette.concurrency import run_in_threadpool
 
 from ..core.db import get_db
@@ -27,7 +29,9 @@ from ..protocols import anthropic as anthropic_protocol
 from ..protocols import chat_completions as chat_protocol
 from ..protocols import responses as responses_protocol
 from ..repositories.models import ApiKey, RequestTask, User
+from ..services.forward_runtime import run_forward
 from ..services.inference_service import InferenceService
+from .task_responses import TaskEventSourceResponse, TaskJSONResponse
 from .v1_models import require_api_key
 
 router = APIRouter(prefix="/v1", tags=["v1-inference"])
@@ -122,23 +126,27 @@ def _load_task(task_id: int) -> RequestTask | None:
         return session.get(RequestTask, task_id)
 
 
-def _finalize(task_id: int, state: TaskState, public_error: DomainErrorCode | None = None) -> None:
+def _finalize(task_id: int, state: TaskState, public_error: DomainErrorCode | None = None) -> bool:
     from ..core.db import SessionLocal
 
     with SessionLocal() as session:
         task = session.get(RequestTask, task_id)
         if task is not None:
-            # 超时终态只允许从等待/转发中推进：人工先到（RESPONSE_READY）或
+            # 人工超时只允许从等待中推进：人工先到（RESPONSE_READY）或
             # 已开始输出（RESPONDING）的任务不被覆盖。
             allowed = (
-                {TaskState.WAITING_HUMAN, TaskState.FORWARDING_LLM}
+                {TaskState.WAITING_HUMAN}
                 if state is TaskState.TIMED_OUT
+                else {TaskState.RESPONSE_READY, TaskState.RESPONDING}
+                if state is TaskState.COMPLETED
                 else None
             )
-            _service.finalize(
+            accepted = _service.finalize(
                 session, task, state, allowed_sources=allowed, public_error=public_error
             )
             session.commit()
+            return accepted
+        return False
 
 
 def _cancel_disconnected(task_id: int) -> None:
@@ -149,14 +157,16 @@ def _cancel_disconnected(task_id: int) -> None:
         session.commit()
 
 
-def _mark_responding(task_id: int) -> None:
+def _mark_responding(task_id: int) -> bool:
     from ..core.db import SessionLocal
 
     with SessionLocal() as session:
         task = session.get(RequestTask, task_id)
         if task is not None:
-            _service.mark_responding(session, task)
+            accepted = _service.mark_responding(session, task)
             session.commit()
+            return accepted
+        return False
 
 
 async def _reject_unsupported_forward(task_id: int, error: str | None) -> None:
@@ -172,40 +182,33 @@ async def _reject_unsupported_forward(task_id: int, error: str | None) -> None:
     )
 
 
-async def _run_direct_forward(task_id: int, *, stream: bool = False) -> None:
-    """llm 策略：立即转发；不支持的参数返回 400，其余失败返回通用 500。
-
-    stream=True 时上游以 SSE 流式接收（增量聚合后仍按完整结果原子落库，
-    再由等待循环进入伪流式输出）。
-    失败时先推进 FAILED 并释放名额；字段矩阵拒绝保留协议错误类别，
-    上游和基础设施错误不向调用方暴露内部消息。
-    """
-    import asyncio as _asyncio
-
+def _fail_forward(task_id: int, error: str | None) -> None:
     from ..core.db import SessionLocal
-    from ..services.llm_forward_service import LlmForwardService
 
-    def _forward() -> tuple[bool, str | None]:
-        with SessionLocal() as session:
-            task = session.get(RequestTask, task_id)
-            if task is None:
-                return False, "task_missing"
-            service = LlmForwardService()
-            if stream:
-                accepted, _chunks, error = _asyncio.run(
-                    service.forward_stream(session, task, reason="direct")
-                )
-            else:
-                accepted, _draft, error = _asyncio.run(
-                    service.forward(session, task, reason="direct")
-                )
-            return accepted, error
+    with SessionLocal() as session:
+        task = session.get(RequestTask, task_id)
+        if task is not None:
+            _service.finalize(
+                session,
+                task,
+                TaskState.FAILED,
+                allowed_sources={TaskState.FORWARDING_LLM},
+                public_error=(
+                    DomainErrorCode.UNSUPPORTED_PARAMETER
+                    if error == DomainErrorCode.UNSUPPORTED_PARAMETER.value
+                    else None
+                ),
+            )
+            session.commit()
 
+
+async def _run_direct_forward(task_id: int, *, stream: bool = False) -> None:
+    """一次可取消转发；已失去执行权者不能终止竞争获胜方。"""
     try:
-        accepted, error = await run_in_threadpool(_forward)
+        accepted, error = await run_forward(task_id, reason="direct", stream=stream)
     except Exception:  # noqa: BLE001  # 转发基础设施异常按失败终态
         accepted, error = False, "exception"
-    if not accepted:
+    if not accepted and error not in {"claim_lost", "reply_lost", "cancelled"}:
         log_event(
             "warning",
             "inference.forward_failed",
@@ -213,50 +216,37 @@ async def _run_direct_forward(task_id: int, *, stream: bool = False) -> None:
             task_id=task_id,
             error_code=error or "unknown",
         )
+        await run_in_threadpool(_fail_forward, task_id, error)
         await _reject_unsupported_forward(task_id, error)
-        await run_in_threadpool(_finalize, task_id, TaskState.FAILED)
 
 
 async def _run_fallback(task_id: int) -> _Outcome | None:
-    """human_fallback_llm 超时转发：成功返回 Outcome，失败返回 None（走终态）。
-
-    转发失败不重试；字段矩阵拒绝返回 400，其余失败返回通用超时错误。
-    """
-    from ..core.db import SessionLocal
-    from ..services.llm_forward_service import LlmForwardService
-
-    def _forward() -> tuple[bool, str | None]:
-        with SessionLocal() as session:
-            task = session.get(RequestTask, task_id)
-            if task is None:
-                return False, "task_missing"
-            import asyncio as _asyncio
-
-            service = LlmForwardService()
-            accepted, _draft, error = _asyncio.run(
-                service.forward(session, task, reason="human_timeout")
-            )
-            return accepted, error
-
-    try:
-        accepted, error = await run_in_threadpool(_forward)
-    except Exception:  # noqa: BLE001  # fallback 失败按超时终态处理
+    """人工等待结束后只转发一次；上游失败进入 FAILED，不伪装成人工超时。"""
+    row = await run_in_threadpool(_load_task, task_id)
+    if row is None:
         return None
-    if not accepted:
-        log_event(
-            "warning",
-            "inference.fallback_failed",
-            "human_fallback_llm 转发未接受",
-            task_id=task_id,
-            error_code=error or "unknown",
+    try:
+        accepted, error = await run_forward(
+            task_id, reason="human_timeout", stream=row.stream_requested
         )
-        await _reject_unsupported_forward(task_id, error)
+    except Exception:  # noqa: BLE001
+        accepted, error = False, "exception"
+    if not accepted:
+        if error not in {"claim_lost", "reply_lost", "cancelled"}:
+            log_event(
+                "warning",
+                "inference.fallback_failed",
+                "human_fallback_llm 转发失败",
+                task_id=task_id,
+                error_code=error or "unknown",
+            )
+            await run_in_threadpool(_fail_forward, task_id, error)
+            await _reject_unsupported_forward(task_id, error)
         return None
     row = await run_in_threadpool(_load_task, task_id)
-    if row is None or not row.response_payload_json:
+    if row is None or row.state is not TaskState.RESPONSE_READY or not row.response_payload_json:
         return None
-    draft = ReplyDraft.model_validate_json(row.response_payload_json)
-    return _Outcome(row, draft)
+    return _Outcome(row, ReplyDraft.model_validate_json(row.response_payload_json))
 
 
 async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _Outcome | None:
@@ -306,7 +296,7 @@ async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _
                 "The server had an error while processing the request.",
                 status_code=500,
             )
-        if deadline_at is not None and _now() > deadline_at:
+        if state is TaskState.WAITING_HUMAN and deadline_at is not None and _now() > deadline_at:
             # human_fallback_llm：超时后原子声明一次转发权；成功则继续
             # 伪流式输出，失败（声明丢失 / 上游错误）走终态。
             if row.reply_strategy_snapshot is ReplyStrategy.HUMAN_FALLBACK_LLM:
@@ -324,6 +314,10 @@ async def _wait_for_reply(request: Request, task_id: int, deadline_at: Any) -> _
             ):
                 draft = ReplyDraft.model_validate_json(fresh.response_payload_json)
                 return _Outcome(fresh, draft)
+            if fresh is not None and fresh.state is not TaskState.WAITING_HUMAN:
+                # 另一执行者已声明或已失败/取消：重新按真实状态处理。
+                await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+                continue
             await run_in_threadpool(_finalize, task_id, TaskState.TIMED_OUT)
             # 通用超时错误，不暴露人工等待细节（§16.3）。
             log_event(
@@ -374,14 +368,19 @@ async def _stream(
     error_frame: Callable[[str], ServerSentEvent],
 ) -> AsyncIterator[ServerSentEvent]:
     """伪流式输出：先提交完整结果，再逐帧输出（AGENTS.md 产品边界）。"""
-    await run_in_threadpool(_mark_responding, task.id)
+    if not await run_in_threadpool(_mark_responding, task.id):
+        yield error_frame("The server had an error while streaming the response.")
+        return
     try:
         for frame in frames():
+            row = await run_in_threadpool(_load_task, task.id)
+            if row is None or row.state is not TaskState.RESPONDING:
+                yield error_frame("The server had an error while streaming the response.")
+                return
             yield frame
-        await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
     except asyncio.CancelledError:
-        # 客户端断开：原子取消并释放名额。
-        await run_in_threadpool(_cancel_disconnected, task.id)
+        with CancelScope(shield=True):
+            await run_in_threadpool(_cancel_disconnected, task.id)
         raise
     except (RuntimeError, ValueError, TypeError, AttributeError):
         yield error_frame("The server had an error while streaming the response.")
@@ -391,6 +390,7 @@ async def _stream(
 def _json_response(
     payload: dict[str, Any],
     *,
+    task_id: int,
     request_id: str,
     extra_headers: dict[str, str] | None = None,
 ) -> JSONResponse:
@@ -399,7 +399,13 @@ def _json_response(
         headers["request-id"] = request_id
     if extra_headers:
         headers.update(extra_headers)
-    return JSONResponse(payload, headers=headers)
+    return TaskJSONResponse(
+        payload,
+        headers=headers,
+        begin=partial(_mark_responding, task_id),
+        complete=partial(_finalize, task_id, TaskState.COMPLETED),
+        cancel=partial(_cancel_disconnected, task_id),
+    )
 
 
 async def _handle(
@@ -419,11 +425,40 @@ async def _handle(
     body = await request.body()
     parsed = parse(body)
     headers = _capture_headers(request)
-    task = await run_in_threadpool(_create_task, db, key, owner, protocol, parsed, body, headers)
-    if key.reply_strategy is ReplyStrategy.LLM:
-        # 调用方请求流式时，上游同样以 SSE 接收（增量聚合后原子落库）。
-        await _run_direct_forward(task.id, stream=parsed.stream)
-    return await _wait_for_reply(request, task.id, task.human_deadline_at)
+    creation = asyncio.create_task(
+        run_in_threadpool(_create_task, db, key, owner, protocol, parsed, body, headers)
+    )
+    try:
+        task = await asyncio.shield(creation)
+    except asyncio.CancelledError:
+        # 同步准入线程可能仍在提交，必须等它完成后取消已创建任务。
+        with CancelScope(shield=True):
+            outcomes = await asyncio.shield(asyncio.gather(creation, return_exceptions=True))
+            if isinstance(outcomes[0], RequestTask):
+                await run_in_threadpool(_cancel_disconnected, outcomes[0].id)
+        raise
+
+    async def process() -> _Outcome | None:
+        if key.reply_strategy is ReplyStrategy.LLM:
+            await _run_direct_forward(task.id, stream=parsed.stream)
+        return await _wait_for_reply(request, task.id, task.human_deadline_at)
+
+    processing = asyncio.create_task(process())
+    try:
+        while not processing.done():
+            await asyncio.wait({processing}, timeout=_POLL_INTERVAL_SECONDS)
+            if not processing.done() and await request.is_disconnected():
+                await run_in_threadpool(_cancel_disconnected, task.id)
+                processing.cancel()
+                await asyncio.gather(processing, return_exceptions=True)
+                return None
+        return await processing
+    except asyncio.CancelledError:
+        with CancelScope(shield=True):
+            await run_in_threadpool(_cancel_disconnected, task.id)
+            processing.cancel()
+            await asyncio.gather(processing, return_exceptions=True)
+        raise
 
 
 @router.post("/chat/completions")
@@ -463,12 +498,12 @@ async def chat_completions(
         except (ValueError, TypeError):
             include_usage = False
     if not task.stream_requested:
-        await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
         return _json_response(
             chat_protocol.render_response(model, outcome.draft, usage=usage),
+            task_id=task.id,
             request_id="",
         )
-    return EventSourceResponse(
+    return TaskEventSourceResponse(
         _stream(
             task,
             outcome.draft,
@@ -476,7 +511,9 @@ async def chat_completions(
                 model, outcome.draft, usage=usage, include_usage=include_usage
             ),
             chat_protocol.stream_error_frame,
-        )
+        ),
+        cancel=partial(_cancel_disconnected, task.id),
+        complete=partial(_finalize, task.id, TaskState.COMPLETED),
     )
 
 
@@ -507,12 +544,12 @@ async def create_response(
         "total_tokens": snap.total_tokens,
     }
     if not task.stream_requested:
-        await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
         return _json_response(
             responses_protocol.render_response(model, response_id, outcome.draft, usage=usage),
+            task_id=task.id,
             request_id="",
         )
-    return EventSourceResponse(
+    return TaskEventSourceResponse(
         _stream(
             task,
             outcome.draft,
@@ -520,7 +557,9 @@ async def create_response(
                 model, response_id, outcome.draft, usage=usage
             ),
             lambda message: responses_protocol.stream_error_event(response_id, model, message),
-        )
+        ),
+        cancel=partial(_cancel_disconnected, task.id),
+        complete=partial(_finalize, task.id, TaskState.COMPLETED),
     )
 
 
@@ -546,18 +585,20 @@ async def anthropic_messages(
     snap = _snapshot(task, outcome.draft)
     usage = {"input_tokens": snap.input_tokens, "output_tokens": snap.output_tokens}
     if not task.stream_requested:
-        await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
         # Anthropic SDK 客户端期望响应头回显请求的 anthropic-version。
         return _json_response(
             anthropic_protocol.render_response(model, outcome.draft, usage=usage),
+            task_id=task.id,
             request_id=get_request_id() or "",
             extra_headers={"anthropic-version": request.headers.get("anthropic-version", "")},
         )
-    return EventSourceResponse(
+    return TaskEventSourceResponse(
         _stream(
             task,
             outcome.draft,
             lambda: anthropic_protocol.stream_events(model, outcome.draft, usage=usage),
             lambda _message: anthropic_protocol.stream_error_event(),
-        )
+        ),
+        cancel=partial(_cancel_disconnected, task.id),
+        complete=partial(_finalize, task.id, TaskState.COMPLETED),
     )

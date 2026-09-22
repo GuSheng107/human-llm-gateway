@@ -351,8 +351,8 @@ def test_stream_budget_single_line_limit() -> None:
     from app.services.llm_upstream import _iter_sse_data, _StreamBudget
 
     class _FakeResponse:
-        async def aiter_lines(self):
-            yield "data: " + "x" * (2 * 1024 * 1024)
+        async def aiter_bytes(self):
+            yield b"data: " + b"x" * (2 * 1024 * 1024)
 
     async def run() -> None:
         async for _ in _iter_sse_data(_FakeResponse(), _StreamBudget()):  # type: ignore[arg-type]
@@ -370,11 +370,8 @@ def test_bad_sse_line_rejected_without_logging_payload(caplog) -> None:
     from app.services.llm_upstream import _iter_sse_data, _StreamBudget
 
     class _FakeResponse:
-        async def aiter_lines(self):
-            yield "data: not-json{"
-            yield ""
-            yield 'data: {"choices":[]}'
-            yield ""
+        async def aiter_bytes(self):
+            yield b'data: not-json{\n\ndata: {"choices":[]}\n\n'
 
     async def run() -> list[Any]:
         return [c async for c in _iter_sse_data(_FakeResponse(), _StreamBudget())]  # type: ignore[arg-type]
