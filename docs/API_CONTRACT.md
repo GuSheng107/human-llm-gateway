@@ -424,6 +424,24 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 
 每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。没有自己的启用 LLM 配置时，前端禁用发送和新建会话入口；历史会话仍可阅读。历史会话绑定的配置后来停用或删除时同样只读，发送返回 400。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
 
+### 10.1 内部只读工具与三协议续轮
+
+小助手可调用服务端注册的只读 MCP 查询/校验；Caller Tool 定义绝不成为可执行工具。参数建议只展示和复制，不保存草稿、提交回复、代替风险确认或回填编辑器。
+
+| 上游协议 | 工具定义 | 续轮结果 |
+| --- | --- | --- |
+| Chat Completions | `tools[].function` | assistant `tool_calls` 后接 `role=tool`，保留 `tool_call_id` |
+| Responses | 平铺 `tools[].name/parameters` | 原生 output 项后接 `function_call_output`，使用 `call_id` |
+| Anthropic Messages | `tools[].input_schema` | assistant `tool_use` 后紧接 user `tool_result`，保留 `tool_use_id/is_error` |
+
+同步和 `/messages/stream` 使用相同工具校验与审计入口。工具中间轮正文不输出；SSE 最终轮完整校验、脱敏后发送 `delta` 和落库后的 `done`。超过 5 个上游轮次、同轮超过 20 个工具调用、ID 重复、参数损坏、无正文或超过配置总时长均返回失败，不保存空成功消息。压缩调用独立受同一配置超时约束，失败保留历史。
+
+`POST /api/mcp/` 使用登录会话认证的 JSON-RPC 2.0；支持 `initialize`、`ping`、`tools/list`、`tools/call`。notification 返回 HTTP 202 且无正文，批量请求最多 20 项。非法 envelope 返回 `-32600`；未知方法 `-32601`；工具名或参数不合法 `-32602`；内部异常固定为 `-32603 Internal error`。业务拒绝通过 `result.isError=true` 返回通用说明，不回显内部异常。
+
+所有工具定义附 `readOnlyHint=true`。参数按声明 JSON Schema 校验，禁止未知参数；输入 64 KiB、结果 32 KiB 上限，超限明确报错。任务内容和 Caller Tool Schema/参数校验仅限所有者（管理员身份不越权），监管列表仍只显示已授权摘要。页面 route 去除 query/fragment，嵌套对象、数组和 JSON 文本中的凭据字段递归脱敏，附件内联数据省略。Schema 查询保留参数结构，但不发送敏感属性的默认值/常量/示例。
+
+HTTP 与助手均在执行后写审计：操作者、工具名、真实成功/失败/拒绝结果、耗时、参数数量、脱敏次数和 trace；不记录参数名/值或结果正文。工具执行失败可以把安全错误结果回传上游继续回答，但不会改写任务数据。
+
 ## 11. 设置、日志与审计
 
 | 方法 | 路径 | 权限 | 说明 |

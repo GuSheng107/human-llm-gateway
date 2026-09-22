@@ -16,7 +16,10 @@
 
 from __future__ import annotations
 
+import json
 import re
+from typing import Any
+from urllib.parse import urlsplit
 
 from ...core.logging import log_event
 from ...domain.errors import DomainError, DomainErrorCode
@@ -27,8 +30,12 @@ _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"sk-(?:ant-)?[A-Za-z0-9_-]{16,}"),  # 本系统及兼容服务 API Key
     re.compile(r"(?i)bearer\s+[A-Za-z0-9._~+/=-]{16,}"),  # Authorization 头
     re.compile(r"hlg1\.[0-9]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"),  # Secret envelope
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),  # PEM 私钥
-    re.compile(r"(?i)(?:api[_-]?key|token|secret|password)\s*[:=]\s*\S{8,}"),  # 键值式凭据
+    re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)", re.DOTALL
+    ),
+    re.compile(
+        r"""(?i)(?:api[_-]?key|token|secret|password|authorization|cookie)["']?\s*[:=]\s*["']?[^\s,;}"']+"""
+    ),
 )
 
 # resource 键白名单：按 feature 声明允许的键（结构层第二道白名单）。
@@ -70,6 +77,99 @@ def _redact_value(value: str) -> tuple[str, int]:
     return redact_text(value)
 
 
+_SENSITIVE_KEYS = re.compile(
+    r"(?i)(?:password|passwd|secret|token|authorization|cookie|credential|api[_-]?key|"
+    r"headers|qr[_-]?code|base64|private[_-]?key)"
+)
+
+
+def redact_value(value: Any, *, _depth: int = 0) -> tuple[Any, int]:
+    """递归过滤页面/MCP JSON 数据；保留 Schema 属性名，移除凭据值。"""
+    if _depth > 32:
+        return "[DEPTH-LIMIT]", 1
+    if isinstance(value, dict):
+        clean = {}
+        hits = 0
+        for key, item in value.items():
+            if _SENSITIVE_KEYS.search(str(key)) and not str(key).endswith(("_id", "_prefix")):
+                clean[key] = _REDACTED
+                hits += 1
+            else:
+                clean_key, key_hits = redact_text(str(key))
+                clean[clean_key], count = redact_value(item, _depth=_depth + 1)
+                hits += count + key_hits
+        return clean, hits
+    if isinstance(value, list):
+        clean_list = []
+        hits = 0
+        for item in value:
+            clean_item, count = redact_value(item, _depth=_depth + 1)
+            clean_list.append(clean_item)
+            hits += count
+        return clean_list, hits
+    if isinstance(value, str):
+        if value.startswith("data:"):
+            return "[ATTACHMENT-OMITTED]", 1
+        # MCP text 内容经常是 JSON 字符串，解析后才能识别嵌套敏感键。
+        if value.lstrip().startswith(("{", "[")):
+            try:
+                parsed = json.loads(value)
+            except (ValueError, RecursionError):
+                pass
+            else:
+                cleaned, hits = redact_value(parsed, _depth=_depth + 1)
+                return json.dumps(cleaned, ensure_ascii=False), hits
+        return redact_text(value)
+    return value, 0
+
+
+def redact_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """只供注册 Schema 查询使用；敏感属性保留类型，不暴露示例/默认值。"""
+    result = {}
+    for key, value in schema.items():
+        if key in ("properties", "$defs", "definitions") and isinstance(value, dict):
+            result[key] = {}
+            for name, definition in value.items():
+                if not isinstance(definition, dict):
+                    result[key][name] = definition
+                    continue
+                if _SENSITIVE_KEYS.search(name):
+                    definition = {
+                        k: v
+                        for k, v in definition.items()
+                        if k
+                        in (
+                            "type",
+                            "properties",
+                            "required",
+                            "items",
+                            "additionalProperties",
+                            "anyOf",
+                            "oneOf",
+                            "allOf",
+                            "minLength",
+                            "maxLength",
+                            "minimum",
+                            "maximum",
+                            "minItems",
+                            "maxItems",
+                            "uniqueItems",
+                            "writeOnly",
+                        )
+                    }
+                result[key][name] = redact_schema(definition)
+        elif isinstance(value, dict):
+            result[key] = redact_schema(value)
+        elif isinstance(value, list):
+            result[key] = [
+                redact_schema(item) if isinstance(item, dict) else redact_value(item)[0]
+                for item in value
+            ]
+        else:
+            result[key] = redact_value(value)[0]
+    return result
+
+
 def validate_feature(feature: str) -> frozenset[str]:
     """feature 必须已注册；返回其 resource 键白名单。"""
     keys = _FEATURE_RESOURCE_KEYS.get(feature)
@@ -103,7 +203,10 @@ def build_page_context(
             status_code=400,
         )
 
-    total_hits = 0
+    # 路由仅保留 path；query/fragment 可能携带临时凭据。
+    route_path = urlsplit(route).path
+    clean_route, total_hits = redact_text(route_path)
+    total_hits += int(route_path != route)
     clean_resource: dict[str, str] = {}
     for key, value in resource.items():
         if not isinstance(value, str):
@@ -128,15 +231,13 @@ def build_page_context(
         total_hits += hits
 
     context: dict = {
-        "route": route,
+        "route": clean_route,
         "feature": feature,
         "resource": clean_resource,
         "context_version": context_version,
     }
     if clean_edit is not None:
         context["unsaved_edit"] = clean_edit
-
-    import json
 
     if len(json.dumps(context, ensure_ascii=False).encode("utf-8")) > _MAX_CONTEXT_BYTES:
         raise DomainError(
@@ -198,15 +299,9 @@ def _redact_unsaved_edit(edit: dict) -> tuple[dict, int]:
                     "unsaved_edit.tool_calls.arguments 必须是对象",
                     status_code=400,
                 )
-            clean_args: dict = {}
-            for key, value in arguments.items():
-                if isinstance(value, str):
-                    cleaned, hits = redact_text(value)
-                    clean_args[key] = cleaned
-                    hits_total += hits
-                else:
-                    clean_args[key] = value
-            clean_calls.append({"id": call_id, "name": name, "arguments": clean_args})
+            clean_call, hits = redact_value({"id": call_id, "name": name, "arguments": arguments})
+            hits_total += hits
+            clean_calls.append(clean_call)
         clean["tool_calls"] = clean_calls
     return clean, hits_total
 
