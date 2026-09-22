@@ -85,7 +85,9 @@ def test_tools_registered_and_request_projection_redacted(client, created_user, 
         created_key, created_user, text="问题 sk-fake-secret-1234567890 https://host/path?token=abc"
     )
     listing = client.post(
-        "/api/mcp/", headers=created_user.headers, json={"id": 1, "method": "tools/list"}
+        "/api/mcp/",
+        headers=created_user.headers,
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
     ).json()
     names = {t["name"] for t in listing["result"]["tools"]}
     assert {"get_request_view", "validate_reply_draft", "get_trace_summary"} <= names
