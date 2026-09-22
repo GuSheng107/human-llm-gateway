@@ -36,6 +36,15 @@ class TaskRepository:
     def get(self, session: Session, task_id: int) -> RequestTask | None:
         return session.get(RequestTask, task_id)
 
+    def get_owned(self, session: Session, task_id: int, owner_user_id: int) -> RequestTask | None:
+        """只读助手读取正文时不继承管理员的跨用户治理权限。"""
+        return session.scalar(
+            select(RequestTask).where(
+                RequestTask.id == task_id,
+                RequestTask.owner_user_id == owner_user_id,
+            )
+        )
+
     def get_previous_public_id(self, session: Session, task: RequestTask) -> str | None:
         """取前置任务的 public_id（详情视图用，FK 保护下不会 None）。"""
         if task.previous_task_id is None:

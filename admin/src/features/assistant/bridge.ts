@@ -1,4 +1,4 @@
-import type { AssistantPageContext, AssistantUnsavedEdit } from "../../types/gateway";
+import type { AssistantUnsavedEdit } from "../../types/gateway";
 
 /**
  * 编辑器桥（只读）：回复工作台与全局助手面板之间的跨 feature 通信。
@@ -19,9 +19,16 @@ export interface EditBridge {
 }
 
 let bridge: EditBridge | null = null;
+const listeners = new Set<() => void>();
 
 export function registerEditBridge(next: EditBridge | null): void {
   bridge = next;
+  listeners.forEach((listener) => listener());
+}
+
+export function subscribeEditBridge(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
 }
 
 export function currentEditBridge(): EditBridge | null {

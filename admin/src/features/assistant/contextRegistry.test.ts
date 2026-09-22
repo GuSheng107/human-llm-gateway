@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { currentEditBridge, registerEditBridge } from "./bridge";
 import {
   CONTEXT_VERSIONS,
@@ -86,11 +86,29 @@ describe("buildContextSnapshot", () => {
       }),
       getResource: () => ({ task_id: "9", state: "waiting_human", model: "deepseek-v4-pro" }),
     });
-    const snapshot = buildContextSnapshot("/tasks", "");
+    const snapshot = buildContextSnapshot("/replies", "?focus=9");
     expect(snapshot!.unsaved_edit?.final_text).toBe("草稿");
     expect(snapshot!.unsaved_edit?.tool_calls).toHaveLength(1);
     expect(snapshot!.resource["task_id"]).toBe("9");
-    expect(snapshot!.resource["state"]).toBe("waiting_human");
+    expect(snapshot!.resource).toEqual({ task_id: "9" });
+  });
+
+  it("切任务加载期间不带旧草稿，离开任务路由不带任何编辑器资源", () => {
+    registerEditBridge({ getDraft: () => ({ reasoning: null, final_text: "旧草稿", tool_calls: [] }), getResource: () => ({ task_id: "9", secret: "bad" }) });
+    expect(buildContextSnapshot("/replies", "?focus=10")?.unsaved_edit).toBeNull();
+    expect(buildContextSnapshot("/replies", "?focus=10")?.resource).toEqual({ task_id: "10" });
+    expect(buildContextSnapshot("/settings/logs", "?trace_id=trace-test")).toMatchObject({ resource: { trace_id: "trace-test" }, unsaved_edit: null });
+    expect(buildContextSnapshot("/api-keys", "")).toMatchObject({ resource: {}, unsaved_edit: null });
+  });
+
+  it("同任务每次快照都读取最新未保存内容，卸载后不恢复草稿", () => {
+    let text = "第一稿";
+    registerEditBridge({ getDraft: () => ({ reasoning: null, final_text: text, tool_calls: [] }), getResource: () => ({ task_id: "9" }) });
+    expect(buildContextSnapshot("/replies", "")?.unsaved_edit?.final_text).toBe("第一稿");
+    text = "未保存的新稿";
+    expect(buildContextSnapshot("/replies", "")?.unsaved_edit?.final_text).toBe(text);
+    registerEditBridge(null);
+    expect(buildContextSnapshot("/replies", "?focus=9")?.unsaved_edit).toBeNull();
   });
 
   it("secret 形态字段不会由注册表采集（白名单只含声明键）", () => {
