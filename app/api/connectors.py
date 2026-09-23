@@ -1,4 +1,4 @@
-"""连接器入口 API（/connectors/*，docs/API_CONTRACT.md §17）。
+"""连接器入口 API（/connectors/*，docs/API_CONTRACT.md §18）。
 
 每个连接使用独立 Token 鉴权；入站消息按 connection_id +
 external_message_id 全局幂等；HTTP 轮询返回单调 cursor，重复

@@ -178,7 +178,8 @@ export type TaskState =
 export type TaskProtocol =
   | "openai_chat"
   | "openai_responses"
-  | "anthropic_messages";
+  | "anthropic_messages"
+  | "systemone";
 
 export interface ToolCall {
   id: string;

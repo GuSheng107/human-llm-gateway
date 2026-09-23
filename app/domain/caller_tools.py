@@ -131,6 +131,9 @@ def _anthropic_tool_def(item: dict[str, Any]) -> CallerToolDefinition | None:
 def _parse_tools(protocol: InferenceProtocol, tools: Any) -> list[CallerToolDefinition]:
     if not isinstance(tools, list):
         return []
+    if protocol is InferenceProtocol.TYPE_SAFE_SYSTEMONE:
+        # 决策协议不承载 Caller Tool（类型化答案由 questions 定义）。
+        return []
     parser = {
         InferenceProtocol.OPENAI_CHAT: _chat_tool_def,
         InferenceProtocol.OPENAI_RESPONSES: _responses_tool_def,
@@ -192,6 +195,9 @@ def _parse_anthropic_choice(raw: Any) -> CallerToolPolicy:
 def _parse_policy(
     protocol: InferenceProtocol, tool_choice: Any, raw_payload: dict[str, Any]
 ) -> CallerToolPolicy:
+    if protocol is InferenceProtocol.TYPE_SAFE_SYSTEMONE:
+        # 决策协议无 tool_choice / parallel_tool_calls 语义。
+        return CallerToolPolicy(choice=CallerToolChoice.AUTO)
     if protocol is InferenceProtocol.OPENAI_CHAT:
         policy = _parse_chat_choice(tool_choice)
         parallel = raw_payload.get("parallel_tool_calls")

@@ -122,6 +122,13 @@ class ToolArgumentGenerationService:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, TypeError):
             normalized = {}
+        if task.protocol is InferenceProtocol.TYPE_SAFE_SYSTEMONE:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "jev System One 决策协议不支持工具参数生成",
+                status_code=400,
+                public_code="protocol_tool_generation_unsupported",
+            )
         protocol_kind = {
             InferenceProtocol.OPENAI_CHAT: "chat",
             InferenceProtocol.OPENAI_RESPONSES: "responses",

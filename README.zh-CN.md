@@ -62,11 +62,12 @@ Anthropic SDK 发起请求，回复由 Web 工作台里的人写出、由你的�
 - `/v1/models` 按 Key 计算有效集合
 - 响应 `model` 字段永远改写为 Fake Model
 
-### 📡 三协议兼容
+### 📡 多协议兼容
 - OpenAI Chat Completions
 - OpenAI Responses（含 `previous_response_id` 链式展开）
 - Anthropic Messages（`x-api-key` / `anthropic-version`）
-- SSE 流式 + 伪流式输出
+- TypeSafe System One（jev 决策协议，`POST /v1/systemone`，无流式、仅限人工回复）
+- SSE 流式 + 伪流式输出（对话协议）
 
 ### 👤 人工回复闭环
 - Web 任务工作台：完整原始请求 + 时间线 + 草稿

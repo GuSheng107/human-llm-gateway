@@ -307,11 +307,16 @@ def install_error_handlers(app: FastAPI) -> None:
     async def handle_domain_error(request: Request, exc: DomainError) -> JSONResponse:
         # /v1/* 使用 OpenAI 兼容错误结构；管理 API 使用统一错误结构。
         if request.url.path.startswith("/v1/"):
-            # Anthropic Messages 使用 Anthropic 错误结构；其余 /v1 走 OpenAI 结构。
+            # Anthropic Messages 使用 Anthropic 错误结构；jev 使用官方错误结构；
+            # 其余 /v1 走 OpenAI 结构。
             if request.url.path.startswith("/v1/messages"):
                 from ..protocols.errors import anthropic_domain_error_response
 
                 return anthropic_domain_error_response(exc, request_id=get_request_id(request))
+            if request.url.path.startswith("/v1/systemone"):
+                from ..protocols.errors import systemone_domain_error_response
+
+                return systemone_domain_error_response(exc)
             from ..protocols.errors import openai_domain_error_response
 
             return openai_domain_error_response(exc)

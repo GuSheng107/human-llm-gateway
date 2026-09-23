@@ -4,7 +4,7 @@
 
 ## 当前产品范围
 
-- 对外提供 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种协议。
+- 对外提供 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 三种对话协议，以及 TypeSafe System One（jev）决策协议（`POST /v1/systemone`，无流式、仅限人工回复）。
 - Fake Model 只表示对外身份；管理员维护系统模型，用户维护自己的私有模型。
 - 用户通过 Web 统一回复工作台或自己的 IM 处理任务，也可以使用自己的 LLM 配置。
 - 管理台包含控制台、回复工作台、IM 连接、API 管理、LLM 管理、日志和系统设置。

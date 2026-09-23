@@ -69,13 +69,17 @@ class ReadinessState:
 
 
 def protocols_ready() -> bool:
-    """确认三个外部协议的解析、响应和流式渲染入口都已装配。"""
-    from ..protocols import anthropic, chat_completions, responses
+    """确认外部协议的解析、响应和流式渲染入口都已装配。
+
+    jev System One 无流式，只校验解析与响应渲染。
+    """
+    from ..protocols import anthropic, chat_completions, responses, systemone
 
     required = (
         (anthropic, ("parse_request", "render_response", "stream_events")),
         (chat_completions, ("parse_request", "render_response", "stream_frames")),
         (responses, ("parse_request", "render_response", "stream_events")),
+        (systemone, ("parse_request", "render_response")),
     )
     return all(
         callable(getattr(module, name, None)) for module, names in required for name in names

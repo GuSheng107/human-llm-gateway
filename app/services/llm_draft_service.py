@@ -685,6 +685,13 @@ class LlmDraftService:
             normalized = json.loads(task.normalized_request_json or "{}")
         except (ValueError, json.JSONDecodeError):
             normalized = {}
+        if task.protocol is InferenceProtocol.TYPE_SAFE_SYSTEMONE:
+            raise DomainError(
+                DomainErrorCode.VALIDATION_FAILED,
+                "jev System One 决策协议不支持 LLM 草稿生成",
+                status_code=400,
+                public_code="protocol_draft_unsupported",
+            )
         protocol_kind = {
             InferenceProtocol.OPENAI_CHAT: "chat",
             InferenceProtocol.OPENAI_RESPONSES: "responses",

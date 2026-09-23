@@ -14,7 +14,7 @@
 
 - 每个用户最多同时存在 10 个活动任务，所有 API Key、人工模式、真实 LLM 模式和 fallback 共用该限制；超限直接返回协议兼容的 429。
 
-- 支持的外部推理协议仅限 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages。
+- 支持的外部推理协议仅限 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 TypeSafe System One（jev 决策协议，`POST /v1/systemone`）。jev 无流式、无 Caller Tool，仅限人工回复策略的 API Key 调用，校验失败按官方契约返回 422。
 - Fake Model 的一个或多个原生端点和能力标签只用于目录展示，不得限制有效模型经任一受支持协议调用。
 - 人工回复必须先提交完整结果，再进行伪流式输出。回复中的 Tool Call 是调用方 IDE 声明的真实工具调用数据（Caller Tool Call）：网关只校验、保存、渲染和返回，不执行、不等待结果、不提供执行回调。
 - IM 回复当前为纯文本语义：整段正文作为最终文本写入与 Web 回复编辑器相同的规范化回复结构；IM 富文本回复（含 Tool Call）将在后续迭代重构，不再使用 DSL。
@@ -70,7 +70,7 @@
 
   - `app/connectors/`：IM 连接器和连接器注册表。
 
-  - `app/protocols/`：三种外部 LLM 协议的解析、错误和输出适配。
+  - `app/protocols/`：三种外部 LLM 协议与 jev System One 决策协议的解析、错误和输出适配。
 
   - `app/core/`：配置、数据库、安全、异常和日志基础设施。
 

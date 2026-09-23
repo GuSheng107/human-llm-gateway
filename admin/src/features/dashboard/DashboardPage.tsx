@@ -20,12 +20,14 @@ const PROTOCOL_LABELS: Record<string, string> = {
   openai_chat: "OpenAI Chat",
   openai_responses: "Responses",
   anthropic_messages: "Anthropic",
+  systemone: "Jev",
 };
 
 const PROTOCOL_COLORS: Record<string, string> = {
   openai_chat: "#2563eb",
   openai_responses: "#0f766e",
   anthropic_messages: "#d97706",
+  systemone: "#7c3aed",
 };
 
 // 统计卡片配色：左侧渐变条 + 同色系图标底。
