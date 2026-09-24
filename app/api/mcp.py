@@ -42,18 +42,27 @@ async def mcp_post(
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, ValueError) as exc:
+    except (json.JSONDecodeError, ValueError):
         return JSONResponse(
             status_code=400,
             content={
                 "jsonrpc": "2.0",
                 "id": None,
-                "error": {"code": -32700, "message": f"Parse error: {exc}"},
+                "error": {"code": -32700, "message": "Parse error"},
             },
         )
 
     # 批量请求支持
     if isinstance(body, list):
+        if len(body) > 20:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "jsonrpc": "2.0",
+                    "id": None,
+                    "error": {"code": -32600, "message": "Batch size limit exceeded"},
+                },
+            )
         if not body:
             return JSONResponse(
                 status_code=400,
@@ -74,8 +83,11 @@ async def mcp_post(
                     }
                 )
                 continue
-            results.append(handle_jsonrpc(db, user, item))
-        return JSONResponse(content=results)
+            result = handle_jsonrpc(db, user, item)
+            if result is not None:
+                results.append(result)
+        db.commit()
+        return JSONResponse(content=results) if results else Response(status_code=202)
 
     if not isinstance(body, dict):
         return JSONResponse(
@@ -88,7 +100,8 @@ async def mcp_post(
         )
 
     result = handle_jsonrpc(db, user, body)
-    return JSONResponse(content=result)
+    db.commit()
+    return JSONResponse(content=result) if result is not None else Response(status_code=202)
 
 
 @router.get("/")

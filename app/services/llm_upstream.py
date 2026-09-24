@@ -30,12 +30,13 @@ from ..core.constants import (
     LLM_MAX_STREAM_SECONDS,
 )
 from ..domain.errors import DomainError, DomainErrorCode
+from ..protocols.assistant import AnthropicStreamHistory
 
 
 class UpstreamChunk:
     """流式增量：text / reasoning / tool_call 片段（协议无关）。"""
 
-    __slots__ = ("reasoning", "status_code", "text", "tool_call")
+    __slots__ = ("native_response", "reasoning", "status_code", "text", "tool_call")
 
     def __init__(
         self,
@@ -44,11 +45,13 @@ class UpstreamChunk:
         reasoning: str = "",
         tool_call: dict[str, Any] | None = None,
         status_code: int | None = None,
+        native_response: dict[str, Any] | None = None,
     ) -> None:
         self.text = text
         self.reasoning = reasoning
         self.tool_call = tool_call
         self.status_code = status_code
+        self.native_response = native_response
 
 
 def _raise_upstream(status_code: int) -> DomainError:
@@ -365,6 +368,7 @@ async def stream_responses(
             if chunk.get("type") == "response.completed":
                 if (chunk.get("response") or {}).get("status") != "completed":
                     raise _raise_incomplete_stream()
+                yield UpstreamChunk(native_response=chunk["response"], status_code=resp.status_code)
                 return
             parsed = _parse_responses_event(chunk)
             if parsed is not None:
@@ -410,6 +414,7 @@ async def stream_anthropic_messages(
     thinking_delta / input_json_delta）并归一为 UpstreamChunk。"""
     budget = _StreamBudget()
     tool_json_buffers: dict[int, dict[str, str]] = {}
+    native_history = AnthropicStreamHistory()
     async with _upstream_response(
         base_url=base_url,
         url=_anthropic_messages_url(base_url),
@@ -423,8 +428,12 @@ async def stream_anthropic_messages(
             if (payload.get("type") or event) == "message_stop":
                 if tool_json_buffers:
                     raise _raise_incomplete_stream()
+                yield UpstreamChunk(
+                    native_response=native_history.response(), status_code=resp.status_code
+                )
                 return
             chunk = _parse_anthropic_event(event, payload, tool_json_buffers)
+            native_history.consume(event, payload)
             if chunk is not None:
                 chunk.status_code = resp.status_code
                 yield chunk
@@ -582,6 +591,8 @@ def collect_chunk(target: dict[str, Any], chunk: UpstreamChunk) -> None:
     Anthropic 形态：content_block_stop 一次性给出完整 arguments。
     无 index 的增量（理论上不存在；防御）回退到最近一个调用。
     """
+    if chunk.native_response is not None:
+        target["native_response"] = chunk.native_response
     if chunk.text:
         target["text"] = target.get("text", "") + chunk.text
     if chunk.reasoning:
