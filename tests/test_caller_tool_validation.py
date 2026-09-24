@@ -24,6 +24,14 @@ from tests.test_m7_llm_forward import (
     _llm_body,
 )
 
+# Caller Tool 只存在于三个对话协议；jev（TypeSafe System One）是决策协议，
+# 不承载工具调用，故不参与本文件的工具校验矩阵。
+_DIALOGUE_PROTOCOLS = tuple(
+    protocol
+    for protocol in InferenceProtocol
+    if protocol is not InferenceProtocol.TYPE_SAFE_SYSTEMONE
+)
+
 
 def _payload(protocol, choice, parallel=True):
     schema = {"type": "object", "required": ["q"], "properties": {"q": {"type": "string"}}}
@@ -58,7 +66,7 @@ def _calls(names):
     ]
 
 
-@pytest.mark.parametrize("protocol", list(InferenceProtocol))
+@pytest.mark.parametrize("protocol", _DIALOGUE_PROTOCOLS)
 @pytest.mark.parametrize("as_models", [False, True])
 @pytest.mark.parametrize(
     "choice,names,parallel,valid",
@@ -108,7 +116,7 @@ def test_structural_failures_are_rejected_in_both_stages(calls):
             validator(catalog, calls)
 
 
-@pytest.mark.parametrize("protocol", list(InferenceProtocol))
+@pytest.mark.parametrize("protocol", _DIALOGUE_PROTOCOLS)
 def test_task_submission_cannot_bypass_required_with_empty_calls(protocol):
     task = SimpleNamespace(
         protocol=protocol, raw_payload_json=json.dumps(_payload(protocol, "required"))
