@@ -453,7 +453,7 @@ effective = grouped                       if key has no api_key_fake_models rows
 
 `response_public_id` 使用 `resp_` + 32 位小写 hex（CSPRNG，例如 `resp_a10c46f728e24da0970ba9e7189f429d`）。这是网关在自己命名空间内签发的协议兼容 ID，不是冒充真实 OpenAI response ID；任务内部仍以 integer PK 为主键。生成时机是任务创建事务，而不是响应成功之后：发送第一个 Responses 响应事件（包括 `response.created` 和失败终态 `response.failed`）之前该 ID 必须已经持久化，全程沿用同一 ID。数据库条件约束保证 `protocol = openai_responses` 的任务 `response_public_id` 非空，Chat 和 Anthropic 任务保持为空。只有 COMPLETED 状态的响应可被后续 `previous_response_id` 引用；失败或取消的响应保留 ID，但不能成为历史链父节点。
 
-`response_payload_json` 是 Web 编辑器、LLM 草稿和三协议渲染器共享的唯一回复结构（IM 纯文本回复的整段正文以 final_text 写入该结构）：
+`response_payload_json` 是 Web 编辑器、LLM 草稿和四个协议渲染器共享的唯一回复结构（IM 纯文本回复的整段正文以 final_text 写入该结构）：
 
 ```json
 {
@@ -687,7 +687,7 @@ WHERE id = :task_id
 | 限制 | 默认值 | 含义 |
 | --- | --- | --- |
 | `max_chain_depth` | 20 | 沿 `previous_task_id` 可追溯的历史祖先节点数量上限；当前请求不计入。 |
-| `max_expanded_items` | 512 | 展开后规范化顶级上下文条目累计上限：一条 message、一个 tool call、一个 reasoning 项等各计 1 条；message 内的多个 content block 合并计 1 条。三种协议使用同一个预算函数，不做协议各自计数。 |
+| `max_expanded_items` | 512 | 展开后规范化顶级上下文条目累计上限：一条 message、一个 tool call、一个 reasoning 项等各计 1 条；message 内的多个 content block 合并计 1 条。四种协议使用同一个预算函数，不做协议各自计数。 |
 | `max_expanded_context_bytes` | 2 MiB | 规范化展开 JSON 的 compact UTF-8 字节上限：`ensure_ascii=false`、无缩进，序列化参数固定，避免不同实现对同一上下文得出不同字节数。 |
 
 Fake Model 与真实上游模型解耦，领域层不存在通用 tokenizer，因此网关不在准入阶段估算 token。M7 在协议 adapter 中处理真实模型的 token 限制：有可靠本地 tokenizer 就预检；没有就正常转发并把上游明确的上下文超限错误映射为 400 `context_length_exceeded`。每次推理不强制调用额外远程 `count_tokens`。

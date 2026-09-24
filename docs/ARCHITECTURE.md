@@ -325,7 +325,7 @@ stateDiagram-v2
 1. `raw_payload`：调用方原始 JSON，完整落库并用于同协议保真转发。
 2. `normalized_request`：模型、消息文本、tools、stream 等标准语义，用于展示、人工编辑和跨协议转换。`context` 是展示和推理的唯一展开来源；Chat/Anthropic 的 `messages`、Responses 的 `input` 仅作为原始诊断保留，不再次拼接。
 
-人工回复使用第三个统一表示 `normalized_reply`，包含 reasoning、tool calls 和 final text。Web 编辑器直接读写该结构；IM 回复当前为纯文本语义，整段正文作为 final text 写入同一结构（富文本回复后续迭代重构）；三个协议渲染器只从该结构生成 JSON/SSE。工具调用名称必须命中请求声明，参数必须是 JSON 对象并通过声明 Schema 校验；服务端按顺序生成 `call_01`、`call_02` 等 ID。提交成功后结构不可撤销或覆盖。
+人工回复使用第三个统一表示 `normalized_reply`，包含 reasoning、tool calls 和 final text。Web 编辑器直接读写该结构；IM 回复当前为纯文本语义，整段正文作为 final text 写入同一结构（富文本回复后续迭代重构）；四个协议渲染器只从该结构生成 JSON/SSE（jev System One 无流式，仅生成 JSON）。工具调用名称必须命中请求声明，参数必须是 JSON 对象并通过声明 Schema 校验；服务端按顺序生成 `call_01`、`call_02` 等 ID。提交成功后结构不可撤销或覆盖。
 
 未知字段保留在原始表示中。同协议默认原样透传；`previous_response_id` 等声明为网关控制的字段由服务层验证并等价展开。跨协议严格执行字段转换矩阵，无法等价表达的供应商专有字段返回 400，不能静默删除。
 
@@ -462,7 +462,7 @@ HTTP 和 WebSocket 请求进入应用时绑定 trace。访问日志忽略 `/heal
 ## 13. 部署与运维架构
 
 - `/healthz` 只表示进程存活，不检查数据库、连接器或工具执行状态。
-- `/readyz` 固定 5 项就绪条件，全部满足才返回 200：①应用 startup 已完成；②数据库初始化、`schema_version` 校验和启动阶段写入成功；③主加密密钥加载成功并能解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）；④三个协议 adapter/renderer registry 初始化成功；⑤任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。未满足时返回 503。
+- `/readyz` 固定 5 项就绪条件，全部满足才返回 200：①应用 startup 已完成；②数据库初始化、`schema_version` 校验和启动阶段写入成功；③主加密密钥加载成功并能解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）；④四个协议 adapter/renderer registry 初始化成功（jev 无流式，只校验解析与响应渲染入口）；⑤任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。未满足时返回 503。
 - `/readyz` 不检查任何用户 IM 是否在线、不检查真实 LLM 连通、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
 - `/readyz` 本身不执行数据库、IM 或真实 LLM 探测，只读取启动缓存和后台协调器任务状态，避免 Kubernetes 每 5-10 秒的 readiness probe 与 SQLite 全库写锁产生高频竞争。
 - 用户可以使用调用方声明的 tool；若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。`/readyz` 不检查工具执行状态。
