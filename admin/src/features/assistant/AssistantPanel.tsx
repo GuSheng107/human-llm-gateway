@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { useLocation } from "react-router-dom";
 import {
   createAssistantSession,
@@ -13,6 +13,7 @@ import { listLlmConfigs } from "../../api/llmConfigs";
 import { MarkdownText } from "../../components/data-display/MarkdownText";
 import { notify } from "../../components/feedback/Toast";
 import { confirmAction } from "../../components/feedback/ConfirmDialog";
+import { useDialogFocus } from "../../components/feedback/Overlay";
 import { Button } from "../../components/ui/Button";
 import { Icon } from "../../icons";
 import { copyText } from "../../utils/clipboard";
@@ -24,7 +25,7 @@ import type {
   LlmConfig,
 } from "../../types/gateway";
 import { useAuth } from "../auth/AuthContext";
-import { currentEditBridge } from "./bridge";
+import { currentEditBridge, subscribeEditBridge } from "./bridge";
 import { buildContextSnapshot, featureForRoute } from "./contextRegistry";
 import { useAssistant } from "./AssistantContext";
 
@@ -77,6 +78,7 @@ export function AssistantPanel() {
   const { open, setOpen, sessions, activeSessionId, setActiveSessionId, refreshSessions } =
     useAssistant();
   const location = useLocation();
+  const panelRef = useDialogFocus(() => setOpen(false), open);
   const [messages, setMessages] = useState<AssistantMessage[]>([]);
   const [usage, setUsage] = useState<AssistantSessionUsage | null>(null);
   const [input, setInput] = useState("");
@@ -93,7 +95,7 @@ export function AssistantPanel() {
   const sessionMenuRef = useRef<HTMLDivElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
 
-  const bridge = currentEditBridge();
+  const bridge = useSyncExternalStore(subscribeEditBridge, currentEditBridge);
   const feature = featureForRoute(location.pathname);
 
   /** 打开面板时强制刷新 LLM 配置与会话列表——配置是异步可变的。 */
@@ -245,6 +247,8 @@ export function AssistantPanel() {
       event?.preventDefault();
       const text = input.trim();
       if (!text || sending) return;
+      // 发送前重取当前标签页的快照，不能复用面板打开时的草稿。
+      const sendContext = buildContextSnapshot(location.pathname, location.search);
       const sessionId = await ensureSession();
       if (!sessionId) return;
       setSending(true);
@@ -258,7 +262,7 @@ export function AssistantPanel() {
           role: "user",
           kind: "normal",
           text,
-          page_context: context,
+          page_context: sendContext,
           upstream_metadata: null,
           created_at: new Date().toISOString(),
         },
@@ -268,7 +272,7 @@ export function AssistantPanel() {
       try {
         await streamAssistantMessage(
           sessionId,
-          { text, page_context: context },
+          { text, page_context: sendContext },
           {
             onCompress: () => {
               compressed = true;
@@ -307,7 +311,7 @@ export function AssistantPanel() {
           try {
             const reply = await sendAssistantMessage(sessionId, {
               text,
-              page_context: context,
+              page_context: sendContext,
             });
             setMessages((prev) => [...prev, reply]);
             void refreshSessions();
@@ -329,7 +333,7 @@ export function AssistantPanel() {
         setSending(false);
       }
     },
-    [input, sending, context, ensureSession, refreshSessions, appendInlineError],
+    [input, sending, location.pathname, location.search, ensureSession, refreshSessions, appendInlineError],
   );
 
   const copyMessage = async (message: AssistantMessage) => {
@@ -430,7 +434,11 @@ export function AssistantPanel() {
 
       {open && (
         <aside
-          className="fixed inset-y-0 right-0 z-40 flex w-full max-w-[420px] flex-col border-l border-slate-200 bg-white shadow-xl"
+          ref={panelRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          className="fixed inset-y-0 right-0 z-60 flex w-full max-w-[420px] flex-col border-l border-slate-200 bg-white shadow-xl"
           aria-label="小助手面板"
         >
           <header className="flex items-center gap-2 border-b border-slate-100 px-4 py-3">
@@ -620,6 +628,23 @@ export function AssistantPanel() {
               <span>当前页面无可用上下文</span>
             )}
           </div>
+
+          {(context?.resource.task_id || context?.resource.trace_id) && (
+            <div className="space-y-2 border-b border-slate-100 px-4 py-2">
+              <div className="flex flex-wrap gap-2">
+                {context.resource.task_id && (<>
+                  <Button variant="ghost" disabled={!canSend || sending} onClick={() => setInput("请调用 get_request_view 查看当前任务，解释本次请求及工具约束。")}>解读请求</Button>
+                  <Button variant="ghost" disabled={!canSend || sending || !context.unsaved_edit} onClick={() => setInput("请调用 validate_reply_draft，校验上下文中当前任务的 unsaved_edit 未保存草稿，说明结果；不要保存或提交。")}>检查当前草稿</Button>
+                </>)}
+                <Button variant="ghost" disabled={!canSend || sending} onClick={() => setInput(context.resource.trace_id ? "请调用 get_trace_summary 总结当前 trace 的最近事件与错误。" : "请先用 get_request_view 取得当前任务的 request_id，再用 get_trace_summary 总结事件与错误。")}>查看调用日志</Button>
+              </div>
+              <p className="text-[11px] text-slate-500">仅查询和建议，不保存草稿、不提交回复、不执行调用方工具。</p>
+              <details className="text-[11px] text-slate-500">
+                <summary className="cursor-pointer">查看待发送上下文</summary>
+                <p className="mt-1">任务：{context.resource.task_id ?? "无"}；{context.unsaved_edit ? `草稿正文 ${context.unsaved_edit.final_text?.length ?? 0} 字，工具调用 ${context.unsaved_edit.tool_calls?.length ?? 0} 条` : "无可解析草稿"}。发送前服务端过滤敏感字段。</p>
+              </details>
+            </div>
+          )}
 
           <div ref={listRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4 text-sm">
             {showWelcome && (
