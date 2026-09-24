@@ -22,6 +22,7 @@ from ...repositories.connections import ConnectionRepository
 from ...repositories.llm_configs import LlmConfigRepository
 from ...repositories.models import User
 from ...repositories.tasks import TaskRepository
+from .workbench_tools import workbench_tool_definitions
 
 # ---------------------------------------------------------------------------
 # Tool 定义类型
@@ -620,6 +621,8 @@ _TOOLS: list[McpToolDef] = [
         handler=_handle_validate_caller_tool_arguments,
     ),
 ]
+
+_TOOLS.extend(McpToolDef(**definition) for definition in workbench_tool_definitions())
 
 # name -> McpToolDef 快速查找
 _TOOL_REGISTRY: dict[str, McpToolDef] = {t.name: t for t in _TOOLS}

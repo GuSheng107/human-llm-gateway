@@ -23,6 +23,7 @@ import { friendlyErrorMessage } from "../../utils/notify";
 import type { LlmConfig, ReplyDraft, TaskDetail, ToolCall } from "../../types/gateway";
 import { buildInitialArguments } from "./toolArguments";
 import { registerEditBridge } from "../assistant/bridge";
+import { useAssistant } from "../assistant/AssistantContext";
 import { PROTOCOL_LABELS, formatDeadline, isTerminalTaskState } from "./labels";
 
 function isEmptyDraft(draft: ReplyDraft): boolean {
@@ -145,6 +146,7 @@ export interface TaskEditorProps {
 }
 
 export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
+  const { setOpen: setAssistantOpen } = useAssistant();
   const [task, setTask] = useState<TaskDetail | null>(null);
   const [error, setError] = useState("");
   const [llmConfigs, setLlmConfigs] = useState<LlmConfig[]>([]);
@@ -173,14 +175,25 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
   const [draftVersion, setDraftVersion] = useState<number | null>(null);
   // 截止时间每秒重渲染（formatDeadline 是"剩余时间"语义）。
   const [, setTick] = useState(0);
+  const currentTaskId = useRef(taskId);
+  currentTaskId.current = taskId;
 
   const load = useCallback(async () => {
     setError("");
     try {
-      setTask(await getTask(taskId));
+      const loaded = await getTask(taskId);
+      if (currentTaskId.current === taskId) setTask(loaded);
     } catch (caught) {
-      setError(friendlyErrorMessage(caught, "加载失败"));
+      if (currentTaskId.current === taskId) setError(friendlyErrorMessage(caught, "加载失败"));
     }
+  }, [taskId]);
+
+  useEffect(() => {
+    setTask(null);
+    setReasoning("");
+    setFinalText("");
+    setToolCalls([]);
+    registerEditBridge(null);
   }, [taskId]);
 
   useEffect(() => void load(), [load]);
@@ -213,17 +226,17 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
     setToolCalls(toEditors(draft));
   }, []);
   useEffect(() => {
-    if (!task || appliedTaskRef.current === task.id) return;
+    if (!task || task.id !== taskId || appliedTaskRef.current === task.id) return;
     appliedTaskRef.current = task.id;
     const activeDraft = task.active_draft_id
       ? task.drafts.find((d) => d.id === task.active_draft_id && d.state === "editing")
       : null;
     const initial = activeDraft ?? task.result_draft;
-    if (initial) applyDraft(initial);
+    applyDraft(initial ?? { reasoning: null, final_text: null, tool_calls: [] });
     // 同步草稿版本（乐观锁）与 activeDraftId
     setActiveDraftId(activeDraft ? activeDraft.id : null);
     setDraftVersion(activeDraft ? activeDraft.version : null);
-  }, [task, applyDraft]);
+  }, [task, taskId, applyDraft]);
 
   const liveDraft = useMemo(() => {
     const result = buildDraft(reasoning, toolCalls, finalText);
@@ -234,7 +247,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
   const liveDraftRef = useRef<ReplyDraft | null>(liveDraft);
   liveDraftRef.current = liveDraft;
   useEffect(() => {
-    if (!task) return;
+    if (!task || task.id !== taskId) return;
     registerEditBridge({
       getDraft: () => {
         const draft = liveDraftRef.current;
@@ -256,7 +269,7 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
       }),
     });
     return () => registerEditBridge(null);
-  }, [task]);
+  }, [task, taskId, liveDraft]);
 
   const doSave = useCallback(async () => {
     if (!task || !task.can_edit || saving) return;
@@ -509,7 +522,12 @@ export function TaskEditor({ taskId, onSubmitted }: TaskEditorProps) {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {canEdit && (
+            <Button variant="ghost" onClick={() => setAssistantOpen(true)}>
+              请小助手检查
+            </Button>
+          )}
           {llmConfigs.length > 0 && canEdit && (
             <Button variant="ghost" onClick={openGenerate}>
               <Icon name="gateway" className="h-4 w-4" />

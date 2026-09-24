@@ -59,7 +59,7 @@ const FEATURES: Record<string, FeatureSpec> = {
     resource: (_p, search) => {
       const out: Record<string, string> = {};
       const q = params(search);
-      if (q["task_id"]) out.task_id = q["task_id"];
+      if (q["focus"]) out.task_id = q["focus"];
       if (q["state"]) out.state_filter = q["state"];
       return out;
     },
@@ -114,7 +114,7 @@ export const CONTEXT_VERSIONS: Record<string, number> = {
   console: 1,
   task_list: 1,
   task_detail: 1,
-  replies: 1,
+  replies: 2,
   api_keys: 1,
   llm_configs: 1,
   connections: 1,
@@ -149,15 +149,22 @@ export function buildContextSnapshot(
     return null;
   }
   const spec = FEATURES[feature];
-  const bridge = currentEditBridge();
-  const unsavedEdit = bridge?.getDraft ? bridge.getDraft() : null;
-  // 任务详情资源字段由编辑器桥补充（drawer 无路由参数）。
-  const bridgeResource = bridge?.getResource ? bridge.getResource() : {};
+  const resource = spec.resource(pathname, search);
+  const bridge = feature === "replies" || feature === "task_detail" ? currentEditBridge() : null;
+  const bridgeResource = bridge?.getResource() ?? {};
+  // 路由已换到另一任务而编辑器仍在卸载/加载时，不携带旧任务的草稿。
+  const matchesTask = bridgeResource.task_id && (!resource.task_id || resource.task_id === bridgeResource.task_id);
+  if (matchesTask) {
+    const allowed = feature === "replies" ? ["task_id"] : ["task_id", "public_id", "state", "model", "protocol", "strategy", "delivery"];
+    for (const key of allowed) {
+      if (bridgeResource[key]) resource[key] = bridgeResource[key];
+    }
+  }
   return {
     route: pathname,
     feature,
-    resource: { ...spec.resource(pathname, search), ...bridgeResource },
-    unsaved_edit: unsavedEdit,
+    resource,
+    unsaved_edit: matchesTask ? bridge?.getDraft() ?? null : null,
     context_version: CONTEXT_VERSIONS[feature] ?? 1,
   };
 }

@@ -4,13 +4,13 @@ import { Icon } from "../../icons";
 const dialogStack: HTMLElement[] = [];
 const focusSelector = 'button:not(:disabled), a[href], input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])';
 
-export function useDialogFocus(onClose: () => void) {
+export function useDialogFocus(onClose: () => void, enabled = true) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef(onClose);
   closeRef.current = onClose;
   useEffect(() => {
     const dialog = dialogRef.current;
-    if (!dialog) return;
+    if (!dialog || !enabled) return;
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     dialogStack.push(dialog);
     const candidates = () => Array.from(dialog.querySelectorAll<HTMLElement>(focusSelector))
@@ -19,6 +19,9 @@ export function useDialogFocus(onClose: () => void) {
     (input ?? candidates()[0] ?? dialog).focus();
     const handleKey = (event: KeyboardEvent) => {
       if (dialogStack[dialogStack.length - 1] !== dialog) return;
+      // 全局确认框覆盖普通抽屉时，其键盘行为由确认框接管。
+      const alert = document.activeElement?.closest('[role="alertdialog"]');
+      if (alert && !dialog.contains(alert)) return;
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopPropagation();
@@ -47,7 +50,7 @@ export function useDialogFocus(onClose: () => void) {
       if (index >= 0) dialogStack.splice(index, 1);
       if (previous?.isConnected) previous.focus();
     };
-  }, []);
+  }, [enabled]);
   return dialogRef;
 }
 
