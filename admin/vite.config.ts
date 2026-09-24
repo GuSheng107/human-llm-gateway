@@ -1,4 +1,6 @@
-import { defineConfig } from "vite";
+// defineConfig 取自 vitest/config：vite 的版本不认识 `test` 键，
+// 在 IDE/tsc 下会报"对象字面量只能指定已知属性"。
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
