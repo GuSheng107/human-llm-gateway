@@ -81,7 +81,7 @@ def test_overdue_waiting_human_swept_to_timed_out(client, created_user, created_
     assert task.public_error_code == "request_timeout"
 
 
-def test_overdue_forwarding_llm_swept_to_timed_out(client, created_user, created_key) -> None:
+def test_overdue_forwarding_llm_swept_to_failed(client, created_user, created_key) -> None:
     task_id = _make_waiting_task(created_key.id, created_user.user_id)
     _mutate(
         task_id,
@@ -93,8 +93,12 @@ def test_overdue_forwarding_llm_swept_to_timed_out(client, created_user, created
     with database.SessionLocal() as session:
         counts = TaskSweeper().sweep_once(session)
 
-    assert counts["timed_out"] == 1
-    assert _load(task_id).state is TaskState.TIMED_OUT
+    assert counts["timed_out"] == 0
+    assert counts["failed"] == 1
+    row = _load(task_id)
+    assert row.state is TaskState.FAILED
+    assert row.public_error_code == "upstream_error"
+    assert row.slot_released_at is not None
 
 
 def test_fallback_claim_and_generation_have_independent_budgets(

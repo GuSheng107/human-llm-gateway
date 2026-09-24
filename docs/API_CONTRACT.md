@@ -396,7 +396,7 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 }
 ```
 
-`arguments` 必须是 JSON 对象，并符合请求中对应工具的 JSON Schema（required、type、enum、properties 等约束）。工具调用名称、顺序和数量必须来自调用方声明；服务端忽略客户端/上游携带的 ID，按顺序生成稳定的 `call_01`、`call_02`……。用户可以使用调用方声明的 tool，但网关不执行任何工具。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
+`arguments` 必须是 JSON 对象，并符合请求中对应工具的 JSON Schema（required、type、enum、properties 等约束）。工具调用名称必须精确命中调用方声明；参数、调用 ID 和调用顺序保留，ID 必须非空且在本条回复内唯一，服务端不重新编号。用户可以使用调用方声明的 tool，但网关不执行任何工具。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。提交前可以预览、编辑或丢弃草稿；提交成功后没有撤销接口，草稿不可继续修改。竞争失败返回 409 `task_already_resolved`，并记录晚到提交审计。
 
 `POST /api/tasks/{id}/drafts/generate` 的 `selected_tool_names` 语义如下：省略表示沿用请求工具的旧生成语义；传入空数组表示本次生成不提供工具；传入非空数组时，上游只收到这些完整工具定义，且顺序保持一致，单个工具会被设置为指定调用。生成返回后必须校验上游调用的数量、顺序、名称、参数对象和 Schema；校验失败的草稿不得落库。`mode=reasoning` 始终不提供工具。
 
@@ -423,6 +423,24 @@ Fake Model 字段只描述对外目录，不包含 LLM 配置 ID、真实模型�
 | POST | `/api/assistant/sessions/{id}/messages` | 使用选定 LLM 配置发送文本和当前页面上下文快照。 |
 
 每次发送的上下文包含当前浏览器标签页的 route、feature、选中资源、上下文版本和当前未提交编辑内容的白名单摘要。切换页面或资源会替换待发送上下文，不自动携带旧页面数据；历史消息保留各自发送时已经过滤的快照。后端拒绝密码、完整 API Key、Authorization、Cookie、Token、Secret 和 IM/LLM 凭据。没有自己的启用 LLM 配置时，前端禁用发送和新建会话入口；历史会话仍可阅读。历史会话绑定的配置后来停用或删除时同样只读，发送返回 400。用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。
+
+### 10.1 内部只读工具与三协议续轮
+
+小助手可调用服务端注册的只读 MCP 查询/校验；Caller Tool 定义绝不成为可执行工具。参数建议只展示和复制，不保存草稿、提交回复、代替风险确认或回填编辑器。
+
+| 上游协议 | 工具定义 | 续轮结果 |
+| --- | --- | --- |
+| Chat Completions | `tools[].function` | assistant `tool_calls` 后接 `role=tool`，保留 `tool_call_id` |
+| Responses | 平铺 `tools[].name/parameters` | 原生 output 项后接 `function_call_output`，使用 `call_id` |
+| Anthropic Messages | `tools[].input_schema` | assistant `tool_use` 后紧接 user `tool_result`，保留 `tool_use_id/is_error` |
+
+同步和 `/messages/stream` 使用相同工具校验与审计入口。工具中间轮正文不输出；SSE 最终轮完整校验、脱敏后发送 `delta` 和落库后的 `done`。超过 5 个上游轮次、同轮超过 20 个工具调用、ID 重复、参数损坏、无正文或超过配置总时长均返回失败，不保存空成功消息。压缩调用独立受同一配置超时约束，失败保留历史。
+
+`POST /api/mcp/` 使用登录会话认证的 JSON-RPC 2.0；支持 `initialize`、`ping`、`tools/list`、`tools/call`。notification 返回 HTTP 202 且无正文，批量请求最多 20 项。非法 envelope 返回 `-32600`；未知方法 `-32601`；工具名或参数不合法 `-32602`；内部异常固定为 `-32603 Internal error`。业务拒绝通过 `result.isError=true` 返回通用说明，不回显内部异常。
+
+所有工具定义附 `readOnlyHint=true`。参数按声明 JSON Schema 校验，禁止未知参数；输入 64 KiB、结果 32 KiB 上限，超限明确报错。任务内容和 Caller Tool Schema/参数校验仅限所有者（管理员身份不越权），监管列表仍只显示已授权摘要。页面 route 去除 query/fragment，嵌套对象、数组和 JSON 文本中的凭据字段递归脱敏，附件内联数据省略。Schema 查询保留参数结构，但不发送敏感属性的默认值/常量/示例。
+
+HTTP 与助手均在执行后写审计：操作者、工具名、真实成功/失败/拒绝结果、耗时、参数数量、脱敏次数和 trace；不记录参数名/值或结果正文。工具执行失败可以把安全错误结果回传上游继续回答，但不会改写任务数据。
 
 ## 11. 设置、日志与审计
 
@@ -535,11 +553,11 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | Fake Model | `model` | `model` | `model` | 用于权限校验和对外身份；上游请求使用 LLM 配置的真实模型，响应改回 Fake Model。 |
 | 输出上限 | `max_completion_tokens` 或兼容 `max_tokens` | `max_output_tokens` | `max_tokens` | 数值与边界等价转换；同一请求同时给出冲突字段时返回 400。 |
 | 采样参数 | `temperature`, `top_p` | `temperature`, `top_p` | `temperature`, `top_p` | 目标协议支持且范围兼容时转换，否则 400。 |
-| 停止序列 | `stop` | 适配器声明的等价字段 | `stop_sequences` | 字符串转单元素数组；数量或限制超出目标能力时返回 400。 |
+| 停止序列 | `stop` | 无通用等价字段 | `stop_sequences` | Chat 与 Anthropic 的字符串/数组转换；转 Responses 显式提交停止序列返回 400。 |
 | 流式开关 | `stream` | `stream` | `stream` | 布尔值等价转换；事件结构由目标协议渲染器负责。 |
 | 函数工具 Schema | `tools[].function.parameters` | function tool parameters | `tools[].input_schema` | JSON Schema 子集等价转换；目标不支持的关键字或托管工具类型返回 400。 |
 | 工具选择 | `none/auto/required/指定函数` | 对应 function tool choice | `none/auto/any/tool` | `required` ↔ `any`，指定函数 ↔ `tool{name}`；其他不可等价值返回 400。 |
-| 并行工具控制 | `parallel_tool_calls` | `parallel_tool_calls` | `disable_parallel_tool_use` | 布尔语义取反转换；目标版本不支持时返回 400。 |
+| 并行工具控制 | `parallel_tool_calls` | `parallel_tool_calls` | `tool_choice.disable_parallel_tool_use` | 布尔语义取反转换；目标版本不支持时返回 400。 |
 | 工具调用/结果 | assistant tool_calls / tool role | function_call / function_call_output | tool_use / tool_result | 保留 call ID、name、JSON arguments 和结果配对；结构不完整返回 400。 |
 | reasoning 输出 | `reasoning_content` 兼容字段 | reasoning output item | thinking content block | 已生成文本可进入统一 reply schema；签名等不可伪造字段不转换。 |
 | reasoning 请求控制 | 供应商扩展 | `reasoning` 等控制 | thinking/budget 配置 | 只有矩阵后续明确证明等价的组合才转换，其他跨协议请求返回 400。 |
@@ -555,6 +573,64 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 | 未知扩展字段 | 原样保留 | 原样保留 | 原样保留 | 同协议原样透传；跨协议返回 400 `unsupported_parameter`。 |
 
 转换适配器必须为每个非透传字段记录字段名、处理类型和结果，不记录字段值。新增支持前先更新此矩阵和契约测试。
+
+### 12.7 协议归一维护约束
+
+请求、响应和内容转换位于 `app/protocols/`。三种请求的规范化 options 保留未知
+字段供跨协议显式拒绝，原始请求独立完整落库。自动转发和手动生成共用转换器。
+
+- 同协议保留原始字段，包括未知顶级/嵌套字段。Responses 的网关
+  `previous_response_id` 仅消费该引用并把 input 替换成已展开 context；其余
+  tools、tool_choice、store=false 和扩展字段保留。手动过滤上下文也使用已展开
+  context。请求传输的 stream 由本次调用路径控制，不能向非流式读取器请求 SSE。
+- 跨协议工具定义分别编码为 Chat 嵌套 function、Responses 扁平 function、
+  Anthropic input_schema。工具历史保留调用 ID、名称、对象参数与结果；
+  Responses 的输出项 id 仅为项标识，工具关联使用 call_id，不能混用。
+- 跨协议检查消息、文本块、工具定义和 tool_choice 的未知字段，不能在转换前
+  静默过滤。非文本附件、非函数托管工具、非空 annotations、历史 reasoning/thinking、
+  tool_result.is_error=true 等未声明等价语义返回 400。前置 system/developer
+  指令按原顺序合并到 Anthropic system；对话中间的 system 指令不能无损提升
+  到顶层，返回 400。
+- OpenAI 两协议之间转换 json_object / json_schema 输出格式并保留 strict；
+  转 Anthropic 的结构化输出及函数 strict=true 返回 400。strict=false 可消费为
+  不要求强制 Schema 的普通函数。Schema 内容原样保留，不删改关键字。
+- 用户标识仅支持 user、safety_identifier 和 metadata.user_id 的对应转换；
+  同时给出不一致标识或额外 metadata 键返回 400。空值视为未提供。
+- Chat stream_options.include_usage 由网关的调用方协议渲染器消费；未知
+  stream_options 字段跨协议拒绝。温度与 top_p 必须满足目标协议范围。
+- 上游非流式及流式参数必须是合法 JSON object；损坏 JSON、非对象参数、缺失
+  调用关联不以空对象或伪造 ID 修补。Responses failed/incomplete/error 与流式
+  异常 EOF 不能作为成功回复保存。上游省略末帧分隔空行时，只要该事件 JSON
+  完整仍按完整事件处理，成败由 `[DONE]`、`response.completed`、`message_stop`
+  等终止事件决定；被截断的事件依旧显式失败。Chat 同帧多个工具、分片参数和
+  并行 index 分别聚合，不重复正文/思考，不丢失完整参数。
+- 流式接收仍遵循当前“聚合完整结果、校验、原子保存、回放”行为。此次归一
+  不代表实时首事件转发；取消、预算和终态规则见 §12.8。
+
+验证以锁定的 OpenAI/Anthropic SDK 类型和可控 HTTP Transport 为依据，覆盖
+三种调用协议 × 三种上游协议 × 流式/非流式的 18 种基础组合；不调用真实模型。
+
+### 12.8 转发生命周期与资源预算
+
+- 人工等待、直接转发和 fallback 全程检测调用方断开。断开与任务完成以数据库
+  条件更新裁决；未完成任务进入 CANCELLED 并幂等释放名额。取消准入线程时先
+  等待创建事务完成再清理，不能遗留已占用名额。取消必须传入真实上游 HTTP
+  读取协程并等待连接关闭；禁用用户等其他路径产生的数据库终态同样终止上游。
+- 人工先提交则不触发 fallback；fallback 先声明则拒绝晚到人工提交。声明失败的
+  竞争者不得重试请求或把正在转发的任务改为超时。人工等待截止与上游生成预算独立。
+- 直转与 fallback 的上游网络错误、超时、非法回复和配置失效均进入 FAILED，
+  对外返回通用 500；不可等价转换参数仍为 400。只有人工等待耗尽且未启动可用
+  fallback 才进入 TIMED_OUT / 504。后台收敛器对过期的转发任务同样记录 FAILED。
+- 完整结果仍先聚合、校验并保存，再发送 JSON 或回放 SSE。开始发送仅允许
+  RESPONSE_READY → RESPONDING；已取消或失败的任务不能重新开始输出。名额
+  保持到实际响应发送完成，最后一帧发送阻塞期间不得提前进入 COMPLETED。
+  发送失败或断连会关闭输出生成器并终止任务，不能让后台上游继续接受回复。
+- 三协议、流式和非流式共用 HTTP 地址复检与总预算：每次请求前重新进行现有
+  SSRF 地址分档校验，不跟随重定向，不读取非 2xx 错误正文。总预算为 600 秒，
+  包含地址复检、连接、等待响应头和读取正文；配置 timeout_seconds 仍约束单次 I/O。
+- JSON 响应按读取块累计最多 8 MiB；SSE 按接收块累计最多 16 MiB，单行最多
+  1 MiB。超限立即停止读取并关闭连接，即使上游尚未 EOF 或未发换行也不能继续
+  无限缓存。地址复检沿用现有 DNS 校验，并非解析结果固定到连接的 DNS pinning。
 
 ## 13. OpenAI Chat Completions
 
@@ -758,3 +834,18 @@ HTTP 轮询响应返回单调 cursor；重复 cursor、ACK 或回复必须幂等
 - 推理响应变更必须增加三协议契约测试和流式事件顺序测试。
 - 管理 API 变更必须同步 TypeScript 类型与前端调用层。
 - 新错误必须使用稳定错误码，并测试不泄露 Secret 和内部实现。
+
+### Caller Tool 校验阶段（维护补充）
+
+| 入口 | 强制校验 | 不通过时 |
+| --- | --- | --- |
+| Web 保存/更新、手动 LLM 草稿、工具参数建议 | 名称声明、可生成类型、JSON object/Schema；完整调用另校验 ID 非空且唯一 | 拒绝保存无效内容；生成失败不落库 |
+| Web 最终提交、IM 普通回复与 `/commit`、自动 LLM/fallback 回复 | 上述结构规则 + tool_choice + 并行约束；空调用列表也检查 | 人工回复不接受、保持可编辑；自动转发走既有失败收尾 |
+
+`auto` 允许没有调用，`none` 禁止调用，`required`（Anthropic `any`）至少一次，
+指定工具时所有调用都必须是该工具且至少一次。禁止并行时最多一次调用。
+Anthropic 的 `tool_choice.type` 大小写不敏感（`Any` 与 `any` 同义，不得静默
+退化为 `auto`）；禁用并行字段位于 `tool_choice.disable_parallel_tool_use`。
+可编辑草稿和单工具参数建议不要求提前满足最终回复策略。
+IM 提交已有含工具草稿时，也必须已在 Web 确认本任务工具风险告知。
+网关不执行 Caller Tool；自动转发不要求人工确认告知。

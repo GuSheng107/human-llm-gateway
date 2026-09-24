@@ -301,6 +301,7 @@ def test_generate_rejects_tool_arguments_that_break_declared_schema(
                                     "name": "lookup",
                                     "arguments": '{"city": 123}',
                                 },
+                                "id": "call_lookup",
                             }
                         ],
                     }
@@ -1038,8 +1039,9 @@ def test_anthropic_response_raises_on_missing_content() -> None:
     assert exc.value.code is DomainErrorCode.UPSTREAM_ERROR
 
 
-def test_chat_response_with_invalid_tool_arguments_falls_back_to_empty() -> None:
-    """tool_calls.arguments 是非 JSON 字符串时回退到 {}。"""
+def test_chat_response_with_invalid_tool_arguments_is_rejected() -> None:
+    """损坏 JSON 不得伪装成合法空参数。"""
+    from app.domain.errors import DomainError
     from app.services.llm_draft_service import _parse_chat_response
 
     payload = {
@@ -1058,8 +1060,8 @@ def test_chat_response_with_invalid_tool_arguments_falls_back_to_empty() -> None
             }
         ]
     }
-    draft = _parse_chat_response(payload)
-    assert draft.tool_calls[0].arguments == {}
+    with pytest.raises(DomainError):
+        _parse_chat_response(payload)
 
 
 def test_generate_draft_requires_owner_to_be_active(

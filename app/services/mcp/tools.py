@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from ...domain.enums import UserRole
+from ...domain.enums import TaskState, UserRole
+from ...domain.errors import DomainError, DomainErrorCode
 from ...repositories.api_keys import ApiKeyRepository
 from ...repositories.catalog import FakeModelRepository
 from ...repositories.connections import ConnectionRepository
@@ -43,7 +45,15 @@ class McpToolDef:
     ) -> None:
         self.name = name
         self.description = description
-        self.input_schema = input_schema
+        self.input_schema = deepcopy(input_schema)
+        self.input_schema.setdefault("additionalProperties", False)
+        for field, schema in self.input_schema.get("properties", {}).items():
+            if field in ("page", "page_size", "task_id"):
+                schema.setdefault("minimum", 1)
+            if field == "page_size":
+                schema.setdefault("maximum", 100)
+            if schema.get("type") == "string":
+                schema.setdefault("maxLength", 2048)
         self.handler = handler
 
     def to_mcp_spec(self) -> dict[str, Any]:
@@ -52,6 +62,7 @@ class McpToolDef:
             "name": self.name,
             "description": self.description,
             "inputSchema": self.input_schema,
+            "annotations": {"readOnlyHint": True, "destructiveHint": False, "openWorldHint": False},
         }
 
 
@@ -66,8 +77,6 @@ def _handle_list_tasks(session: Session, user: User, args: dict[str, Any]) -> di
     page_size = min(int(args.get("page_size", 20)), 100)
     search = args.get("search")
     state = args.get("state")
-
-    from ...domain.enums import TaskState
 
     state_enum = None
     if state:
@@ -385,7 +394,6 @@ def _handle_get_caller_tool_schema(
     session: Session, user: User, args: dict[str, Any]
 ) -> dict[str, Any]:
     """查看指定任务的 Caller Tool 定义（脱敏：不含原始请求正文与附件数据）。"""
-    from ...domain.errors import DomainError
     from ...repositories.models import RequestTask
     from ..caller_tool_service import catalog_for_task
     from ..request_view_service import RequestViewService
@@ -393,11 +401,8 @@ def _handle_get_caller_tool_schema(
     task_id = int(args.get("task_id") or 0)
     tool_name = str(args.get("tool_name") or "")
     task = session.get(RequestTask, task_id)
-    if task is None or (user.role is not UserRole.ADMIN and task.owner_user_id != user.id):
-        return {
-            "content": [{"type": "text", "text": "任务不存在或无权访问"}],
-            "isError": True,
-        }
+    if task is None or task.owner_user_id != user.id:
+        raise DomainError(DomainErrorCode.NOT_FOUND, "任务不存在或无权访问", status_code=404)
     try:
         catalog = catalog_for_task(task)
         tool = catalog.get(tool_name)
@@ -450,7 +455,6 @@ def _handle_validate_caller_tool_arguments(
     session: Session, user: User, args: dict[str, Any]
 ) -> dict[str, Any]:
     """校验 Caller Tool 参数（只读，不保存草稿、不创建 Tool Call）。"""
-    from ...domain.errors import DomainError
     from ...repositories.models import RequestTask
     from ..caller_tool_service import catalog_for_task, validate_tool_arguments
 
@@ -458,11 +462,8 @@ def _handle_validate_caller_tool_arguments(
     tool_name = str(args.get("tool_name") or "")
     arguments = args.get("arguments")
     task = session.get(RequestTask, task_id)
-    if task is None or (user.role is not UserRole.ADMIN and task.owner_user_id != user.id):
-        return {
-            "content": [{"type": "text", "text": "任务不存在或无权访问"}],
-            "isError": True,
-        }
+    if task is None or task.owner_user_id != user.id:
+        raise DomainError(DomainErrorCode.NOT_FOUND, "任务不存在或无权访问", status_code=404)
     try:
         validate_tool_arguments(catalog_for_task(task), tool_name, arguments)
         return {
@@ -512,16 +513,7 @@ _TOOLS: list[McpToolDef] = [
                 "state": {
                     "type": "string",
                     "description": "任务状态筛选",
-                    "enum": [
-                        "waiting_human",
-                        "response_ready",
-                        "forwarding_llm",
-                        "forwarding_im",
-                        "delivered",
-                        "failed",
-                        "cancelled",
-                        "expired",
-                    ],
+                    "enum": [state.value for state in TaskState],
                 },
             },
         },

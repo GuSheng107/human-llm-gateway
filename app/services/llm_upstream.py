@@ -13,9 +13,11 @@ SSE 流式两种。错误统一映射为 DomainError（超时 504 / 网络 502 /
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -28,12 +30,13 @@ from ..core.constants import (
     LLM_MAX_STREAM_SECONDS,
 )
 from ..domain.errors import DomainError, DomainErrorCode
+from ..protocols.assistant import AnthropicStreamHistory
 
 
 class UpstreamChunk:
     """流式增量：text / reasoning / tool_call 片段（协议无关）。"""
 
-    __slots__ = ("reasoning", "status_code", "text", "tool_call")
+    __slots__ = ("native_response", "reasoning", "status_code", "text", "tool_call")
 
     def __init__(
         self,
@@ -42,11 +45,13 @@ class UpstreamChunk:
         reasoning: str = "",
         tool_call: dict[str, Any] | None = None,
         status_code: int | None = None,
+        native_response: dict[str, Any] | None = None,
     ) -> None:
         self.text = text
         self.reasoning = reasoning
         self.tool_call = tool_call
         self.status_code = status_code
+        self.native_response = native_response
 
 
 def _raise_upstream(status_code: int) -> DomainError:
@@ -69,6 +74,22 @@ def _raise_bad_json() -> DomainError:
     return DomainError(
         DomainErrorCode.UPSTREAM_ERROR, "上游 LLM 响应不是合法 JSON", status_code=502
     )
+
+
+def _raise_incomplete_stream() -> DomainError:
+    return DomainError(DomainErrorCode.UPSTREAM_ERROR, "上游 LLM 流未正常完成", status_code=502)
+
+
+def _parse_tool_arguments(value: object) -> dict[str, Any]:
+    """只接受完整参数对象，不能把损坏的参数修复成合法空对象。"""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except ValueError as exc:
+            raise _raise_bad_json() from exc
+    if not isinstance(value, dict):
+        raise _raise_bad_json()
+    return value
 
 
 def _raise_too_large(kind: str) -> DomainError:
@@ -171,6 +192,60 @@ def _anthropic_headers(api_key: str) -> dict[str, str]:
     }
 
 
+@asynccontextmanager
+async def _upstream_response(
+    *,
+    base_url: str,
+    url: str,
+    headers: dict[str, str],
+    request_body: dict[str, Any],
+    timeout_seconds: float,
+) -> AsyncIterator[httpx.Response]:
+    """共享地址检查和总预算；不读取错误正文，不跟随重定向。"""
+    try:
+        async with asyncio.timeout(LLM_MAX_STREAM_SECONDS):
+            await _precheck_ssrf(base_url)
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                client.follow_redirects = False
+                async with client.stream("POST", url, headers=headers, json=request_body) as resp:
+                    if not 200 <= resp.status_code < 300:
+                        raise _raise_upstream(resp.status_code)
+                    yield resp
+    except (TimeoutError, httpx.TimeoutException) as exc:
+        raise _raise_timeout() from exc
+    except httpx.RequestError as exc:
+        raise _raise_network() from exc
+
+
+async def _post_json(
+    *,
+    base_url: str,
+    url: str,
+    headers: dict[str, str],
+    request_body: dict[str, Any],
+    timeout_seconds: float,
+) -> dict[str, Any]:
+    async with _upstream_response(
+        base_url=base_url,
+        url=url,
+        headers=headers,
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        raw = bytearray()
+        async for chunk in resp.aiter_bytes():
+            if len(raw) + len(chunk) > LLM_MAX_RESPONSE_BYTES:
+                raise _raise_too_large("体积")
+            raw.extend(chunk)
+        try:
+            payload = json.loads(raw)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise _raise_bad_json() from exc
+        if not isinstance(payload, dict):
+            raise _raise_bad_json()
+        return payload
+
+
 async def post_chat_completions(
     *,
     base_url: str,
@@ -178,24 +253,13 @@ async def post_chat_completions(
     request_body: dict[str, Any],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    await _precheck_ssrf(base_url)
-    url = _chat_completions_url(base_url)
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(url, headers=_chat_headers(api_key), json=request_body)
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    if resp.status_code >= 400:
-        raise _raise_upstream(resp.status_code)
-    raw = resp.content
-    if len(raw) > LLM_MAX_RESPONSE_BYTES:
-        raise _raise_too_large("体积")
-    try:
-        return json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise _raise_bad_json() from exc
+    return await _post_json(
+        base_url=base_url,
+        url=_chat_completions_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def post_anthropic_messages(
@@ -205,24 +269,13 @@ async def post_anthropic_messages(
     request_body: dict[str, Any],
     timeout_seconds: float,
 ) -> dict[str, Any]:
-    await _precheck_ssrf(base_url)
-    url = _anthropic_messages_url(base_url)
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(url, headers=_anthropic_headers(api_key), json=request_body)
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    if resp.status_code >= 400:
-        raise _raise_upstream(resp.status_code)
-    raw = resp.content
-    if len(raw) > LLM_MAX_RESPONSE_BYTES:
-        raise _raise_too_large("体积")
-    try:
-        return json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise _raise_bad_json() from exc
+    return await _post_json(
+        base_url=base_url,
+        url=_anthropic_messages_url(base_url),
+        headers=_anthropic_headers(api_key),
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 # ----------------------------------------------------------------------
@@ -237,8 +290,10 @@ class _StreamBudget:
         self.bytes_read = 0
         self.started_at = time.monotonic()
 
-    def charge(self, line: str) -> None:
-        self.bytes_read += len(line.encode("utf-8", errors="replace")) + 1
+    def charge(self, chunk: bytes | str) -> None:
+        self.bytes_read += (
+            len(chunk) if isinstance(chunk, bytes) else len(chunk.encode("utf-8")) + 1
+        )
         if self.bytes_read > LLM_MAX_STREAM_BYTES:
             raise _raise_too_large("累计字节")
         if time.monotonic() - self.started_at > LLM_MAX_STREAM_SECONDS:
@@ -253,24 +308,13 @@ async def post_responses(
     timeout_seconds: float,
 ) -> dict[str, Any]:
     """OpenAI Responses：POST {base_url}/responses。"""
-    await _precheck_ssrf(base_url)
-    url = _responses_url(base_url)
-    try:
-        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-            resp = await client.post(url, headers=_chat_headers(api_key), json=request_body)
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    if resp.status_code >= 400:
-        raise _raise_upstream(resp.status_code)
-    raw = resp.content
-    if len(raw) > LLM_MAX_RESPONSE_BYTES:
-        raise _raise_too_large("体积")
-    try:
-        return json.loads(raw)
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise _raise_bad_json() from exc
+    return await _post_json(
+        base_url=base_url,
+        url=_responses_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body=request_body,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 async def stream_chat_completions(
@@ -282,26 +326,23 @@ async def stream_chat_completions(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Chat Completions：解析 delta.content / reasoning_content /
     tool_calls 增量并归一为 UpstreamChunk。"""
-    await _precheck_ssrf(base_url)
-    url = _chat_completions_url(base_url)
-    body = {**request_body, "stream": True}
     budget = _StreamBudget()
-    client = httpx.AsyncClient(timeout=timeout_seconds)
-    try:
-        async with client.stream("POST", url, headers=_chat_headers(api_key), json=body) as resp:
-            if resp.status_code >= 400:
-                await resp.aread()
-                raise _raise_upstream(resp.status_code)
-            async for chunk in _iter_sse_data(resp, budget):
-                parsed = _parse_chat_delta(chunk)
+    async with _upstream_response(
+        base_url=base_url,
+        url=_chat_completions_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body={**request_body, "stream": True},
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        async for chunk in _iter_sse_data(resp, budget):
+            if chunk is None:  # Chat 的 data: [DONE]
+                return
+            if "error" in chunk or chunk.get("type") == "error":
+                raise _raise_incomplete_stream()
+            for parsed in _parse_chat_delta(chunk):
                 parsed.status_code = resp.status_code
                 yield parsed
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    finally:
-        await client.aclose()
+        raise _raise_incomplete_stream()
 
 
 async def stream_responses(
@@ -313,32 +354,34 @@ async def stream_responses(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 OpenAI Responses：解析 response.output_text.delta /
     response.reasoning_summary_text.delta / response.function_call_* 事件。"""
-    await _precheck_ssrf(base_url)
-    url = _responses_url(base_url)
-    body = {**request_body, "stream": True}
     budget = _StreamBudget()
-    client = httpx.AsyncClient(timeout=timeout_seconds)
-    try:
-        async with client.stream("POST", url, headers=_chat_headers(api_key), json=body) as resp:
-            if resp.status_code >= 400:
-                await resp.aread()
-                raise _raise_upstream(resp.status_code)
-            async for chunk in _iter_sse_data(resp, budget):
-                parsed = _parse_responses_event(chunk)
-                if parsed is not None:
-                    parsed.status_code = resp.status_code
-                    yield parsed
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    finally:
-        await client.aclose()
+    async with _upstream_response(
+        base_url=base_url,
+        url=_responses_url(base_url),
+        headers=_chat_headers(api_key),
+        request_body={**request_body, "stream": True},
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        async for chunk in _iter_sse_data(resp, budget):
+            if chunk is None:  # Responses 不使用 Chat 的 [DONE]。
+                raise _raise_incomplete_stream()
+            if chunk.get("type") == "response.completed":
+                if (chunk.get("response") or {}).get("status") != "completed":
+                    raise _raise_incomplete_stream()
+                yield UpstreamChunk(native_response=chunk["response"], status_code=resp.status_code)
+                return
+            parsed = _parse_responses_event(chunk)
+            if parsed is not None:
+                parsed.status_code = resp.status_code
+                yield parsed
+        raise _raise_incomplete_stream()
 
 
 def _parse_responses_event(payload: dict[str, Any]) -> UpstreamChunk | None:
-    """Responses SSE 事件归一；仅处理主流增量事件，其余忽略。"""
+    """Responses SSE 内容归一；失败事件不得作为可忽略的通知。"""
     event_type = payload.get("type") or ""
+    if event_type in ("error", "response.failed", "response.incomplete") or "error" in payload:
+        raise _raise_incomplete_stream()
     if event_type == "response.output_text.delta":
         return UpstreamChunk(text=payload.get("delta") or "")
     if event_type in ("response.reasoning_summary_text.delta", "response.reasoning.delta"):
@@ -349,16 +392,11 @@ def _parse_responses_event(payload: dict[str, Any]) -> UpstreamChunk | None:
     if event_type == "response.output_item.done":
         item = payload.get("item") or {}
         if item.get("type") == "function_call":
-            arguments = item.get("arguments")
-            try:
-                parsed_args = json.loads(arguments) if isinstance(arguments, str) else {}
-            except ValueError:
-                parsed_args = {}
             return UpstreamChunk(
                 tool_call={
-                    "id": item.get("id", ""),
+                    "id": item.get("call_id", ""),
                     "name": item.get("name", ""),
-                    "arguments": parsed_args,
+                    "arguments": _parse_tool_arguments(item.get("arguments")),
                 }
             )
         return None
@@ -374,115 +412,139 @@ async def stream_anthropic_messages(
 ) -> AsyncIterator[UpstreamChunk]:
     """流式 Anthropic Messages：解析 content_block_delta（text_delta /
     thinking_delta / input_json_delta）并归一为 UpstreamChunk。"""
-    await _precheck_ssrf(base_url)
-    url = _anthropic_messages_url(base_url)
-    body = {**request_body, "stream": True}
     budget = _StreamBudget()
-    client = httpx.AsyncClient(timeout=timeout_seconds)
     tool_json_buffers: dict[int, dict[str, str]] = {}
-    try:
-        async with client.stream(
-            "POST", url, headers=_anthropic_headers(api_key), json=body
-        ) as resp:
-            if resp.status_code >= 400:
-                await resp.aread()
-                raise _raise_upstream(resp.status_code)
-            async for event_name, payload in _iter_sse(resp, budget):
-                chunk = _parse_anthropic_event(event_name, payload, tool_json_buffers)
-                if chunk is not None:
-                    chunk.status_code = resp.status_code
-                    yield chunk
-    except httpx.TimeoutException as exc:
-        raise _raise_timeout() from exc
-    except httpx.RequestError as exc:
-        raise _raise_network() from exc
-    finally:
-        await client.aclose()
+    native_history = AnthropicStreamHistory()
+    async with _upstream_response(
+        base_url=base_url,
+        url=_anthropic_messages_url(base_url),
+        headers=_anthropic_headers(api_key),
+        request_body={**request_body, "stream": True},
+        timeout_seconds=timeout_seconds,
+    ) as resp:
+        async for event, payload in _iter_sse(resp, budget):
+            if payload is None:
+                raise _raise_incomplete_stream()
+            if (payload.get("type") or event) == "message_stop":
+                if tool_json_buffers:
+                    raise _raise_incomplete_stream()
+                yield UpstreamChunk(
+                    native_response=native_history.response(), status_code=resp.status_code
+                )
+                return
+            chunk = _parse_anthropic_event(event, payload, tool_json_buffers)
+            native_history.consume(event, payload)
+            if chunk is not None:
+                chunk.status_code = resp.status_code
+                yield chunk
+        raise _raise_incomplete_stream()
 
 
 async def _iter_sse_data(
     resp: httpx.Response, budget: _StreamBudget
-) -> AsyncIterator[dict[str, Any]]:
-    """提取 data: JSON 行（Chat 格式：每 data 行一个完整对象）。"""
-    async for line in resp.aiter_lines():
-        budget.charge(line)
-        if len(line.encode("utf-8", errors="replace")) > LLM_MAX_SSE_LINE_BYTES:
-            raise _raise_too_large("单行")
-        if not line.startswith("data:"):
-            continue
-        payload = line[5:].strip()
-        if not payload or payload == "[DONE]":
-            continue
-        try:
-            yield json.loads(payload)
-        except ValueError:
-            _log_bad_sse_line(payload)
+) -> AsyncIterator[dict[str, Any] | None]:
+    """读取完整 SSE 数据；None 仅表示 Chat 的 [DONE] 标记。"""
+    async for _event, payload in _iter_sse(resp, budget):
+        yield payload
+
+
+def _decode_sse_event(event_name: str, data_lines: list[str]) -> tuple[str, dict[str, Any] | None]:
+    """拼接多行 data 并解析；坏 JSON 与非法结构都显式失败，不记录原文。"""
+    raw = "\n".join(data_lines)
+    if raw.strip() == "[DONE]":
+        return event_name, None
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        raise _raise_bad_json() from exc
+    if not isinstance(payload, dict):
+        raise _raise_bad_json()
+    return event_name, payload
+
+
+async def _bounded_sse_lines(resp: httpx.Response, budget: _StreamBudget) -> AsyncIterator[str]:
+    """按接收块计费，在等待换行前限制缓冲；支持 LF、CRLF 和 CR。"""
+    pending = bytearray()
+    skip_lf = False
+    async for chunk in resp.aiter_bytes():
+        budget.charge(chunk)
+        # 一次只保留单行；无换行的上游不能先无限缓存再校验。
+        for byte in chunk:
+            if skip_lf:
+                skip_lf = False
+                if byte == 10:
+                    continue
+            if byte in (10, 13):
+                yield pending.decode("utf-8", errors="replace")
+                pending.clear()
+                skip_lf = byte == 13
+            else:
+                pending.append(byte)
+                if len(pending) > LLM_MAX_SSE_LINE_BYTES:
+                    raise _raise_too_large("单行")
+    if pending:
+        yield pending.decode("utf-8", errors="replace")
 
 
 async def _iter_sse(
     resp: httpx.Response, budget: _StreamBudget
-) -> AsyncIterator[tuple[str, dict[str, Any]]]:
-    """提取 (event, data) 对（Anthropic 格式：event: + data: 成对）。"""
+) -> AsyncIterator[tuple[str, dict[str, Any] | None]]:
+    """按空行分隔 SSE 事件，拼接多行 data，拒绝坏 JSON 而不记录原文。
+
+    规范要求事件以空行结束，但部分上游会省略最后一帧的分隔空行。流结束时
+    残留的数据只要 JSON 完整就照常产出——成败交给调用方按终止事件判定
+    （缺少终止事件仍会在各自 stream_* 的流结束处报失败）；真正被截断的事件
+    因 JSON 残缺而在本函数失败。
+    """
     event_name = ""
-    async for line in resp.aiter_lines():
-        budget.charge(line)
-        if len(line.encode("utf-8", errors="replace")) > LLM_MAX_SSE_LINE_BYTES:
-            raise _raise_too_large("单行")
-        if line.startswith("event:"):
+    data_lines: list[str] = []
+    async for line in _bounded_sse_lines(resp, budget):
+        if not line:
+            if data_lines:
+                yield _decode_sse_event(event_name, data_lines)
+            event_name = ""
+            data_lines = []
+        elif line.startswith("event:"):
             event_name = line[6:].strip()
         elif line.startswith("data:"):
-            payload = line[5:].strip()
-            if not payload:
-                continue
-            try:
-                yield event_name, json.loads(payload)
-            except ValueError:
-                _log_bad_sse_line(payload)
-                continue
-            event_name = ""
+            data_lines.append(line[5:].removeprefix(" "))
+    if data_lines:
+        yield _decode_sse_event(event_name, data_lines)
 
 
-def _log_bad_sse_line(payload: str) -> None:
-    """SSE 坏行告警（截断采样，线上排障必需；不整行落日志防放大）。"""
-    import logging
-
-    logging.getLogger("app.services.llm_upstream").warning(
-        "上游 SSE 行不是合法 JSON（已跳过）: %s...", payload[:80]
-    )
-
-
-def _parse_chat_delta(payload: dict[str, Any]) -> UpstreamChunk:
-    """解析 Chat delta；tool_call 增量携带上游 index（并行多调用不串位）。"""
+def _parse_chat_delta(payload: dict[str, Any]) -> Iterator[UpstreamChunk]:
+    """一帧可有多个工具：正文只产出一次，各工具携带自己的上游 index。"""
     choices = payload.get("choices") or []
     if not choices:
-        return UpstreamChunk()
+        return
     delta = choices[0].get("delta") or {}
     text = delta.get("content") or ""
     reasoning = delta.get("reasoning_content") or ""
-    tool_call: dict[str, Any] | None = None
+    if text or reasoning:
+        yield UpstreamChunk(text=text, reasoning=reasoning)
     calls = delta.get("tool_calls")
-    if isinstance(calls, list) and calls:
-        first = calls[0]
-        if isinstance(first, dict):
-            fn = first.get("function") or {}
-            index = first.get("index", 0)
-            if first.get("id") and fn.get("name"):
-                # 新调用开始：携带 index/id/name（arguments 后续按 index 增量）
-                tool_call = {
-                    "index": index,
-                    "id": first.get("id", ""),
-                    "name": fn.get("name", ""),
-                    "arguments_delta": fn.get("arguments") or "",
-                }
-            elif fn.get("arguments"):
-                tool_call = {"index": index, "arguments_delta": fn.get("arguments") or ""}
-    return UpstreamChunk(text=text, reasoning=reasoning, tool_call=tool_call)
+    if isinstance(calls, list):
+        for call in calls:
+            if not isinstance(call, dict):
+                raise _raise_bad_json()
+            fn = call.get("function") or {}
+            tool_call = {
+                "index": call.get("index", 0),
+                "arguments_delta": fn.get("arguments") or "",
+            }
+            if call.get("id"):
+                tool_call["id"] = call["id"]
+            if fn.get("name"):
+                tool_call["name"] = fn["name"]
+            yield UpstreamChunk(tool_call=tool_call)
 
 
 def _parse_anthropic_event(
     event: str, payload: dict[str, Any], tool_buffers: dict[int, dict[str, str]]
 ) -> UpstreamChunk | None:
     etype = payload.get("type") or event
+    if etype == "error" or "error" in payload:
+        raise _raise_incomplete_stream()
     if etype == "content_block_delta":
         delta = payload.get("delta") or {}
         dtype = delta.get("type")
@@ -492,7 +554,9 @@ def _parse_anthropic_event(
             return UpstreamChunk(reasoning=delta.get("thinking", ""))
         if dtype == "input_json_delta":
             index = payload.get("index", 0)
-            buf = tool_buffers.setdefault(index, {"json": ""})
+            buf = tool_buffers.get(index)
+            if buf is None:
+                raise _raise_incomplete_stream()
             buf["json"] += delta.get("partial_json", "")
             return None
         return None
@@ -504,6 +568,7 @@ def _parse_anthropic_event(
                 "id": block.get("id", ""),
                 "name": block.get("name", ""),
                 "json": "",
+                "initial_json": json.dumps(block.get("input", {})),
             }
         return None
     if etype == "content_block_stop":
@@ -511,10 +576,7 @@ def _parse_anthropic_event(
         buf = tool_buffers.pop(index, None)
         if buf is None:
             return None
-        try:
-            arguments = json.loads(buf["json"]) if buf["json"].strip() else {}
-        except ValueError:
-            arguments = {}
+        arguments = _parse_tool_arguments(buf["json"] or buf["initial_json"])
         return UpstreamChunk(
             tool_call={"id": buf.get("id", ""), "name": buf.get("name", ""), "arguments": arguments}
         )
@@ -529,6 +591,8 @@ def collect_chunk(target: dict[str, Any], chunk: UpstreamChunk) -> None:
     Anthropic 形态：content_block_stop 一次性给出完整 arguments。
     无 index 的增量（理论上不存在；防御）回退到最近一个调用。
     """
+    if chunk.native_response is not None:
+        target["native_response"] = chunk.native_response
     if chunk.text:
         target["text"] = target.get("text", "") + chunk.text
     if chunk.reasoning:
@@ -575,20 +639,14 @@ def finalize_collected(target: dict[str, Any]) -> dict[str, Any]:
     """累积结果 -> 协议无关摘要（与 ReplyDraft 字段对齐；丢弃内部索引）。"""
     tool_calls: list[dict[str, Any]] = []
     for call in target.get("tool_calls", []):
-        raw = call.get("arguments_raw") or "{}"
-        try:
-            arguments = json.loads(raw) if raw.strip() else {}
-        except ValueError:
-            arguments = {}
+        arguments = _parse_tool_arguments(
+            call["arguments"] if "arguments" in call else call.get("arguments_raw", "")
+        )
         tool_calls.append(
             {"id": call.get("id", ""), "name": call.get("name", ""), "arguments": arguments}
         )
     if not tool_calls and target.get("arguments_raw_head"):
-        raw = target["arguments_raw_head"]
-        try:
-            arguments = json.loads(raw) if raw.strip() else {}
-        except ValueError:
-            arguments = {}
+        arguments = _parse_tool_arguments(target["arguments_raw_head"])
         tool_calls.append({"id": "", "name": "", "arguments": arguments})
     return {
         "reasoning": target.get("reasoning") or None,

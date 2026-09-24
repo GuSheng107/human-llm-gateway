@@ -295,10 +295,11 @@ class InferenceService:
             return True
         return False
 
-    def mark_responding(self, session: Session, task: RequestTask) -> None:
-        task.state = TaskState.RESPONDING
-        task.response_started_at = utc_now()
+    def mark_responding(self, session: Session, task: RequestTask) -> bool:
+        if not self.tasks.start_response(session, task.id):
+            return False
         self._event(session, task, TaskEventType.STREAM, ActorType.SYSTEM)
+        return True
 
     # ------------------------------------------------------------------
 

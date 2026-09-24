@@ -351,8 +351,8 @@ def test_stream_budget_single_line_limit() -> None:
     from app.services.llm_upstream import _iter_sse_data, _StreamBudget
 
     class _FakeResponse:
-        async def aiter_lines(self):
-            yield "data: " + "x" * (2 * 1024 * 1024)
+        async def aiter_bytes(self):
+            yield b"data: " + b"x" * (2 * 1024 * 1024)
 
     async def run() -> None:
         async for _ in _iter_sse_data(_FakeResponse(), _StreamBudget()):  # type: ignore[arg-type]
@@ -362,25 +362,28 @@ def test_stream_budget_single_line_limit() -> None:
         asyncio.run(run())
 
 
-def test_bad_sse_line_logged_and_skipped(caplog) -> None:
-    """SSE 坏行跳过并记录告警（截断采样）。"""
+def test_bad_sse_line_rejected_without_logging_payload(caplog) -> None:
+    """坏数据不能被跳过后接受部分结果，且日志不得采样原始片段。"""
     import asyncio
     import logging
 
     from app.services.llm_upstream import _iter_sse_data, _StreamBudget
 
     class _FakeResponse:
-        async def aiter_lines(self):
-            yield "data: not-json{"
-            yield 'data: {"choices":[]}'
+        async def aiter_bytes(self):
+            yield b'data: not-json{\n\ndata: {"choices":[]}\n\n'
 
     async def run() -> list[Any]:
         return [c async for c in _iter_sse_data(_FakeResponse(), _StreamBudget())]  # type: ignore[arg-type]
 
-    with caplog.at_level(logging.WARNING, logger="app.services.llm_upstream"):
-        chunks = asyncio.run(run())
-    assert chunks == [{"choices": []}]
-    assert any("SSE" in record.message for record in caplog.records)
+    with (
+        caplog.at_level(logging.WARNING, logger="app.services.llm_upstream"),
+        pytest.raises(DomainError) as exc,
+    ):
+        asyncio.run(run())
+    assert exc.value.code is DomainErrorCode.UPSTREAM_ERROR
+    assert "not-json" not in caplog.text
+    assert "not-json" not in str(exc.value)
 
 
 def test_stream_budget_normal_lines_pass() -> None:
