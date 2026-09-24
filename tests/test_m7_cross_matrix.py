@@ -19,7 +19,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Self
 
 import pytest
 
@@ -552,9 +552,10 @@ def test_stream_anthropic_messages_parses_sse_events(monkeypatch) -> None:
     class _FakeResponse:
         status_code = 200
 
-        async def aiter_lines(self):
+        async def aiter_bytes(self):
+            # 上游 SSE 以字节流到达，逐行补 LF 后按块产出（LF/CRLF 均可解析）。
             for line in lines:
-                yield line
+                yield f"{line}\n".encode()
 
         async def aread(self) -> bytes:
             return b""
@@ -569,6 +570,12 @@ def test_stream_anthropic_messages_parses_sse_events(monkeypatch) -> None:
     class _FakeClient:
         def __init__(self, **kwargs: Any) -> None:
             pass
+
+        async def __aenter__(self) -> Self:
+            return self
+
+        async def __aexit__(self, *exc_info: object) -> bool:
+            return False
 
         def stream(self, method: str, url: str, **kwargs: Any) -> _FakeStreamCtx:
             return _FakeStreamCtx()
