@@ -152,6 +152,25 @@ def append_tool_results(
         )
 
 
+def _parse_streamed_arguments(raw: str) -> dict[str, Any]:
+    """上游分片拼出的工具参数必须是一次完整的 JSON 对象。
+
+    损坏的分片不能冒泡成 500，也不允许被"修复"成空对象：该 input 在续轮时会
+    原样回传给上游（见 append_tool_results 的 Anthropic 分支），必须是合法对象。
+    """
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise DomainError(
+            DomainErrorCode.UPSTREAM_ERROR, "上游工具参数不是合法 JSON", status_code=502
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise DomainError(
+            DomainErrorCode.UPSTREAM_ERROR, "上游工具参数不是 JSON 对象", status_code=502
+        )
+    return parsed
+
+
 class AnthropicStreamHistory:
     """保留续轮所需的 thinking 签名；内容仅在当前请求内存中使用。"""
 
@@ -185,7 +204,7 @@ class AnthropicStreamHistory:
                     "partial_json", ""
                 )
         elif kind == "content_block_stop" and index in self.arguments:
-            self.blocks[index]["input"] = json.loads(self.arguments.pop(index))
+            self.blocks[index]["input"] = _parse_streamed_arguments(self.arguments.pop(index))
 
     def response(self) -> dict[str, Any]:
         return {"content": [self.blocks[i] for i in sorted(self.blocks)], "usage": self.usage}
