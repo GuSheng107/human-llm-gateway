@@ -12,10 +12,16 @@ import path from "node:path";
  * e2e/.auth/admin.json，供后续 E2E 复用，无需重复输验证码。
  */
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "Admin-Test!2026";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
 const BASE_URL = process.env.E2E_BASE_URL ?? "http://127.0.0.1:5176";
 const OUT_DIR = path.join(process.cwd(), "e2e", ".auth");
 const OUT_FILE = path.join(OUT_DIR, "admin.json");
+
+// 仓库内不保留任何演示口令：密码必须由环境变量提供，缺失直接失败。
+if (!ADMIN_PASSWORD) {
+  console.error("请先设置 ADMIN_PASSWORD 环境变量再运行 npm run e2e:login。");
+  process.exit(1);
+}
 
 async function main() {
   const browser = await chromium.launch({ channel: "chrome", headless: false });
