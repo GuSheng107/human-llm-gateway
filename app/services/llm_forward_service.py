@@ -3,7 +3,7 @@
 - `llm` 策略：任务创建后直接进入转发（不经 WAITING_HUMAN），结果写回
   RESPONSE_READY，由推理端点既有伪流式路径输出。
 - `human_fallback_llm` 策略：人工等待超时后通过 claim_fallback 原子声明
-  一次转发权（WAITING_HUMAN -> FORWARDING_LLM），失败即终态 TIMED_OUT，
+  一次转发权（WAITING_HUMAN -> FORWARDING_LLM），失败即终态 FAILED，
   不重试。
 - 同协议保留原始字段；跨协议按字段矩阵等价转换，不能等价的参数返回
   400 `unsupported_parameter`（docs/API_CONTRACT.md §12.6）。
@@ -266,6 +266,8 @@ class LlmForwardService:
             # httpx 的 timeout 只限制单次 I/O；流式和非流式都须有总预算。
             async with asyncio.timeout(LLM_MAX_STREAM_SECONDS):
                 cfg, fake_model = self.resolve_config(session, task)
+                # 配置查询完成后结束读事务，上游网络等待不得占用数据库事务。
+                session.commit()
                 if stream:
                     chunks = await self._call_upstream_stream(session, task, cfg, fake_model)
                     # 聚合也可能因损坏参数失败，必须走同一失败处理，不能接受部分结果。

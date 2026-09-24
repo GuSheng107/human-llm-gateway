@@ -138,6 +138,24 @@ class TaskRepository:
         )
         return result.rowcount
 
+    def start_response(self, session: Session, task_id: int) -> bool:
+        """只允许完整结果开始输出；取消与输出开始由数据库裁决。"""
+        result = session.execute(
+            update(RequestTask)
+            .where(
+                RequestTask.id == task_id,
+                RequestTask.state == TaskState.RESPONSE_READY,
+                RequestTask.slot_released_at.is_(None),
+            )
+            .values(
+                state=TaskState.RESPONDING,
+                response_started_at=_now(),
+                version=RequestTask.version + 1,
+                updated_at=_now(),
+            )
+        )
+        return result.rowcount == 1
+
     def release_slot_to_terminal(
         self,
         session: Session,

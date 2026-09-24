@@ -215,8 +215,9 @@ sequenceDiagram
         P-->>C: 目标协议响应
     else 流式
         L-->>P: 上游事件流
-        P-->>C: 实时直传或实时转换
-        P->>DB: 记录事件与最终摘要
+        P->>P: 聚合并校验完整结果
+        P->>DB: 原子保存完整结果与事件
+        P-->>C: 目标协议 SSE 回放
     end
     T->>DB: 进入终态并释放名额
 ```
@@ -293,8 +294,7 @@ stateDiagram-v2
     WAITING_HUMAN --> RESPONSE_READY: 首个人工提交
     WAITING_HUMAN --> FORWARDING_LLM: fallback 原子声明
     WAITING_HUMAN --> TIMED_OUT: 无 fallback 超时
-    FORWARDING_LLM --> RESPONSE_READY: 非流式上游完成
-    FORWARDING_LLM --> RESPONDING: 上游流开始
+    FORWARDING_LLM --> RESPONSE_READY: 上游完整结果校验并保存
     RESPONSE_READY --> RESPONDING
     RESPONDING --> COMPLETED
     RECEIVED --> FAILED
@@ -332,8 +332,7 @@ stateDiagram-v2
 ### 7.2 响应输出
 
 - 人工或手动编辑结果：先持久化完整回复，再生成目标 JSON 或伪流式 SSE。
-- 真实 LLM 同协议流式：尽量逐事件透传，仅改写模型身份和必要字段。
-- 真实 LLM 跨协议流式：边接收边转换成目标协议事件。
+- 真实 LLM 同协议/跨协议流式：共享有界 HTTP 接收层，聚合完整结果、校验并原子保存后回放；当前不提供实时首事件直传。
 - tool call 只是响应数据；协议层不触发工具执行。
 - 所有响应、事件和最终摘要使用请求中的 Fake Model。
 - OpenAI Responses 的 `response_public_id` 在任务创建事务中生成并持久化，第一个响应事件发出之前必须已经存在，失败终态沿用同一 ID；`previous_response_id` 只能引用同一 API Key 的 COMPLETED 响应，网关把历史请求和回复展开为本次上下文，并保留原始引用和关联链。
@@ -383,6 +382,15 @@ handle_inbound(platform_message)
 
 LLM 配置是用户资源，不能被其他用户或管理员选用。Web 小助手、手动草稿和自动策略复用同一配置读取与客户端工厂，不重复实现供应商逻辑。
 
+`forward_runtime` 服务使同步数据库工作留在工作线程，将调用方取消传入线程内的异步
+HTTP 协程，并等待其关闭后退出。上游请求前结束配置读取事务，网络等待不占用
+写事务或长读事务。运行时周期检查数据库终态，使用户禁用等独立路径也能停止上游。
+转发失败和过期转发由 FAILED 收敛，人工等待无可用 fallback 才使用 TIMED_OUT。
+
+API 响应包装在真实 ASGI 发送边界开始/结束任务；输出开始使用条件更新，取消的任务
+不能被旧 ORM 对象恢复为 RESPONDING。发送最后一帧前仍持有名额，发送中断时关闭
+生成器并做幂等取消。协议适配器仍只生成数据，不负责数据库生命周期。
+
 ## 10. Web 小助手架构
 
 前端每个 feature 可实现 `AssistantContextProvider`，只返回白名单字段。每次发送时，全局小助手只收集当前浏览器标签页的当前路由、页面类型、所选资源、当前未提交编辑内容的非敏感摘要和用户显式输入。路由或选择变化会替换待发送上下文，不自动累积旧页面数据；每条历史消息保留其发送时的脱敏上下文快照和版本。后端再次过滤后才发送上游。
@@ -405,7 +413,11 @@ flowchart LR
     API <--> Store
 ```
 
-用户可以使用调用方声明的 tool。若通过命令类 tool 执行危险指令，相关风险和后果由用户自行承担，开发者不承担责任。网关只做名称校验和结果透传，不执行 tool。
+小助手的只读 MCP 工具与 Caller Tool 分属不同边界：前者由服务端注册，供查询/校验；后者由外部调用方声明，网关不执行。小助手不得写入任务草稿、提交回复、确认风险告知或通过 bridge 改写编辑器。
+
+`app/protocols/assistant.py` 负责三种原生请求、工具定义与续轮格式；`AssistantService` 负责有限轮次编排，复用 `llm_upstream` 的 HTTP、SSRF 和响应预算。Responses 用 `call_id/function_call_output`，Anthropic 用相邻的 `tool_use/tool_result`；原生 reasoning 项和 thinking 签名只在当前调用内存中保留，不作为日志或前端元数据。同步与 SSE 使用相同执行入口，SSE 的中间工具轮不对前端输出正文，最终文本完整校验与脱敏后回放；轮次耗尽、超时、空正文或损坏参数都不会保存成功回复。
+
+`app/services/mcp/execution.py` 是 HTTP MCP 与内置小助手的唯一工具入口，顺序为参数 Schema/大小、当前用户有效性、handler 所有权校验、输出脱敏/大小、真实结果审计。输入最大 64 KiB、结果最大 32 KiB；一次助手调用最多 5 个上游轮次，每个工具轮最多 20 个调用，所有轮次共用 LLM 配置的总超时。历史压缩有独立的同额超时，失败保留历史。工具审计在续轮网络 I/O 前提交，避免数据库事务跨上游等待。
 
 小助手会话创建必须绑定当前用户的启用 LLM 配置。没有可用个人配置时，前端禁用发送和新建会话；历史会话仍可阅读。历史会话绑定的配置停用或删除后不自动改绑，只读处理。
 
