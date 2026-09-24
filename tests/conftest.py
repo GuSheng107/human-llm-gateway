@@ -1,6 +1,8 @@
 import base64
 import os
 import secrets
+import sqlite3
+import threading
 
 # 必须在导入 app 前设置合法 APP_SECRET（config 在导入时校验）。
 if not os.environ.get("APP_SECRET"):
@@ -21,6 +23,53 @@ from app.api import create_app
 
 ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 FULL_ADMIN_PASSWORD = "Updated-Admin-Pass2!"
+
+# 测试库是单条内存连接（StaticPool），而应用会把同步数据库操作丢进工作线程
+# （run_in_threadpool），测试辅助又在事件循环线程直接读同一个库。一条 sqlite
+# 连接不允许两个线程同时使用语句，否则报
+# `sqlite3.InterfaceError: bad parameter or other API misuse`。
+# 这里把该连接的语句执行与事务操作串行化——既不改变"全用例共用一个库"的
+# 既有语义，也不引入文件库的 fsync 与锁开销。
+_DB_LOCK = threading.RLock()
+
+
+class _LockedCursor(sqlite3.Cursor):
+    """语句执行与取结果都持锁，避免与工作线程的语句互相踩坏。"""
+
+    def execute(self, *args, **kwargs):
+        with _DB_LOCK:
+            return super().execute(*args, **kwargs)
+
+    def executemany(self, *args, **kwargs):
+        with _DB_LOCK:
+            return super().executemany(*args, **kwargs)
+
+    def fetchone(self, *args, **kwargs):
+        with _DB_LOCK:
+            return super().fetchone(*args, **kwargs)
+
+    def fetchmany(self, *args, **kwargs):
+        with _DB_LOCK:
+            return super().fetchmany(*args, **kwargs)
+
+    def fetchall(self, *args, **kwargs):
+        with _DB_LOCK:
+            return super().fetchall(*args, **kwargs)
+
+
+class _LockedConnection(sqlite3.Connection):
+    """与 _LockedCursor 配对：所有语句与事务都经同一把可重入锁。"""
+
+    def cursor(self, *args, **kwargs):  # type: ignore[override]
+        return _LockedCursor(self)
+
+    def commit(self):
+        with _DB_LOCK:
+            return super().commit()
+
+    def rollback(self):
+        with _DB_LOCK:
+            return super().rollback()
 
 
 @pytest.fixture(autouse=True)
@@ -72,7 +121,9 @@ def stub_llm_save_gate(monkeypatch):
 @pytest.fixture()
 def client():
     engine = create_engine(
-        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+        "sqlite://",
+        connect_args={"check_same_thread": False, "factory": _LockedConnection},
+        poolclass=StaticPool,
     )
     database.engine = engine
     database.SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)

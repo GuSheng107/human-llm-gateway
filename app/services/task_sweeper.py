@@ -5,7 +5,7 @@
 （上限 10 个，会被卡满）。本服务周期性扫描收敛两类残留：
 
 - WAITING_HUMAN 人工截止已过 -> TIMED_OUT；自动转发策略留出声明宽限。
-- FORWARDING_LLM 超过独立的上游总时长预算与收敛宽限 -> TIMED_OUT；
+- FORWARDING_LLM 超过独立的上游总时长预算与收敛宽限 -> FAILED；
   人工截止时间不再限制正在生成的 LLM 回复。
 - RESPONSE_READY / RESPONDING 长时间无推进 -> CANCELLED
   （结果已落库但调用方已消失，宽限期后按断开取消释放名额）。
@@ -55,6 +55,7 @@ class TaskSweeper:
         """
         now = utc_now()
         timed_out = 0
+        failed = 0
         cancelled = 0
 
         overdue = list(
@@ -87,10 +88,17 @@ class TaskSweeper:
             try:
                 # allowed_sources 用读取到的源状态：人工/转发恰在扫描间隙先到时，
                 # 条件 UPDATE 不命中，晚到的超时不覆盖。
-                if self.service.finalize(
-                    session, task, TaskState.TIMED_OUT, allowed_sources={task.state}
-                ):
-                    timed_out += 1
+                target = (
+                    TaskState.FAILED
+                    if task.state is TaskState.FORWARDING_LLM
+                    or task.reply_strategy_snapshot is ReplyStrategy.LLM
+                    else TaskState.TIMED_OUT
+                )
+                if self.service.finalize(session, task, target, allowed_sources={task.state}):
+                    if target is TaskState.FAILED:
+                        failed += 1
+                    else:
+                        timed_out += 1
                 session.commit()
             except Exception:
                 session.rollback()
@@ -133,7 +141,7 @@ class TaskSweeper:
                     task_id=task.id,
                 )
 
-        return {"timed_out": timed_out, "cancelled": cancelled}
+        return {"timed_out": timed_out, "failed": failed, "cancelled": cancelled}
 
     def _sweep(self) -> dict[str, int]:
         from ..core.db import SessionLocal
@@ -141,7 +149,7 @@ class TaskSweeper:
 
         with SessionLocal() as session:
             counts = self.sweep_once(session)
-        if counts["timed_out"] or counts["cancelled"]:
+        if any(counts.values()):
             log_event("info", "task_sweeper.converged", "僵尸任务收敛", **counts)
         return counts
 
