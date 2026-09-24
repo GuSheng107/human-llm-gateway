@@ -66,6 +66,7 @@ class InferenceService:
         headers: dict[str, str],
     ) -> RequestTask:
         """创建任务并投递；调用方负责提交事务（失败整体回滚，名额不留存）。"""
+        self._assert_protocol_strategy(protocol, key.reply_strategy)
         model_row = self.models.resolve(session, key, parsed.model)
         if model_row is None:
             raise DomainError(
@@ -135,6 +136,24 @@ class InferenceService:
     # ------------------------------------------------------------------
     # 历史响应引用（§12.5）
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _assert_protocol_strategy(protocol: InferenceProtocol, strategy: ReplyStrategy) -> None:
+        """jev 决策协议只支持人工裁决。
+
+        类型化答案（Noul / Choice / Score）无法由聊天上游产出，llm 与
+        human_fallback_llm 策略在建任务时直接 400 拒绝，避免任务进入
+        无法完成的转发路径。
+        """
+        if (
+            protocol is InferenceProtocol.TYPE_SAFE_SYSTEMONE
+            and strategy is not ReplyStrategy.HUMAN
+        ):
+            raise DomainError(
+                DomainErrorCode.UNSUPPORTED_PARAMETER,
+                "jev System One requests require a human reply strategy API key.",
+                status_code=400,
+            )
 
     def _resolve_previous(
         self, session: Session, previous_response_id: str, key: ApiKey

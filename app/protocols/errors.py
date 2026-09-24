@@ -45,6 +45,20 @@ _ANTHROPIC_MAPPING: dict[DomainErrorCode, tuple[int, str]] = {
 
 _GENERIC_500 = (500, "server_error")
 
+# 领域错误码 -> (默认 HTTP 状态, jev code)。jev 官方以 422 表示校验失败。
+_SYSTEMONE_MAPPING: dict[DomainErrorCode, tuple[int, str]] = {
+    DomainErrorCode.INVALID_REQUEST: (422, "unprocessable_entity"),
+    DomainErrorCode.UNSUPPORTED_PARAMETER: (400, "unsupported_parameter"),
+    DomainErrorCode.CONTEXT_LENGTH_EXCEEDED: (422, "context_length_exceeded"),
+    DomainErrorCode.PAYLOAD_TOO_LARGE: (413, "payload_too_large"),
+    DomainErrorCode.INVALID_API_KEY: (401, "unauthorized"),
+    DomainErrorCode.MODEL_NOT_FOUND: (404, "model_not_found"),
+    DomainErrorCode.RATE_LIMIT_EXCEEDED: (429, "rate_limit_exceeded"),
+    DomainErrorCode.REQUEST_TIMEOUT: (504, "request_timeout"),
+    DomainErrorCode.UPSTREAM_ERROR: (500, "upstream_error"),
+    DomainErrorCode.VALIDATION_FAILED: (422, "unprocessable_entity"),
+}
+
 
 def openai_error_body(
     message: str, *, error_type: str, code: str | None, param: str | None = None
@@ -131,3 +145,37 @@ def anthropic_domain_error_response(exc: DomainError, *, request_id: str = "") -
 def map_domain_error_anthropic(exc: DomainError) -> tuple[int, str]:
     status, error_type = _ANTHROPIC_MAPPING.get(exc.code, (500, "api_error"))
     return status, error_type
+
+
+def systemone_error_body(message: str, *, code: str) -> dict[str, Any]:
+    """jev 官方错误体：`{"error": {"code", "message"}}`。"""
+    return {"error": {"code": code, "message": message}}
+
+
+def systemone_domain_error_response(exc: DomainError) -> JSONResponse:
+    """把领域错误转为 jev（TypeSafe System One）兼容响应。
+
+    官方以 422 表示请求校验失败；raise 站点已显式声明目标状态码，故优先
+    采用 ``exc.status_code``，仅在缺省时回落到错误码映射。未映射的错误不
+    泄露内部消息。
+    """
+    mapping = _SYSTEMONE_MAPPING.get(exc.code)
+    if mapping is None:
+        return JSONResponse(
+            status_code=500,
+            content=systemone_error_body("服务暂时不可用", code="internal_error"),
+        )
+    default_status, default_code = mapping
+    status = exc.status_code if 400 <= exc.status_code < 600 else default_status
+    return JSONResponse(
+        status_code=status,
+        content=systemone_error_body(
+            exc.message or "请求无法处理", code=exc.public_code or default_code
+        ),
+    )
+
+
+def map_domain_error_systemone(exc: DomainError) -> tuple[int, str]:
+    default_status, default_code = _SYSTEMONE_MAPPING.get(exc.code, (500, "internal_error"))
+    status = exc.status_code if 400 <= exc.status_code < 600 else default_status
+    return status, exc.public_code or default_code

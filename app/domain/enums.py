@@ -111,6 +111,7 @@ class InferenceProtocol(StrEnum):
     OPENAI_CHAT = "openai_chat"
     OPENAI_RESPONSES = "openai_responses"
     ANTHROPIC_MESSAGES = "anthropic_messages"
+    TYPE_SAFE_SYSTEMONE = "systemone"
 
 
 class TaskState(StrEnum):

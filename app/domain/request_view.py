@@ -592,7 +592,81 @@ def project_request_view(protocol_kind: str, normalized: dict[str, Any]) -> dict
     """投影为 RequestView 分区结构（内部携带 block 全量与 ctx 映射）。"""
     if protocol_kind == "responses":
         return _project_responses(normalized)
+    if protocol_kind == "systemone":
+        return _project_systemone(normalized)
     return _project_chat_anthropic(protocol_kind, normalized)
+
+
+def _project_systemone(normalized: dict[str, Any]) -> dict[str, Any]:
+    """jev System One：state 是当前局面（current_input），instructions 与
+    questions 归入 caller_system 供人工裁决参考；无 attached_context。
+
+    state / questions 以 compact JSON 文本块呈现（人工在工作台阅读后以
+    ``{"answers": {...}}`` 提交类型化答案）。
+    """
+
+    def _json_text(value: Any) -> str:
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        except (ValueError, TypeError):
+            return str(value)
+
+    current_items: list[dict[str, Any]] = []
+    state = normalized.get("state")
+    if state is not None:
+        blocks = [{"type": "text", **_text_preview(_json_text(state))}]
+        _, item = _context_item(
+            protocol_kind="systemone",
+            section="current_input",
+            ordinal=0,
+            role="state",
+            blocks=blocks,
+            context_index=None,
+        )
+        current_items.append(item)
+
+    caller_system_items: list[dict[str, Any]] = []
+    ordinal = 0
+    instructions = normalized.get("instructions")
+    if isinstance(instructions, str) and instructions.strip():
+        blocks = [{"type": "text", **_text_preview(instructions)}]
+        _, item = _context_item(
+            protocol_kind="systemone",
+            section="caller_system",
+            ordinal=ordinal,
+            role="instructions",
+            blocks=blocks,
+            context_index=None,
+        )
+        caller_system_items.append(item)
+        ordinal += 1
+    questions = normalized.get("questions")
+    if isinstance(questions, dict) and questions:
+        blocks = [{"type": "text", **_text_preview(_json_text(questions))}]
+        _, item = _context_item(
+            protocol_kind="systemone",
+            section="caller_system",
+            ordinal=ordinal,
+            role="questions",
+            blocks=blocks,
+            context_index=None,
+        )
+        caller_system_items.append(item)
+
+    return {
+        "current_input": current_items,
+        "caller_system": {
+            "items": caller_system_items,
+            "item_count": len(caller_system_items),
+            "character_count": sum(item["text_length"] for item in caller_system_items),
+            "collapsed_by_default": True,
+        },
+        "attached_context": [],
+        "_attached_map": {},
+        "_all_blocks": _collect_blocks(current_items, caller_system_items, []),
+    }
 
 
 def protocol_kind_of(protocol: Any) -> str:
@@ -601,6 +675,7 @@ def protocol_kind_of(protocol: Any) -> str:
         "openai_chat": "chat",
         "anthropic_messages": "anthropic",
         "openai_responses": "responses",
+        "systemone": "systemone",
     }.get(value, "chat")
 
 

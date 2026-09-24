@@ -2,6 +2,7 @@ export const PROTOCOL_LABELS: Record<string, string> = {
   openai_chat: "OpenAI Chat",
   openai_responses: "OpenAI Responses",
   anthropic_messages: "Anthropic Messages",
+  systemone: "Jev System One",
 };
 
 export const REPLY_STRATEGY_LABELS: Record<string, string> = {

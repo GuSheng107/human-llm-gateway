@@ -1,4 +1,4 @@
-"""三个推理协议入口（docs/API_CONTRACT.md §12-§16）。
+"""推理协议入口（docs/API_CONTRACT.md §12-§17）。
 
 生命周期：解析 -> Key 鉴权 -> 准入 -> 建任务并投递 -> 等待人工回复 ->
 非流式 JSON / 伪流式 SSE -> 终态与名额幂等释放。
@@ -28,6 +28,7 @@ from ..domain.values import ReplyDraft
 from ..protocols import anthropic as anthropic_protocol
 from ..protocols import chat_completions as chat_protocol
 from ..protocols import responses as responses_protocol
+from ..protocols import systemone as systemone_protocol
 from ..repositories.models import ApiKey, RequestTask, User
 from ..services.forward_runtime import run_forward
 from ..services.inference_service import InferenceService
@@ -602,3 +603,50 @@ async def anthropic_messages(
         cancel=partial(_cancel_disconnected, task.id),
         complete=partial(_finalize, task.id, TaskState.COMPLETED),
     )
+
+
+def _load_questions(task: RequestTask) -> dict[str, Any]:
+    """从任务规范化请求还原 jev questions（渲染期校验人工答案用）。"""
+    import json as _json
+
+    try:
+        normalized = _json.loads(task.normalized_request_json or "{}")
+    except (ValueError, TypeError):
+        normalized = {}
+    questions = normalized.get("questions") if isinstance(normalized, dict) else None
+    return questions if isinstance(questions, dict) else {}
+
+
+@router.post("/systemone")
+async def systemone_decision(
+    request: Request,
+    key_owner: tuple[ApiKey, User] = Depends(require_api_key),
+    db: Session = Depends(get_db),
+):
+    """TypeSafe System One（jev）决策协议入口（docs/API_CONTRACT.md §17）。
+
+    Bearer 鉴权；无流式。人工以 JSON `{"answers": {...}}` 提交类型化答案，
+    网关按请求 questions 校验后返回 `{model, answers, usage}`。
+    """
+    key, owner = key_owner
+    outcome = await _handle(
+        request,
+        InferenceProtocol.TYPE_SAFE_SYSTEMONE,
+        systemone_protocol.parse_request,
+        key,
+        owner,
+        db,
+    )
+    if outcome is None:
+        return JSONResponse(status_code=499, content={})
+    task = outcome.task
+    model = task.requested_model
+    snap = _snapshot(task, outcome.draft)
+    usage = {"input_tokens": snap.input_tokens, "output_tokens": snap.output_tokens}
+    # 先渲染后响应：人工答案非法时按契约返回 500 upstream_error（由全局
+    # DomainError 处理器转换），此时不推进终态，避免"响应 500 但任务显示
+    # 已完成"的矛盾。终态推进统一交给响应回调，与其余三个协议一致。
+    body = systemone_protocol.render_response(
+        model, outcome.draft, _load_questions(task), usage=usage
+    )
+    return _json_response(body, task_id=task.id, request_id=get_request_id() or "")

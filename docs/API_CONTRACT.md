@@ -3,7 +3,7 @@
 > 文档状态：已部署版本契约
 >
 > 本文描述当前代码和已部署实例的接口边界；接口变更必须同步更新本文件、后端 Schema、前端类型和测试。
-> 支持的推理格式仅限 OpenAI Chat Completions、OpenAI Responses 和 Anthropic Messages。
+> 支持的推理格式仅限 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 与 TypeSafe System One（jev 决策协议）。
 
 ## 1. 命名空间与职责
 
@@ -40,7 +40,7 @@
 1. 应用 startup 已完成。
 2. 数据库初始化、`schema_version` 校验和启动阶段写入成功；`/readyz` 只读取启动缓存状态，不执行数据库写事务。
 3. 主加密密钥加载成功，并能成功解密数据库中的加密自检 sentinel（发现“数据库恢复了但 `APP_SECRET` 用错”的配置漂移）。
-4. 三个协议 adapter/renderer registry 初始化成功。
+4. 四个协议 adapter/renderer registry 初始化成功（jev System One 无流式，仅校验解析与响应渲染）。
 5. 任务运行时协调器、超时/fallback 协调器和 connector registry 已启动。
 
 `/readyz` 不检查任何用户 IM 连接是否在线、不检查真实 LLM 连通性、不要求存在至少一个连接实例；单个用户连接故障不能使实例变为未就绪。各连接健康继续通过连接管理 API 单独展示。
@@ -793,7 +793,51 @@ M6-A 必须使用项目锁定的 `openai` Python SDK 实际调用 Chat Completio
 
 SDK 升级时必须重新运行该契约测试。Responses 和 Anthropic 因协议本身有明确失败事件，直接按上表固定，无需依赖 SDK 行为验证。
 
-## 17. 连接器协议
+## 17. TypeSafe System One（jev）
+
+### 17.1 请求
+
+`POST /v1/systemone`
+
+TypeSafe AI 于 2026-09 发布的决策协议，作为第四个入站推理协议与三个对话协议并列。鉴权使用 `Authorization: Bearer <API_KEY>`；协议无流式、无 Caller Tool，`model` 沿用 Fake Model 目录校验。请求体：
+
+| 字段 | 类型 | 约束 |
+| --- | --- | --- |
+| `model` | string | 必填非空，按 §12.3 有效集合校验 |
+| `state` | string / object / array | 必填，描述当前局面；字符串不得为空 |
+| `questions` | map<string, Question> | 必填非空，键为非空字符串 |
+| `instructions` | string / object / array | 可选，随任务保存并展示给人工 |
+
+Question 有三种类型，`type` 之外的 `criteria` 约束：
+
+- `noul`：criteria 可选（仅 `true` / `false` 两个键，正反描述），但 criteria 与 instructions 至少提供其一（与官方行为一致）；答案 `noul` ∈ [0,1]，0.5 表示弃权。
+- `choice`：criteria 必填，对象且 2–255 个选项；答案含 `choice`（必须命中选项键）、`probabilities`、`confidence`。
+- `score`：criteria 必填，有序数组 2–10 级（低→高），每项为字符串或含描述对象；答案含 `score`（0 ≤ score ≤ 级数-1）、`legend`（`"0".."n"` → 描述）、`probabilities`（字符串键）、`confidence`。
+
+jev 请求校验失败统一返回 **422**（官方契约），区别于三个对话协议的 400。仅允许人工回复策略的 API Key 调用；`llm` / `human_fallback_llm` 策略的 Key 建任务时直接返回 400。
+
+### 17.2 响应
+
+非流式，任务完成后返回：
+
+```json
+{
+  "model": "请求的 Fake Model",
+  "answers": {
+    "is_urgent": { "type": "noul", "noul": 0.95 },
+    "route": { "type": "choice", "choice": "a", "probabilities": { "a": 1.0 }, "confidence": 1.0 }
+  },
+  "usage": { "input_tokens": 0, "output_tokens": 0 }
+}
+```
+
+人工在工作台以 `final_text` 提交 JSON `{"answers": {...}}`；渲染时按请求 questions 严格校验（键集合完全一致、类型匹配、choice 命中选项、noul 与 score 在值域内），`probabilities` / `confidence` 缺省时按确定性答案补齐。非法答案返回 500 `upstream_error`。
+
+### 17.3 错误
+
+错误体为 `{"error": {"code", "message"}}`。校验失败 422 `unprocessable_entity`；Key 无效 401 `unauthorized`；模型不存在 404 `model_not_found`；名额超限 429 `rate_limit_exceeded`；人工超时 504；内部失败 500 `internal_error`。对外消息不泄露人工流程与内部实现。
+
+## 18. 连接器协议
 
 连接器入口不是公开 LLM API，每个连接使用独立 Token，且只能操作该连接所有者的任务。
 
@@ -807,7 +851,7 @@ SDK 升级时必须重新运行该契约测试。Responses 和 Anthropic 因协�
 
 HTTP 轮询响应返回单调 cursor；重复 cursor、ACK 或回复必须幂等。入站消息要求外部消息 ID，数据库以 `connection_id + external_message_id` 全局去重。
 
-## 18. 契约变更要求
+## 19. 契约变更要求
 
 - 实现或修改接口前，先更新本文件和对应阶段路线图。
 - 推理响应变更必须增加三协议契约测试和流式事件顺序测试。
