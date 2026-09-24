@@ -643,10 +643,10 @@ async def systemone_decision(
     model = task.requested_model
     snap = _snapshot(task, outcome.draft)
     usage = {"input_tokens": snap.input_tokens, "output_tokens": snap.output_tokens}
-    # 先渲染后终态：人工答案非法时任务推进 FAILED，状态与 500 响应一致，
-    # 避免"响应 500 但任务显示已完成"的矛盾。
+    # 先渲染后响应：人工答案非法时按契约返回 500 upstream_error（由全局
+    # DomainError 处理器转换），此时不推进终态，避免"响应 500 但任务显示
+    # 已完成"的矛盾。终态推进统一交给响应回调，与其余三个协议一致。
     body = systemone_protocol.render_response(
         model, outcome.draft, _load_questions(task), usage=usage
     )
-    await run_in_threadpool(_finalize, task.id, TaskState.COMPLETED)
-    return _json_response(body, request_id=get_request_id() or "")
+    return _json_response(body, task_id=task.id, request_id=get_request_id() or "")
