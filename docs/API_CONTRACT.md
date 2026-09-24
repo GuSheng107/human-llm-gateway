@@ -556,7 +556,7 @@ OpenAI Responses 的 `previous_response_id` 由网关提供语义，而不是机
 4. 人工流程向用户展示展开后的上下文；真实 LLM 转发使用展开后的消息，不把无法识别的网关 ID 发送给上游。
 5. 展开结果受三重网关硬性保护，任一超限整请求返回协议兼容 400 `context_length_exceeded`，不静默截断：
    - `max_chain_depth = 20`（沿 `previous_task_id` 可追溯的历史祖先节点数上限，当前请求不计入）；
-   - `max_expanded_items = 512`（展开后规范化顶级上下文条目累计上限：一条 message、一个 tool call、一个 reasoning 项等各计 1 条，message 内多个 content block 合并计 1 条；三种协议共用同一预算函数）；
+   - `max_expanded_items = 512`（展开后规范化顶级上下文条目累计上限：一条 message、一个 tool call、一个 reasoning 项等各计 1 条，message 内多个 content block 合并计 1 条；四种协议共用同一预算函数）；
    - `max_expanded_context_bytes = 2 MiB`（规范化展开 JSON 的 compact UTF-8 字节上限，`ensure_ascii=false`、无缩进，序列化参数固定）。
 6. Fake Model 与真实模型解耦，网关不在准入阶段估算 token；M7 由协议 adapter 处理真实模型 token 限制（本地 tokenizer 预检或映射上游超限错误），不强制每次推理调用远程 `count_tokens`。
 7. 历史清理不得破坏仍被引用的链；可以保留最小非敏感上下文快照代替完整任务，但不能留下悬空 ID。
@@ -854,7 +854,7 @@ HTTP 轮询响应返回单调 cursor；重复 cursor、ACK 或回复必须幂等
 ## 19. 契约变更要求
 
 - 实现或修改接口前，先更新本文件和对应阶段路线图。
-- 推理响应变更必须增加三协议契约测试和流式事件顺序测试。
+- 推理响应变更必须增加四协议契约测试和流式事件顺序测试（jev 无流式，只覆盖响应契约）。
 - 管理 API 变更必须同步 TypeScript 类型与前端调用层。
 - 新错误必须使用稳定错误码，并测试不泄露 Secret 和内部实现。
 
